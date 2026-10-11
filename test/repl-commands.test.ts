@@ -231,6 +231,12 @@ describe("parseCommand", () => {
 		expect(parseCommand("/exit")).toEqual({ name: "exit", args: "" });
 		expect(parseCommand(" /foo")).toBeNull(); // leading space → plain text for the model
 		expect(parseCommand("hello")).toBeNull();
+		// §14.8: a candidate name containing "/" is not a command (built-ins
+		// + extension NAME_PATTERN + md/skill names are slash-free), so a
+		// line-start pasted absolute path submits to the model instead.
+		expect(parseCommand("/var/folders/y5/x/ink-clipboard-abc.png")).toBeNull();
+		expect(parseCommand("/Users/z/Desktop/image copy.png")).toBeNull();
+		expect(parseCommand("/help/")).toBeNull();
 	});
 });
 
@@ -317,6 +323,8 @@ describe("slash commands", () => {
 				"  Esc                abort the running turn (same as Ctrl+C); with the",
 				"                     autocomplete panel open, one Esc closes the panel only",
 				"  Ctrl+D             exit",
+				"  Ctrl+V             paste the clipboard — copied files paste as their",
+				"                     real paths, an image as a tmp-file path, text as text",
 				"  Ctrl+O             expand/collapse all folds (tool calls/results, errors, diffs, reasoning)",
 				"  Alt+O              switch readable/raw arguments for structured tool calls;",
 				"                     visible when expanded; does not expand or collapse folds",

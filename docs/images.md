@@ -21,10 +21,16 @@ never by file extension.
 - **Print mode**: `ink @shot.png @notes.txt "what is this"` — text files
   embed as `<file>` blocks, images attach to the first message through the
   same processor.
-- **TUI**: Ctrl+V pastes a clipboard image as a tmp-file path at the cursor
-  (macOS via osascript, Linux via wl-paste/xclip, Windows via PowerShell —
-  Windows is not supported yet); plain text pastes when no image is found.
-  You can also drag files into the terminal or type the path directly.
+- **TUI**: Ctrl+V pastes the clipboard at the cursor, in this order:
+  copied files (e.g. a Finder Cmd+C) paste as their real paths — an image
+  *file* never pastes its file icon; image data (a screenshot) is written
+  to a tmp file and that path is inserted; otherwise plain text pastes.
+  Use Ctrl+V — the terminal owns Cmd+V, and only text can travel that
+  channel. Read via osascript (macOS), wl-paste/xclip (Linux), PowerShell
+  (Windows — best-effort readers, not yet verified on that platform).
+  A line that starts with an absolute path (a pasted tmp path, for
+  example) submits as a normal message, never as a slash command. You
+  can also drag files into the terminal or type the path directly.
 
 ## Oversize handling (resize ladder)
 

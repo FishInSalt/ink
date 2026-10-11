@@ -1,8 +1,9 @@
 /**
- * Clipboard image reading — M13 batch 2. pi reads the clipboard through
- * pi-tui native bindings (prebuilt .node) with xclip/wl-paste fallbacks;
- * Ink has no native bindings, so this port is command-based on every
- * platform (design §14.5, divergence D8):
+ * Clipboard reading — M13 batch 2 (images) + the §14.8 addendum (file
+ * paths). pi reads the clipboard through pi-tui native bindings
+ * (prebuilt .node) with xclip/wl-paste fallbacks; Ink has no native
+ * bindings, so this port is command-based on every platform (design
+ * §14.5, divergence D8):
  *
  *   darwin  — osascript JXA ObjC bridge: NSPasteboard PNG, TIFF→PNG via
  *             NSBitmapImageRep; emits base64 on stdout (no permission
@@ -14,6 +15,14 @@
  * Unsupported-but-decodable formats convert to PNG through photon before
  * returning. The result is bytes on disk + a path, never an inline block:
  * the tmp file keeps the message layer untouched (pi: same shape).
+ *
+ * §14.8: Finder/file-manager copies carry file URLs, never the file's
+ * bytes — and the pasteboard's image representations are the file
+ * *icon*, so the image reader must never see a file copy. The Ctrl+V
+ * flow asks readClipboardFilePaths first (pi's order: paths → image →
+ * text): darwin public.file-url per item (+ NSFilenamesPboardType
+ * fallback), linux text/uri-list (wl-paste/xclip), win32 FileDropList.
+ * Still command-based everywhere (D8).
  */
 
 import { randomUUID } from "node:crypto";
@@ -109,6 +118,41 @@ if (!png.isNil()) {
 }
 out;`;
 
+/** macOS file paths (§14.8): per-item public.file-url — NSURL.path
+ *  percent-decodes — with a legacy NSFilenamesPboardType fallback for
+ *  apps that offer none. Emits a JSON array; the reader treats non-JSON
+ *  output as a bug signal (abort), never as "no files". */
+const DARWIN_PATHS_JXA = `
+ObjC.import('AppKit');
+const pb = $.NSPasteboard.generalPasteboard;
+const out = [];
+const items = pb.pasteboardItems;
+if (!items.isNil()) {
+  for (let i = 0; i < items.count; i++) {
+    const item = items.objectAtIndex(i);
+    const urlStr = item.stringForType('public.file-url');
+    if (!urlStr.isNil()) {
+      const url = $.NSURL.URLWithString(urlStr);
+      if (!url.isNil()) {
+        const p = url.path;
+        if (!p.isNil()) out.push(ObjC.unwrap(p));
+      }
+    }
+  }
+}
+if (out.length === 0) {
+  try {
+    const legacy = pb.propertyListForType('NSFilenamesPboardType');
+    if (!legacy.isNil()) {
+      const arr = ObjC.deepUnwrap(legacy);
+      if (Array.isArray(arr)) {
+        for (const p of arr) if (typeof p === 'string' && p !== '') out.push(p);
+      }
+    }
+  } catch (e) {}
+}
+JSON.stringify(out);`;
+
 const WIN32_PS = `
 Add-Type -AssemblyName System.Windows.Forms;
 Add-Type -AssemblyName System.Drawing;
@@ -117,6 +161,17 @@ if ($null -ne $img) {
   $ms = New-Object System.IO.MemoryStream;
   $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png);
   [Convert]::ToBase64String($ms.ToArray())
+}`;
+
+/** Native Windows file paths (§14.8): Get-Clipboard -Format FileDropList
+ *  yields FileInfo objects whose bare output formats as a truncated
+ *  table when piped — map .FullName (plain strings pass through). */
+const WIN32_FILE_LIST_PS = `
+$items = Get-Clipboard -Format FileDropList;
+if ($null -ne $items) {
+  foreach ($f in $items) {
+    if ($f -is [System.IO.FileInfo]) { $f.FullName } else { $f.ToString() }
+  }
 }`;
 
 export interface ReadClipboardImageOptions {
@@ -136,6 +191,22 @@ async function readViaDarwin(run: typeof runClipboardCommand): Promise<Clipboard
 	const bytes = new Uint8Array(Buffer.from(base64, "base64"));
 	if (bytes.length === 0) return null;
 	return { bytes, mimeType: detectSupportedImageMimeType(bytes) ?? "application/octet-stream" };
+}
+
+async function readViaDarwinPaths(run: typeof runClipboardCommand): Promise<string[] | null | undefined> {
+	const out = await run("osascript", ["-l", "JavaScript", "-e", DARWIN_PATHS_JXA]);
+	if (out === undefined) return undefined; // osascript missing/failed
+	const text = out.toString("utf-8").trim();
+	if (text === "") return null; // ran fine, nothing on the pasteboard
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		throw new Error("clipboard file-path read returned unusable output");
+	}
+	if (!Array.isArray(parsed)) throw new Error("clipboard file-path read returned unusable output");
+	const paths = parsed.filter((p): p is string => typeof p === "string" && p !== "");
+	return paths.length > 0 ? paths : null;
 }
 
 async function readViaWlPaste(run: typeof runClipboardCommand): Promise<ClipboardImage | null | undefined> {
@@ -186,6 +257,71 @@ async function readViaXclip(run: typeof runClipboardCommand): Promise<ClipboardI
 	}
 
 	return undefined;
+}
+
+/** Parse a text/uri-list payload (§14.8, RFC 2483): one URI per line,
+ *  "#" comments, percent-encoded file paths; a malformed escape skips
+ *  the line, never the whole paste. Non-file schemes are skipped. */
+export function parseUriList(text: string): string[] {
+	const paths: string[] = [];
+	for (const rawLine of text.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (line === "" || line.startsWith("#")) continue;
+		if (!line.startsWith("file://")) continue;
+		const rest = line.slice("file://".length);
+		const slashAt = rest.indexOf("/");
+		if (slashAt === -1) continue;
+		const host = rest.slice(0, slashAt);
+		if (host !== "" && host.toLowerCase() !== "localhost") continue;
+		try {
+			paths.push(decodeURIComponent(rest.slice(slashAt)));
+		} catch {
+			// malformed escape — skip the line
+		}
+	}
+	return paths;
+}
+
+function isUriListType(types: string[]): boolean {
+	return types.some((t) => t.split(";")[0]?.trim() === "text/uri-list");
+}
+
+async function readViaWlPastePaths(run: typeof runClipboardCommand): Promise<string[] | null | undefined> {
+	const list = await run("wl-paste", ["--list-types"], { timeoutMs: DEFAULT_LIST_TIMEOUT_MS });
+	if (list === undefined) return undefined; // wl-clipboard absent
+
+	const types = list
+		.toString("utf-8")
+		.split(/\r?\n/)
+		.map((t) => t.trim())
+		.filter(Boolean);
+	if (!isUriListType(types)) return null; // no file list — no xclip retry (image-leg parity)
+
+	const data = await run("wl-paste", ["--type", "text/uri-list", "--no-newline"]);
+	if (data === undefined) return undefined;
+	if (data.length === 0) return null;
+	const paths = parseUriList(data.toString("utf-8"));
+	return paths.length > 0 ? paths : null;
+}
+
+async function readViaXclipPaths(run: typeof runClipboardCommand): Promise<string[] | null | undefined> {
+	const targets = await run("xclip", ["-selection", "clipboard", "-t", "TARGETS", "-o"], {
+		timeoutMs: DEFAULT_LIST_TIMEOUT_MS,
+	});
+	if (targets === undefined) return undefined; // xclip absent
+
+	const types = targets
+		.toString("utf-8")
+		.split(/\r?\n/)
+		.map((t) => t.trim())
+		.filter(Boolean);
+	if (!isUriListType(types)) return null;
+
+	const data = await run("xclip", ["-selection", "clipboard", "-t", "text/uri-list", "-o"]);
+	if (data === undefined) return undefined;
+	if (data.length === 0) return null;
+	const paths = parseUriList(data.toString("utf-8"));
+	return paths.length > 0 ? paths : null;
 }
 
 export function isWSL(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -255,6 +391,19 @@ async function readViaPowerShellNative(
 	return { bytes, mimeType: "image/png" };
 }
 
+async function readViaPowerShellPaths(run: typeof runClipboardCommand): Promise<string[] | null | undefined> {
+	const out = await run("powershell", ["-NoProfile", "-STA", "-Command", WIN32_FILE_LIST_PS], {
+		timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS,
+	});
+	if (out === undefined) return undefined;
+	const paths = out
+		.toString("utf-8")
+		.split(/\r?\n/)
+		.map((l) => l.trim())
+		.filter(Boolean);
+	return paths.length > 0 ? paths : null;
+}
+
 /**
  * Read an image from the system clipboard. Null = no image (or unusable);
  * undefined = the platform reader itself is unavailable.
@@ -304,6 +453,51 @@ export async function readClipboardImage(
 	}
 
 	return image;
+}
+
+export interface ReadClipboardFilePathsOptions {
+	env?: NodeJS.ProcessEnv;
+	platform?: NodeJS.Platform;
+	/** Test seam: replace the process spawner. */
+	run?: typeof runClipboardCommand;
+}
+
+/**
+ * Read file paths from the system clipboard (§14.8 — Finder and
+ * file-manager copies). string[] = files; null = ran clean, no file
+ * URLs (fall through to the image reader); undefined = the platform
+ * reader is unavailable (also falls through; both legs share the same
+ * command matrix, so a missing tool cannot hand the image leg an icon).
+ * Throws when a reader ran but its output is unusable — the caller
+ * aborts the paste instead of falling through (pi's "no fall-through to
+ * the icon" test parity).
+ */
+export async function readClipboardFilePaths(
+	options?: ReadClipboardFilePathsOptions,
+): Promise<string[] | null | undefined> {
+	const env = options?.env ?? process.env;
+	const platform = options?.platform ?? process.platform;
+	const run = options?.run ?? runClipboardCommand;
+
+	if (env.TERMUX_VERSION) {
+		return null; // pi parity: Termux has no file clipboard
+	}
+
+	if (platform === "darwin") {
+		return readViaDarwinPaths(run);
+	}
+	if (platform === "linux") {
+		let paths: string[] | null | undefined;
+		if (isWaylandSession(env) || isWSL(env)) {
+			paths = await readViaWlPastePaths(run);
+		}
+		if (paths === undefined) paths = await readViaXclipPaths(run);
+		return paths;
+	}
+	if (platform === "win32") {
+		return readViaPowerShellPaths(run);
+	}
+	return null;
 }
 
 /**

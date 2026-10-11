@@ -553,6 +553,20 @@ describe("runRepl", () => {
 		expect(await env.repl).toBe(0);
 	});
 
+	it("regression §14.8: a line starting with an absolute path is a message, never a command", async () => {
+		// The Ctrl+V tmp-file path lands at line start; parseCommand used to
+		// read it as a slash command and the message never reached the model.
+		const env = await startRepl({ scripts: [reply("path received")] });
+		env.send("/var/folders/y5/ink-clipboard-abc.png 这张图是什么\n");
+		await waitUntil(() => env.output().includes("path received"));
+		expect(env.requests[0]?.messages).toEqual([
+			{ role: "user", content: "/var/folders/y5/ink-clipboard-abc.png 这张图是什么" },
+		]);
+		expect(env.output()).not.toContain("unknown command");
+		env.fake.eof();
+		expect(await env.repl).toBe(0);
+	});
+
 	it("regression (layer-3): a provider AbortError escaping to settleFailure prints (aborted), not an error", async () => {
 		const abortError = () => {
 			const err = new Error("This operation was aborted");
