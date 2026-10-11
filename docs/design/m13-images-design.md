@@ -256,6 +256,7 @@ user-message path.
 | D8 | Clipboard is command-based everywhere (no native bindings) | pi rides pi-tui prebuilt .node; imp has none. Sub-items from review: Linux negotiates types (wl-paste --list-types / xclip TARGETS, preferred png/jpeg/webp/gif then any image/*); WSL fallback uses powershell.exe behind an isWSL gate; macOS JXA tries NSPNGFileType when NSBitmapImageFileTypePNG is absent (older macOS) |
 | D9 | Worker never resolves under tsx/vitest (in-process fallback) | pi selects .ts workers for its TS runtime (Bun); imp's runtime chain (node + tsx loaders) cannot execute .ts workers — the compiled dist layout exercises the real worker (built-output smoke), dev/test fall back in-process by design |
 | D10 | Exception-only photon leak in the orientation wrap (pi-verbatim) | Needs a wasm-side throw between decode and assignment; pi has the identical structure — fixing it alone would drift from pi for an unreachable path |
+| D11 | Ctrl+V failures stay silent (pi prints `Failed to paste from clipboard: …`); a control-char file path drops the whole paste | The key path has no renderer surface; the silent catch is the existing policy (addendum 14.8) |
 
 ---
 
@@ -335,7 +336,9 @@ the cursor (pi: same shape — the message layer never knows; the model reads
 the file). Wiring: TuiShell's pre-focus input listener (`matchesKey(data,
 "ctrl+v")`) — before the editor consumes the key; a shell option injects
 the reader for tests. Terminal paste (Cmd+V) still arrives as bracketed
-paste and is untouched.
+paste and is untouched. (2026-10-11 addendum: a file-path leg now
+precedes the image read and a parseCommand path guard protects
+submissions — see §14.8.)
 
 ### 14.6 Deferred (carried)
 
@@ -360,3 +363,122 @@ paste and is untouched.
 - clipboard: platform-dispatched command matrix with an injectable runner
   (stubbed binaries); termux null; unsupported→PNG via stubbed converter.
 - shell: ctrl+v routes to the injected paste handler and is consumed.
+
+### 14.8 Addendum (2026-10-11): file paths take precedence; path lines are not commands
+
+Three defects reported against the shipped Ctrl+V flow drove this
+addendum (branch `fix/clipboard-file-paths`, base 2cc6f2c):
+
+1. Ctrl+V after a Finder **file** copy inserted a tmp path whose bytes
+   were the file's *icon* — a generic "PNG document" picture — not the
+   file. Finder's pasteboard carries the icon TIFF, never the file's
+   content; the D8 reader (PNG→TIFF→base64) therefore wrote the icon.
+   pi never reads the icon: `handleClipboardPaste`
+   (`interactive-mode.ts:3132`) asks for **file paths** first
+   (`readClipboardFilePaths`, `utils/clipboard.ts:76`) and inserts the
+   real paths as text (regression test "Finder file paths take
+   precedence over their icon image", pi #9999). The port dropped that
+   leg.
+2. Cmd+V stays unwired — a finding, not a defect: macOS terminals own
+   Cmd+V; the TUI only receives the bracketed-paste *text* channel
+   (§14.5). Mitigation is documentation only: `HELP_KEYS` gains the
+   Ctrl+V line; docs/images.md explains the key and the file behavior.
+3. A pasted tmp path at **line start** was parsed as a slash command —
+   submitting `/var/…/ink-clipboard-<uuid>.png` hit "unknown command"
+   (`parseCommand`, `repl/commands.ts:156`) and the message never
+   reached the model. The fix for (1) needs this fixed too: the real
+   path `/Users/…/image copy.png` starts with "/" as well.
+
+**Ctrl+V order becomes: file paths → image → text** (pi's order).
+`readClipboardFilePaths(): Promise<string[] | null | undefined>` joins
+the clipboard matrix in `clipboard-image.ts`, command-based (D8):
+
+- darwin: a second JXA script — per pasteboard item
+  `stringForType("public.file-url")` → `NSURL.path` (percent-decoded;
+  only `file:` URLs — NSURL.path coerces any scheme);
+  `propertyListForType("NSFilenamesPboardType")` as fallback when items
+  carry none (legacy apps). Emits a JSON array; a script crash emits an
+  `INK_PATHS_ERROR` sentinel and the reader throws instead of falling
+  through (an osascript nonzero exit would read as "reader absent").
+- linux: `text/uri-list` via `wl-paste --list-types` / `xclip -t
+  TARGETS` negotiation; per-line rules: `file://` only, percent-decoded
+  (malformed decodes skip that line), comments/blanks/non-file schemes
+  skipped, CRLF tolerated; listed-but-empty read → null, no retry. pi's
+  native `getFilePaths` is darwin/win32-only
+  (`packages/tui/src/native-platform.ts:55-56`) — the Linux leg is ink's
+  command-based extension (D8-consistent). The Linux legs run under WSL
+  as well (WSLg's Linux-side clipboard) and mirror the image leg's WSL
+  handling; the Windows-side FileDropList + wslpath conversion is
+  carried (untestable here). WSL residual (review-confirmed): a Windows
+  file copy still reaches the image leg's PowerShell fallback — it
+  finds no bitmap (CF_HDROP carries none), so the icon-class defect does
+  not recur there.
+- win32: `Get-Clipboard -Format FileDropList` mapped through `.FullName`
+  (FileInfo objects — bare output formats as a truncated table when
+  piped) with a plain-string fallback → one path per line; the script
+  wraps in try/catch (mid-loop sentinel still throws in the reader).
+- TERMUX/unknown platform → null.
+
+Failure semantics follow the `readClipboardImage` precedent
+(clipboard-image.ts): `string[]` = files (empty normalizes to null);
+`null` = ran clean, no file URLs → fall through to the image leg;
+`undefined` = command unavailable → also fall through (reader-absent =
+feature-absent; both legs share the same command matrix, so a missing
+tool cannot hand the image leg an icon); a throw (ran but output
+unusable) aborts the paste silently (D11) and never falls through —
+pi's "no fall-through to the icon" test parity.
+
+Insertion mirrors pi — including its bash branch: verbatim
+`join("\n")` normally; when the composed text trimStart'ed starts with
+`!` (the bang passthrough — `repl.ts:490`; the editor trims at submit,
+`editor.js:1059`) paths are space-joined and
+shell-quoted by pi's `quoteIfNeeded` port (`interactive-mode.ts:331`:
+raw under `/^[a-zA-Z0-9_\-./~:@]*$/`, else `'…'` with `'\''` escapes).
+One leading/trailing space when the adjacent character is not whitespace
+(`Review:` + paste → ` /tmp/photo.png`); any path with a control
+character drops the whole paste (D11: silently). Two readers, two
+spawns — pi's native shape has the same two calls; a single combined
+snapshot was rejected (entangles two return shapes and two test seams to
+save one osascript).
+
+**A path line is never a command.** Every command-name source is
+slash-free except skill names: built-ins, extension names under
+`NAME_PATTERN` (`^[a-z][a-z0-9_-]{0,63}$`, `extensions/registry.ts:315`)
+and md-command names (`NAME_RE`, `commands-md.ts:62`) cannot contain
+"/"; skill frontmatter names are warn-not-block (`skills.ts:77-95`,
+registered as `skill:<name>`, `skills.ts:509`) and may. The guard
+returns null for a candidate name containing "/" **unless it carries
+the `skill:` prefix** — a registered slash-containing skill name stays
+invocable (code-review finding). Consequences recorded: slash typos
+that contain another slash (`/help/`) now submit as messages instead of
+teaching; bare-word typos still teach; `/` alone stays a command.
+
+Tests (review-folded, round 2): `images-resize.test.ts` (clipboard
+matrix) — darwin JSON/legacy/clean-empty(null)/malformed(throw)/
+command-missing(undefined)/sentinel(throw); linux uri-list decode/
+comments/CRLF/malformed/non-file/listed-but-empty, WSL runs the Linux
+legs; win32 lines + FullName mapping + mid-loop sentinel; termux null;
+reader `{platform, env, run}` seam like `readClipboardImage`; plus a
+darwin-only named-pasteboard integration test that runs the real JXA
+(items incl. space/quote paths, legacy fallback, fresh board).
+`repl-tui.test.ts` — file-path precedence (image reader untouched),
+bash quoting (incl. a leading-whitespace draft), punctuation and
+trailing boundary spaces, control-char drop, reader-failure abort,
+undefined fall-through; the `pasteFilePaths` shell option (typed in
+makeShell) is stubbed in BOTH pre-existing Ctrl+V tests — otherwise the
+real osascript runs. `repl.test.ts` — the end-to-end line-start
+submission through `handleLine` (machine harness; makeShell only
+records `onLine`). `repl-commands.test.ts` — parseCommand guard cases
+(incl. the skill: exemption) + the byte-pinned /help golden (HELP_KEYS
+gains the Ctrl+V line — updated consciously).
+
+Docs, same batch (AGENTS.md): `docs/images.md` + zh-CN — Ctrl+V order
+(files → image → text), Finder reality, Cmd+V note, and reconcile the
+"Windows is not supported yet" line with the shipped win32 readers
+(verify wording against code reality, not aspiration — review P3);
+`HELP_KEYS` line.
+
+Acceptance: Finder copy of `/Users/z/Desktop/image copy.png` pastes that
+exact path (spaces intact) and the model reads the real image; screenshot
+paste unchanged (tmp path); a line starting with an absolute path
+submits; `npm test` + `npm run lint` green.

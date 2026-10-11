@@ -18,7 +18,12 @@ import {
 	TUI,
 	truncateToWidth,
 } from "../tui.js";
-import { type ClipboardImage, readClipboardImage, writeClipboardImageToTmp } from "./clipboard-image.js";
+import {
+	type ClipboardImage,
+	readClipboardFilePaths,
+	readClipboardImage,
+	writeClipboardImageToTmp,
+} from "./clipboard-image.js";
 import { Fold } from "./components/fold.js";
 import { SectionRule } from "./components/section-rule.js";
 import { flattenTitle, TitleCountdown } from "./components/title-countdown.js";
@@ -79,6 +84,11 @@ export interface TuiShellOptions extends LineInputEvents {
 	/** M13 batch 2: Ctrl+V image paste. Reads the system clipboard, writes
 	 *  a tmp file, inserts the path at the cursor. Injected in tests. */
 	pasteImage?: () => Promise<ClipboardImage | null>;
+	/** M13 §14.8: Ctrl+V file-path leg — Finder/file-manager file copies
+	 *  paste their real paths as text (the icon-image reader never runs for
+	 *  them). Injected in tests — the default really runs
+	 *  osascript/wl-paste/powershell. */
+	pasteFilePaths?: () => Promise<string[] | null | undefined>;
 	/** Text fallback when the clipboard has no image (Ctrl+V). Injected in
 	 *  tests — the default really runs pbpaste/xclip (review P1-2). */
 	pasteText?: () => Promise<string | null>;
@@ -421,10 +431,10 @@ export class TuiShell implements LineInput {
 				// pickers — checked after filterKey, which owns printables there.
 				if (this.selector.numberKey?.(data) === true) return { consume: true };
 			}
-			// Ctrl+V (M13 batch 2, pi's app.clipboard.pasteImage): read the system
-			// clipboard — an image becomes a tmp-file path at the cursor; text
-			// pastes as text. An open selector keeps its keys; bracketed paste
-			// (terminal Cmd+V) never reaches here.
+			// Ctrl+V (M13 batch 2 + §14.8, pi's app.clipboard.pasteImage order):
+			// copied file paths paste as their real paths, an image becomes a
+			// tmp-file path at the cursor, text pastes as text. An open selector
+			// keeps its keys; bracketed paste (terminal Cmd+V) never reaches here.
 			if (this.selector === null && matchesKey(data, "ctrl+v")) {
 				void this.handlePasteImage();
 				return { consume: true };
@@ -877,12 +887,28 @@ export class TuiShell implements LineInput {
 		});
 	}
 
-	/** Ctrl+V handler (M13 batch 2): image → tmp path at the cursor, text →
-	 *  plain insert. Errors are silent (no clipboard permission, headless
-	 *  session) — pi parity. */
+	/** Ctrl+V handler (M13 batch 2 + §14.8): copied file paths → real paths
+	 *  at the cursor (pi parity — the icon-image reader never starts for
+	 *  them), image → tmp path, text → plain insert. Errors are silent (no
+	 *  clipboard permission, headless session) — D11. */
 	private async handlePasteImage(): Promise<void> {
 		if (this.editor === null) return;
 		try {
+			const readPaths = this.options.pasteFilePaths ?? readClipboardFilePaths;
+			let filePaths: string[] | null | undefined;
+			try {
+				filePaths = await readPaths();
+			} catch {
+				return; // ran but unusable — abort, never fall through (§14.8)
+			}
+			if (filePaths !== null && filePaths !== undefined && filePaths.length > 0) {
+				// A control character in any path drops the whole paste (pi
+				// parity) — the editor buffer must not take escapes.
+				if (filePaths.some((p) => /\p{Cc}/u.test(p))) return;
+				this.editor.insertTextAtCursor(this.composePathInsert(filePaths));
+				this.tui?.requestRender();
+				return;
+			}
 			const reader = this.options.pasteImage ?? readClipboardImage;
 			const image = await reader();
 			if (image) {
@@ -898,6 +924,24 @@ export class TuiShell implements LineInput {
 		} catch {
 			// silently ignore clipboard errors (may not have permission, etc.)
 		}
+	}
+
+	/** pi insertion shape (interactive-mode.ts:3132-3151, §14.8):
+	 *  newline-joined paths; space-joined shell-quoted under the bang
+	 *  passthrough (`!` after trimStart — the editor trims at submit);
+	 *  one boundary space when the adjacent character is not whitespace. */
+	private composePathInsert(filePaths: string[]): string {
+		const editor = this.editor;
+		if (editor === null) return filePaths.join("\n");
+		const cursor = editor.getCursor();
+		const currentLine = editor.getText().split("\n")[cursor.line] ?? "";
+		const before = cursor.col > 0 ? (currentLine[cursor.col - 1] ?? "") : "";
+		const after = currentLine[cursor.col] ?? "";
+		const leading = before !== "" && !/\s/.test(before) ? " " : "";
+		const trailing = after !== "" && !/\s/.test(after) ? " " : "";
+		const bang = editor.getText().trimStart().startsWith("!");
+		const body = bang ? filePaths.map(quoteIfNeeded).join(" ") : filePaths.join("\n");
+		return `${leading}${body}${trailing}`;
 	}
 
 	/**
@@ -1448,6 +1492,13 @@ export class TuiShell implements LineInput {
 		this.askContainer.removeChild(this.askLine);
 		this.askLine = null;
 	}
+}
+
+/** pi quoteIfNeeded parity (interactive-mode.ts:331, §14.8): raw when
+ *  every character is shell-safe, else single-quoted with '\'' escapes. */
+function quoteIfNeeded(value: string): string {
+	if (value.length > 0 && !/[^a-zA-Z0-9_\-./~:@]/.test(value)) return value;
+	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /** Best-effort plain-text clipboard read for the Ctrl+V text fallback

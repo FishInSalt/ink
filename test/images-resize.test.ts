@@ -19,7 +19,10 @@ import { loadSettings, saveSettings } from "../src/core/settings.js";
 import { detectSupportedImageMimeType } from "../src/core/tools/image-sniff.js";
 import { createReadTool } from "../src/core/tools/read.js";
 import {
+	DARWIN_PATHS_JXA,
 	extensionForImageMimeType,
+	parseUriList,
+	readClipboardFilePaths,
 	readClipboardImage,
 	writeClipboardImageToTmp,
 } from "../src/repl/clipboard-image.js";
@@ -563,6 +566,235 @@ describe("M13-2 clipboard matrix", () => {
 		const back = await readFile(written);
 		expect(back.equals(PNG)).toBe(true);
 	});
+});
+
+// ---------------------------------------------------------------------------
+// §14.8 clipboard file paths
+// ---------------------------------------------------------------------------
+
+describe("§14.8 clipboard file paths", () => {
+	it("darwin: file URLs parse to decoded paths (JXA JSON)", async () => {
+		const calls: Array<{ cmd: string; args: readonly string[] }> = [];
+		const run = (cmd: string, args: readonly string[]): Promise<Buffer | undefined> => {
+			calls.push({ cmd, args });
+			return Promise.resolve(Buffer.from(JSON.stringify(["/tmp/My Photos/photo.png"])));
+		};
+		const paths = await readClipboardFilePaths({ platform: "darwin", run: run as Runner });
+		expect(paths).toEqual(["/tmp/My Photos/photo.png"]);
+		expect(calls[0]?.cmd).toBe("osascript");
+	});
+
+	it("darwin: empty array → null (ran clean, no file URLs)", async () => {
+		const run = (): Promise<Buffer | undefined> => Promise.resolve(Buffer.from("[]"));
+		expect(await readClipboardFilePaths({ platform: "darwin", run: run as Runner })).toBeNull();
+	});
+
+	it("darwin: malformed output throws — the caller aborts instead of falling through", async () => {
+		const run = (): Promise<Buffer | undefined> => Promise.resolve(Buffer.from("not json"));
+		await expect(readClipboardFilePaths({ platform: "darwin", run: run as Runner })).rejects.toThrow(
+			"unusable",
+		);
+	});
+
+	it("darwin: osascript absent → undefined (reader unavailable; image leg intact)", async () => {
+		const run = (): Promise<Buffer | undefined> => Promise.resolve(undefined);
+		expect(await readClipboardFilePaths({ platform: "darwin", run: run as Runner })).toBeUndefined();
+	});
+
+	it("linux wayland: uri-list negotiated, decoded, junk lines skipped", async () => {
+		const uriList = [
+			"# comment",
+			"file:///tmp/a%20b.png",
+			"file://localhost/tmp/c.png",
+			"https://example.com/x.png",
+			"file:///tmp/bad%ZZ.png",
+			"file://remotehost/tmp/skip.png",
+			"",
+		].join("\r\n");
+		const run = (cmd: string, args: readonly string[]): Promise<Buffer | undefined> => {
+			if (cmd === "wl-paste") {
+				return Promise.resolve(
+					args.includes("--list-types") ? Buffer.from("text/plain\ntext/uri-list\n") : Buffer.from(uriList),
+				);
+			}
+			return Promise.resolve(undefined);
+		};
+		const paths = await readClipboardFilePaths({
+			platform: "linux",
+			env: { WAYLAND_DISPLAY: "wayland-0" } as NodeJS.ProcessEnv,
+			run: run as Runner,
+		});
+		expect(paths).toEqual(["/tmp/a b.png", "/tmp/c.png"]);
+	});
+
+	it("linux wayland: a listed uri-list with an empty read is null, no xclip retry", async () => {
+		const calls: string[] = [];
+		const run = (cmd: string, args: readonly string[]): Promise<Buffer | undefined> => {
+			calls.push(cmd);
+			if (cmd === "wl-paste") {
+				return Promise.resolve(
+					args.includes("--list-types") ? Buffer.from("text/uri-list\n") : Buffer.alloc(0),
+				);
+			}
+			return Promise.resolve(undefined);
+		};
+		const paths = await readClipboardFilePaths({
+			platform: "linux",
+			env: { WAYLAND_DISPLAY: "wayland-0" } as NodeJS.ProcessEnv,
+			run: run as Runner,
+		});
+		expect(paths).toBeNull();
+		expect(calls).not.toContain("xclip");
+	});
+
+	it("linux: wl-paste absent falls to xclip TARGETS negotiation", async () => {
+		const calls: Array<{ cmd: string; args: readonly string[] }> = [];
+		const run = (cmd: string, args: readonly string[]): Promise<Buffer | undefined> => {
+			calls.push({ cmd, args });
+			if (cmd === "xclip") {
+				return Promise.resolve(
+					args.includes("TARGETS") ? Buffer.from("text/uri-list\n") : Buffer.from("file:///tmp/d.png"),
+				);
+			}
+			return Promise.resolve(undefined);
+		};
+		const paths = await readClipboardFilePaths({
+			platform: "linux",
+			env: { WAYLAND_DISPLAY: "wayland-0" } as NodeJS.ProcessEnv,
+			run: run as Runner,
+		});
+		expect(paths).toEqual(["/tmp/d.png"]);
+		const read = calls.find((c) => c.args.includes("text/uri-list"));
+		expect(read?.cmd).toBe("xclip");
+	});
+
+	it("linux WSL: the Linux legs run (wl-paste consulted)", async () => {
+		const calls: string[] = [];
+		const run = (cmd: string): Promise<Buffer | undefined> => {
+			calls.push(cmd);
+			if (cmd === "wl-paste") return Promise.resolve(Buffer.alloc(0));
+			return Promise.resolve(undefined);
+		};
+		const paths = await readClipboardFilePaths({
+			platform: "linux",
+			env: { WSL_DISTRO_NAME: "Ubuntu" } as NodeJS.ProcessEnv,
+			run: run as Runner,
+		});
+		expect(paths).toBeNull();
+		expect(calls).toContain("wl-paste");
+	});
+
+	it("win32: FileDropList lines (FullName-mapped) return verbatim", async () => {
+		const calls: string[] = [];
+		const run = (cmd: string): Promise<Buffer | undefined> => {
+			calls.push(cmd);
+			return Promise.resolve(Buffer.from("C:\\Users\\z\\a b.png\r\nC:\\x.png\r\n"));
+		};
+		const paths = await readClipboardFilePaths({ platform: "win32", run: run as Runner });
+		expect(paths).toEqual(["C:\\Users\\z\\a b.png", "C:\\x.png"]);
+		expect(calls[0]).toBe("powershell");
+	});
+
+	it("termux: null, nothing spawned", async () => {
+		const calls: string[] = [];
+		const run = (cmd: string): Promise<Buffer | undefined> => {
+			calls.push(cmd);
+			return Promise.resolve(undefined);
+		};
+		expect(
+			await readClipboardFilePaths({
+				platform: "darwin",
+				env: { TERMUX_VERSION: "1" } as NodeJS.ProcessEnv,
+				run: run as Runner,
+			}),
+		).toBeNull();
+		expect(calls).toHaveLength(0);
+	});
+
+	it("parseUriList: decode/comments/hosts/non-file/malformed rules", () => {
+		expect(
+			parseUriList(
+				[
+					"# c",
+					"file:///tmp/a%20b.png",
+					"file://localhost/tmp/c.png",
+					"http://x/y",
+					"file:///bad%Q.png",
+					"",
+				].join("\n"),
+			),
+		).toEqual(["/tmp/a b.png", "/tmp/c.png"]);
+	});
+
+	it("darwin: a script-error sentinel throws (aborts, never falls through)", async () => {
+		const run = (): Promise<Buffer | undefined> =>
+			Promise.resolve(Buffer.from("INK_PATHS_ERROR TypeError: boom"));
+		await expect(readClipboardFilePaths({ platform: "darwin", run: run as Runner })).rejects.toThrow(
+			"script error",
+		);
+	});
+
+	it("win32: a mid-loop sentinel among paths still throws", async () => {
+		const run = (): Promise<Buffer | undefined> =>
+			Promise.resolve(Buffer.from("C:\\ok.png\r\nINK_PATHS_ERROR boom\r\n"));
+		await expect(readClipboardFilePaths({ platform: "win32", run: run as Runner })).rejects.toThrow(
+			"script error",
+		);
+	});
+
+	// The real JXA against a named pasteboard — the run-stub cases above cannot
+	// catch bridging/escaping bugs in the script itself (review finding). The
+	// production script reads the general pasteboard; only that line is swapped.
+	it.skipIf(process.platform !== "darwin")(
+		"darwin JXA integration: named pasteboard — items, legacy fallback, fresh",
+		async () => {
+			const { execFile } = await import("node:child_process");
+			const { promisify } = await import("node:util");
+			const exec = promisify(execFile);
+			const name = `ink-test-${process.pid}-${Date.now()}`;
+			const osa = (script: string) =>
+				exec("osascript", ["-l", "JavaScript", "-e", script], { timeout: 15000 });
+			const readPathsScript = async (): Promise<string> => {
+				const script = DARWIN_PATHS_JXA.replace(
+					"$.NSPasteboard.generalPasteboard",
+					`$.NSPasteboard.pasteboardWithName('${name}')`,
+				);
+				const { stdout } = await osa(script);
+				return stdout.trim();
+			};
+			try {
+				await osa(`
+ObjC.import('AppKit');
+const pb = $.NSPasteboard.pasteboardWithName('${name}');
+pb.clearContents;
+const a = $.NSMutableArray.array;
+a.addObject($.NSURL.fileURLWithPath('/tmp/My Photos/photo.png'));
+a.addObject($.NSURL.fileURLWithPath("/tmp/quote'back.png"));
+pb.writeObjects(a);
+`);
+				expect(JSON.parse(await readPathsScript())).toEqual([
+					"/tmp/My Photos/photo.png",
+					"/tmp/quote'back.png",
+				]);
+
+				await osa(`
+ObjC.import('AppKit');
+const pb = $.NSPasteboard.pasteboardWithName('${name}');
+pb.clearContents;
+pb.setPropertyListForType($.NSArray.arrayWithObject('/tmp/legacy-one.png'), 'NSFilenamesPboardType');
+`);
+				expect(JSON.parse(await readPathsScript())).toEqual(["/tmp/legacy-one.png"]);
+
+				await osa(`ObjC.import('AppKit'); $.NSPasteboard.pasteboardWithName('${name}').clearContents;`);
+				expect(JSON.parse(await readPathsScript())).toEqual([]);
+			} finally {
+				// Best-effort release; the name carries the pid, a leak is inert.
+				await osa(
+					`ObjC.import('AppKit'); $.NSPasteboard.pasteboardWithName('${name}').releaseGlobally();`,
+				).catch(() => undefined);
+			}
+		},
+	);
 });
 
 // ---------------------------------------------------------------------------

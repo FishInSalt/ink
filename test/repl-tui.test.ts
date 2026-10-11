@@ -223,6 +223,7 @@ function makeShell(options?: {
 	historyPath?: string;
 	toolColorResolver?: (name: string) => import("../src/repl/tool-colors.js").ToolColor | undefined;
 	pasteImage?: () => Promise<import("../src/repl/clipboard-image.js").ClipboardImage | null>;
+	pasteFilePaths?: () => Promise<string[] | null | undefined>;
 	pasteText?: () => Promise<string | null>;
 }) {
 	const terminal = new FakeTerminal();
@@ -235,6 +236,7 @@ function makeShell(options?: {
 		historyPath: options?.historyPath,
 		toolColorResolver: options?.toolColorResolver,
 		pasteImage: options?.pasteImage,
+		pasteFilePaths: options?.pasteFilePaths,
 		pasteText: options?.pasteText,
 		onLine: (line, mode) => {
 			events.push(`line:${mode ?? "steer"}:${line}`);
@@ -6452,12 +6454,13 @@ describe("queue parity: review findings", () => {
 	});
 });
 
-// ── Ctrl+V clipboard image paste (M13 batch 2) ────────────────────────────
+// ── Ctrl+V clipboard paste (M13 batch 2 + §14.8) ──────────────────────────
 
-describe("TuiShell ctrl+v image paste", () => {
+describe("TuiShell ctrl+v clipboard paste", () => {
 	it("inserts the tmp-file path at the cursor and consumes the key", async () => {
 		const { terminal, shell } = makeShell({
 			pasteImage: async () => ({ bytes: new Uint8Array([1, 2, 3]), mimeType: "image/png" }),
+			pasteFilePaths: async () => null,
 		});
 		shell.start();
 		terminal.data("\x16"); // ctrl+v through the real stdin splitter
@@ -6473,12 +6476,137 @@ describe("TuiShell ctrl+v image paste", () => {
 		// runs pbpaste and the developer's clipboard leaks into the test.
 		const { terminal, shell } = makeShell({
 			pasteImage: async () => null,
+			pasteFilePaths: async () => null,
 			pasteText: async () => null,
 		});
 		shell.start();
 		terminal.data("\x16");
 		await new Promise((r) => setTimeout(r, 10));
 		expect(shell.getText() ?? "").toBe("");
+		shell.close();
+	});
+
+	it("§14.8: file paths take precedence — the image reader never runs", async () => {
+		let imageRead = false;
+		const { terminal, shell } = makeShell({
+			pasteFilePaths: async () => ["/tmp/photo.png"],
+			pasteImage: async () => {
+				imageRead = true;
+				return null;
+			},
+		});
+		shell.start();
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toBe("/tmp/photo.png");
+		expect(imageRead).toBe(false);
+		shell.close();
+	});
+
+	it("§14.8: multiple files join with newlines (non-bang)", async () => {
+		const { terminal, shell } = makeShell({
+			pasteFilePaths: async () => ["/tmp/a.png", "/tmp/b.png"],
+		});
+		shell.start();
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toBe("/tmp/a.png\n/tmp/b.png");
+		shell.close();
+	});
+
+	it("§14.8: punctuation before the cursor gets a separating space (pi parity)", async () => {
+		const { terminal, shell } = makeShell({ pasteFilePaths: async () => ["/tmp/photo.png"] });
+		shell.start();
+		terminal.data("Review:");
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toBe("Review: /tmp/photo.png");
+		shell.close();
+	});
+
+	it("§14.8: a bang draft shell-quotes and space-joins paths (pi parity)", async () => {
+		const { terminal, shell } = makeShell({
+			pasteFilePaths: async () => ["/tmp/My Photos/photo.png", "/tmp/plain.png"],
+		});
+		shell.start();
+		terminal.data("! cat");
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toBe("! cat '/tmp/My Photos/photo.png' /tmp/plain.png");
+		shell.close();
+	});
+
+	it("§14.8: a control character in any path drops the whole paste", async () => {
+		let imageRead = false;
+		const esc = String.fromCharCode(27);
+		const bel = String.fromCharCode(7);
+		const { terminal, shell } = makeShell({
+			pasteFilePaths: async () => [`/tmp/photo${esc}]0;unsafe${bel}.png`],
+			pasteImage: async () => {
+				imageRead = true;
+				return null;
+			},
+			pasteText: async () => null,
+		});
+		shell.start();
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toBe("");
+		expect(imageRead).toBe(false);
+		shell.close();
+	});
+
+	it("§14.8: a reader failure aborts — never falls through to the image leg", async () => {
+		let imageRead = false;
+		const { terminal, shell } = makeShell({
+			pasteFilePaths: async () => {
+				throw new Error("boom");
+			},
+			pasteImage: async () => {
+				imageRead = true;
+				return null;
+			},
+		});
+		shell.start();
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toBe("");
+		expect(imageRead).toBe(false);
+		shell.close();
+	});
+
+	it("§14.8: an unavailable reader (undefined) falls through to the image leg", async () => {
+		const { terminal, shell } = makeShell({
+			pasteFilePaths: async () => undefined,
+			pasteImage: async () => ({ bytes: new Uint8Array([1, 2, 3]), mimeType: "image/png" }),
+		});
+		shell.start();
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toContain("ink-clipboard-");
+		shell.close();
+	});
+
+	it("§14.8: a bang draft with leading whitespace still quotes (trimStart keying)", async () => {
+		const { terminal, shell } = makeShell({
+			pasteFilePaths: async () => ["/tmp/My Photos/photo.png"],
+		});
+		shell.start();
+		terminal.data(" ! cat");
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toBe(" ! cat '/tmp/My Photos/photo.png'");
+		shell.close();
+	});
+
+	it("§14.8: pasting before existing text gets a trailing boundary space", async () => {
+		const { terminal, shell } = makeShell({ pasteFilePaths: async () => ["/tmp/photo.png"] });
+		shell.start();
+		terminal.data("x");
+		terminal.data("\x1b[D"); // left arrow — cursor before "x"
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toBe("/tmp/photo.png x");
 		shell.close();
 	});
 });

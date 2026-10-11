@@ -152,13 +152,25 @@ function thinkingMetaForRunner(runner: Runner): ReturnType<typeof thinkingMetaFo
 	return thinkingMetaFor(provider, modelId);
 }
 
-/** "/model glm-4.6 extra" → { name: "model", args: "glm-4.6 extra" }; non-slash → null. */
+/** "/model glm-4.6 extra" → { name: "model", args: "glm-4.6 extra" }; non-slash → null.
+ *  A candidate name containing "/" is not a command (§14.8): no command-name
+ *  source allows one (built-ins, extension NAME_PATTERN, md names; skill
+ *  names may, and are exempted via the skill: prefix), so an absolute path
+ *  pasted at line start ("/var/…/ink-clipboard-….png") is a message for the
+ *  model, never a slash command. */
 export function parseCommand(line: string): { name: string; args: string } | null {
 	if (line[0] !== "/") return null; // leading space (" /foo") makes it plain text
 	const rest = line.slice(1);
 	const spaceAt = rest.search(/\s/);
-	if (spaceAt === -1) return { name: rest, args: "" };
-	return { name: rest.slice(0, spaceAt), args: rest.slice(spaceAt).trim() };
+	const name = spaceAt === -1 ? rest : rest.slice(0, spaceAt);
+	// A candidate name containing "/" is not a command (§14.8): the name
+	// sources are slash-free (built-ins, extension NAME_PATTERN, md names)
+	// except skill frontmatter names, which are warn-not-block — the
+	// skill: prefix stays exempt so a registered "skill:a/b" remains
+	// invocable. Everything else with "/" is a message (paths).
+	if (name.includes("/") && !name.startsWith("skill:")) return null;
+	if (spaceAt === -1) return { name, args: "" };
+	return { name, args: rest.slice(spaceAt).trim() };
 }
 
 const HELP_KEYS = `
@@ -168,6 +180,8 @@ Keys:
   Esc                abort the running turn (same as Ctrl+C); with the
                      autocomplete panel open, one Esc closes the panel only
   Ctrl+D             exit
+  Ctrl+V             paste the clipboard — copied files paste as their
+                     real paths, an image as a tmp-file path, text as text
   Ctrl+O             expand/collapse all folds (tool calls/results, errors, diffs, reasoning)
   Alt+O              switch readable/raw arguments for structured tool calls;
                      visible when expanded; does not expand or collapse folds

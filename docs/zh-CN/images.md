@@ -18,10 +18,14 @@ jpg/png/gif/webp 会以内联方式发送图片——模型可以看见它。检
 
 - **打印模式**：`ink @shot.png @notes.txt "what is this"`——文本文件以
   `<file>` 块嵌入，图片经由同一处理器附加到第一条消息。
-- **TUI**：Ctrl+V 会把剪贴板图片以临时文件路径的形式粘贴到光标处
-  （macOS 通过 osascript，Linux 通过 wl-paste/xclip，Windows 通过
-  PowerShell——Windows 暂未支持）；找不到图片时则粘贴纯文本。也可以把
-  文件拖入终端，或直接输入路径。
+- **TUI**：Ctrl+V 把剪贴板内容按此顺序粘到光标处：复制的文件（如在
+  Finder 里 Cmd+C）粘贴为其真实路径——图片*文件*绝不会粘贴成文件图标；
+  图像数据（截图）写入临时文件并插入其路径；否则粘贴纯文本。请用
+  Ctrl+V——Cmd+V 被终端占用，且该通道只能传递文本。读取方式：macOS 走
+  osascript、Linux 走 wl-paste/xclip、Windows 走 PowerShell（尽力而为的
+  读取器，尚未在该平台验证）。以绝对路径开头的行（例如粘贴进来的临时
+  路径）按普通消息提交，永远不会被当作斜杠命令。也可以把文件拖入
+  终端，或直接输入路径。
 
 ## 超大图片处理（缩放阶梯）
 
