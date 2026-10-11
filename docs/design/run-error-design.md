@@ -18,7 +18,7 @@ normative event, without touching the `run_end` contract.
 
 M4's normative constraint — "the four-event set is normative; additions require
 a named consumer (M5+)" (`m4-extensions-design.md` §17 risk 7, echoed at
-`src/extensions/types.ts:135`) — applies. The named consumer is the shipped
+`src/extensions/types.ts:245-246`) — applies. The named consumer is the shipped
 task-timer extension, whose header already documents the exact gap this batch
 closes ("Known limitations" item 1). No extension-side workaround exists: on
 the crash path the extension's interval simply never gets cleared, because
@@ -56,8 +56,8 @@ Non-goals:
 
 ### 3.1 The crash path today
 
-- `runner.ts:1494-1503`: `emitRunEnd` runs only after `runAgentLoop` returns.
-  The catch at `runner.ts:1504` logs `run_error` to the session log and
+- `runner.ts:1500-1505`: `emitRunEnd` runs only after `runAgentLoop` returns.
+  The catch at `runner.ts:1507-1509` logs `run_error` to the session log and
   rethrows; no extension event fires.
 - `task-timer-design.md` §3.1 documents the same site and cites the explicit
   site comment ("a provider throw skips this emit entirely").
@@ -65,21 +65,21 @@ Non-goals:
   run_start but no run_end". This test is AMENDED (not deleted): it gains a
   probe subscribing to `run_error` and asserts the emission too — a conscious
   contract change, recorded by the amendment.
-- `types.ts:231-233`: the `RunStartEvent` doc block says consumers must
+- `types.ts:230-233`: the `RunStartEvent` doc block says consumers must
   tolerate an unpaired `run_start`; `task-timer.mjs`'s header lists the residue
   as limitation 1.
 
 ### 3.2 The emission site must be `runTurn`'s catch — not `runTurnInner`'s
 
-`runTurn` (runner.ts:1286) → `runTurnOrRecoverFromOverflow` (runner.ts:1339) →
+`runTurn` (runner.ts:1280) → `runTurnOrRecoverFromOverflow` (runner.ts:1331) →
 `runTurnInner` (runner.ts:1398). The failure surface is wider than
 `runTurnInner`:
 
 - `runTurnOrRecoverFromOverflow`'s recovery can fail at three sites inside its
-  catch (compaction throw at runner.ts:1352, nothing-safe-to-compact at
-  :1359, retry-overflow guidance at :1387) — none re-enter `runTurnInner`'s
+  catch (compaction throw at runner.ts:1353, nothing-safe-to-compact at
+  :1356, retry-overflow guidance at :1380-1388) — none re-enter `runTurnInner`'s
   catch.
-- `runTurnInner`'s own catch (runner.ts:1504) rethrows into
+- `runTurnInner`'s own catch (runner.ts:1507) rethrows into
   `runTurnOrRecoverFromOverflow`'s overflow filter.
 - Emitting in `runTurnInner`'s catch would therefore miss overflow-recovery
   compaction crashes entirely.
@@ -92,26 +92,31 @@ sees every crash shape exactly once.
 
 ### 3.3 Subagent crashes never surface here
 
-`src/core/subagent.ts:414-459` catches child loop crashes (provider/protocol
+`src/core/subagent.ts:414-464` catches child loop crashes (provider/protocol
 error or overflow) and converts them to a settled `"crash"` outcome — the task
 tool renders an error tool result. A child crash never propagates as a throw
 through the parent's `runTurn`, so `run_error` stays top-level-only by
-construction, symmetric with `run_start`/`run_end`.
+construction, symmetric with `run_start`/`run_end`. A second backstop holds
+even if `runSubagent` itself threw: `runTool`'s never-reject invariant converts
+any throw into an `isError` tool result inside the child loop.
 
 ### 3.4 The registry already generalizes
 
-`KNOWN_EVENTS` (registry.ts:39-45) and `fireObservers` (registry.ts:613-623)
+`KNOWN_EVENTS` (registry.ts:35-41) and `fireObservers` (registry.ts:613-623)
 dispatch by name; an error event needs only registration, an emitter, and type
 plumbing. Handler isolation (try/catch + promise catch + `reportHandlerError`)
-already covers sync throws and rejections.
+covers sync throws and rejections in *handlers* — not throws on the emit path
+itself (§6.1).
 
 ### 3.5 Crash shapes are bounded
 
 A crash is a provider/protocol throw (`agent-loop.ts` API failures: auth,
 rate-limit, network, malformed stream), an overflow-recovery failure (after its
-one retry), or a compaction failure. All reach `runTurn`'s catch once. Aborts
-return `{stopReason: "aborted"}` instead of throwing (loop.ts:222) and get
-`run_end`, not `run_error`.
+one retry), or a compaction failure. All reach `runTurn`'s rejection handler
+once. Aborts return `{stopReason: "aborted"}` instead of throwing (loop.ts:226)
+and get `run_end`, not `run_error`. In-run compaction is never aborted into a
+throw: both in-run `compactAndSplice` calls pass no signal (runner.ts:1349,
+1467), so the "summarizer aborted" throw is unreachable on the run path.
 
 ## 4. Design
 
@@ -126,7 +131,8 @@ return `{stopReason: "aborted"}` instead of throwing (loop.ts:222) and get
 export interface RunErrorEvent {
 	type: "run_error";
 	/** The crash message — the thrown error's `message` (or String of it),
-	 *  first line, capped at 160 chars (the registry's `firstLine` cap). */
+	 *  first line, capped at 160 chars (`firstLine`'s default cap,
+	 *  `format.ts:18`). */
 	message: string;
 }
 ```
@@ -134,6 +140,10 @@ export interface RunErrorEvent {
 Semantics (the short list a reviewer should attack):
 
 1. **Exactly once per crashed run.** One crash shape, one site, one emit.
+   Enforced by a try/catch around the emission body: a throwing coercion
+   (e.g. a non-coercible thrown `Symbol`) must not swallow `run_error` AND
+   replace the host's rejection with a `TypeError` (§6.1) — `throw err`
+   runs unconditionally.
 2. **Mutual exclusivity with `run_end`.** `runTurn` returns a result or
    rejects; the catch and the success-path emit are structurally exclusive.
 3. **Top-level only.** By construction (§3.3).
@@ -147,7 +157,7 @@ Semantics (the short list a reviewer should attack):
 
 ### 4.2 Emission site (exact)
 
-In `runTurn` (runner.ts:1286), change the final statement from
+In `runTurn` (runner.ts:1280), change the final statement from
 
 ```ts
 return this.runTurnOrRecoverFromOverflow(...).finally(() => health?.dispose());
@@ -159,10 +169,17 @@ to
 return this.runTurnOrRecoverFromOverflow(...).then(
 	(result) => result,
 	(err) => {
-		this.options.extensions?.emitRunError({
-			type: "run_error",
-			message: firstLine(errorText(err), 160),
-		});
+		try {
+			this.options.extensions?.emitRunError({
+				type: "run_error",
+				message: firstLine(errorText(err), 160),
+			});
+		} catch {
+			// The emission must never mask the crash itself: a throwing
+			// coercion (non-coercible Symbol) or emitter must not swallow
+			// run_error AND replace the host's rejection with a TypeError
+			// (design §4.1 item 1 / §6.1) — `throw err` below is unconditional.
+		}
 		throw err;
 	},
 ).finally(() => health?.dispose());
@@ -200,17 +217,28 @@ between crash and next run, where no `run_error` was observed by the new
 process. The `/new`/`/resume` residue limitation stays (session-lifecycle
 events remain a non-goal).
 
-Header: drop the first "Known limitations" bullet (the crash residue) and add
-a line to the Timing model note: crash ⇒ `run_error` stops the timer and
-paints `failed after M:SS` (replaces the old "never emits run_end" wording).
+Header: drop the first "Known limitations" bullet (the crash residue) AND
+reword the third bullet ("on the crash path nothing clears it" — false once
+`run_error` clears the tick; the `unref` advice itself stays correct for
+host-kill and early-throw shapes). Add a line to the Timing model note:
+crash ⇒ `run_error` stops the timer and paints `failed after M:SS`.
+
+The "already-open round" branch in `run_start` stays — its residual value is
+the uncovered shapes (a sync preamble throw between `emitRunStart` and the
+promise; a report-sink throw), not host restarts (a restarted process
+re-instantiates the module with `roundStart === null`, so the branch cannot
+fire there).
 
 ### 4.5 Docs
 
 - `src/extensions/types.ts` JSDoc (§4.3 item 1).
 - `docs/extensions.md` (and `docs/zh-CN/extensions.md`) event enumeration: add
   `run_error` beside `run_end`.
-- `docs/extensions.md` — the "Extension API" section that lists the five
-  events; verify the zh-CN mirror carries the same row.
+- `docs/extensions.md:83-85` / `docs/zh-CN/extensions.md:74-75` — the "run_end
+  does NOT fire if the run crashes / tolerate an unpaired run_start"
+  sentence gets the same `run_error` pointer `RunStartEvent`'s JSDoc gets
+  (types.ts:230-233), so JSDoc and user docs stay aligned in the exact spot
+  being edited.
 - `examples/README.md` task-timer row: the description already says "live
   per-run timer"; no change needed. — verified: `examples/README.md:34` lists
   the file; description unchanged.
@@ -226,34 +254,52 @@ Runner tests (extend `test/runner.test.ts`, the `run_start` describe block):
 1. Provider crash ⇒ `run_start`, then `run_error` (with `message` first-line
    capped), and still no `run_end`. Amends the existing
    "documented asymmetry" test (§3.1).
-2. Overflow path: pre-prompt compaction throws ⇒ one `run_start`, one
-   `run_error` (source: overflow-recovery), no `run_end`. Locks §3.2 — the
-   site sees crash shapes `runTurnInner`'s catch misses.
-3. Abort ⇒ `run_start`, `run_end` with `stopReason: "aborted"`, and NO
+2. Overflow-recovery FAILURE: the first provider call throws a live
+   `context_length_exceeded`, and the recovery summarizer call also throws ⇒
+   exactly one `run_start`, one `run_error` whose `message` is the GUIDANCE
+   text ("…compaction failed:…" / "still over the window…"), no `run_end`.
+   Pinning the guidance message content is what distinguishes the outer
+   emission site from the rejected inner-catch alternative (§5.6): an
+   inner-catch emission would fire on the FIRST throw and carry the raw
+   overflow message instead. (A pre-prompt-compaction throw alone does NOT
+   lock this — its catch lives inside `runTurnInner`.)
+3. Overflow-recovery SUCCESS ⇒ `run_end` and NO `run_error` — the one path
+   where a naive inner-catch emission would double-fire. Extend the existing
+   test (`runner.test.ts:534-571`, "overflow recovery: one run_start and one
+   run_end") with a no-`run_error` assertion.
+4. Abort ⇒ `run_start`, `run_end` with `stopReason: "aborted"`, and NO
    `run_error` — the negative case, guarding against a `finally`-style
    mistake.
-4. Subagent provider crash ⇒ parent emits `run_start` + `run_end` only (the
+5. Subagent provider crash ⇒ parent emits `run_start` + `run_end` only (the
    child crash becomes a tool result); NO parent `run_error`. Locks §3.3.
-5. Ordering: `run_error` fires before the promise rejects to the host (probe
+6. Ordering: `run_error` fires before the promise rejects to the host (probe
    records event sequence vs an outer `await expect(...).rejects`).
+7. Emission isolation: a thrown non-coercible value (e.g. `Symbol()` via a
+   provider whose `complete` does `throw Symbol()`) still rejects to the host
+   with the ORIGINAL value and does not crash the process (§4.1 item 1).
 
 Registry tests (extend `test/extensions-registry.test.ts`):
 
-6. `subscribe("run_error", fn)` accepted (KNOWN_EVENTS grows); an unknown
+8. `subscribe("run_error", fn)` accepted (KNOWN_EVENTS grows); an unknown
    event name still rejected.
-7. A throwing `run_error` handler is isolated (reported, not rethrown into
+9. A throwing `run_error` handler is isolated (reported, not rethrown into
    the runner) — mirroring the `tool_end` isolation tests.
+10. AMEND the existing KNOWN_EVENTS diagnostic pin (`extensions-registry.test.ts:281`,
+   `'…known events: tool_call tool_end message_end run_start run_end'`) to
+   include `run_error` — the same amendment treatment `runner.test.ts:689`
+   gets (§2 goal 4's "existing suite stays green" is a contract-change
+   amendment, not a silent pass).
 
 Consumer tests (extend `test/extension-status.test.ts`):
 
-8. `run_start` → advance fake timers → `run_error` ⇒ status is
+11. `run_start` → advance fake timers → `run_error` ⇒ status is
    `failed after M:SS` (fake clock), interval cleared (no further paints), and
    a subsequent `run_start` resets cleanly.
-9. `run_error` with no open round ⇒ no status change, no throw.
+12. `run_error` with no open round ⇒ no status change, no throw.
 
 E2E (`test/cli-run-start.test.ts` already runs a crashed print-mode run):
 
-10. Keep it as-is (it pins liveness: the unref'd interval doesn't block exit);
+13. Keep it as-is (it pins liveness: the unref'd interval doesn't block exit);
     assert additionally that the crashed run's output/status mentions the
     failure — or leave untouched if wiring a probe costs more than it pins
     (implementer's judgment; note the decision in the PR description).
@@ -300,10 +346,20 @@ E2E (`test/cli-run-start.test.ts` already runs a crashed print-mode run):
    Handlers are synchronous (registry emits never await), bounded by handler
    count; the same class as `run_start`/`run_end`. fireObservers isolation
    covers throwers.
+1b. **A throwing coercion inside the emission swallows both halves of the
+   contract.** `String(err)` throws for a non-coercible thrown value (e.g. a
+   `Symbol`): without a guard, `run_error` never fires AND the host's
+   rejection carries a `TypeError` instead of the crash. Mitigation: the
+   emission body is wrapped in try/catch and `throw err` runs unconditionally
+   (§4.1 item 1, §4.2). fireObservers isolation covers *handler* throws only —
+   not the emit path itself; the guard is what closes that gap.
 2. *test/runner.test.ts:689* **already locks "no run_end on crash" — this
    batch makes a documented contract change.** Mitigation: the test is
    amended, not deleted; the new assertion documents the new behavior; the
    design doc supersession note (§4.5) records the decision.
+2b. *test/extensions-registry.test.ts:281* **pins the exact KNOWN_EVENTS
+   diagnostic string — adding `run_error` changes it.** Mitigation: amend that
+   pin alongside (§4.6 item 10) — same treatment as finding 2.
 3. **A future observer treats `run_error` as fatal.** Out of scope; handler
    isolation bounds the damage; JSDoc says "crash message, not actionable
    state".
@@ -313,7 +369,8 @@ E2E (`test/cli-run-start.test.ts` already runs a crashed print-mode run):
    status channel is generic; task-timer's own handler paints the failure
    line.
 6. **Docs drift.** Two docs pages enumerate events; both get the new row
-   (§4.5). The zh-CN mirror must not be forgotten.
+   (§4.5). The zh-CN mirror must not be forgotten — including the "tolerate an
+   unpaired run_start" sentence both carry.
 
 ## 7. Review focus for the adversarial reviewer
 
@@ -326,3 +383,23 @@ E2E (`test/cli-run-start.test.ts` already runs a crashed print-mode run):
 5. Test list (§4.6) — does any test pin the wrong thing?
 6. Scope discipline (§2) — does anything here leak toward the rejected
    alternatives (§5)?
+
+## 8. Review record
+
+- Rev1 (fresh-context adversarial review): verdict **NOT CLOSED** — 5 × P2,
+  3 × N, 0 × P1. Architecture confirmed on all eight attack axes (mutual
+  exclusivity across every `runTurn` path, the outer rejection handler as the
+  single vantage over all five crash shapes, double subagent containment,
+  abort ⇒ `run_end` only, consumer state machine, `run_end`/notify.mjs
+  untouched). P2s: test item 2 tested the wrong site (inner-catch shapes, not
+  recovery-path throws — re-specified to the overflow-then-summarizer-throw
+  scenario with the guidance-message pin); missing recovery-success negative
+  (added as item 3); `extensions-registry.test.ts:281` KNOWN_EVENTS diagnostic
+  pin breaks unlisted (added §4.6 item 10, risk 2b); emission body not
+  isolated against non-coercible throws (guard added to §4.1/§4.2, risk 1b,
+  test item 7); task-timer header bullet 3 goes stale (rewording added to
+  §4.4). Ns: §4.4's host-restart rationale confused (fixed — residual value is
+  the uncovered shapes); docs "tolerate unpaired run_start" sentence gets the
+  pointer too (§4.5); citation drift corrected throughout (types.ts:245-246
+  for the normative set; runner.ts:1280/1331/1500-1509; loop.ts:226;
+  subagent.ts:414-464; registry.ts:35-41; format.ts:18). All incorporated.
