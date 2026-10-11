@@ -401,9 +401,9 @@ the clipboard matrix in `clipboard-image.ts`, command-based (D8):
   TARGETS` negotiation; per-line rules: `file://` only, percent-decoded
   (malformed decodes skip that line), comments/blanks/non-file schemes
   skipped, CRLF tolerated; listed-but-empty read → null, no retry. The
-  Linux legs run under WSL as well (WSLg's Linux-side clipboard); the
-  Windows-side FileDropList + wslpath conversion is carried
-  (untestable here) — review scope note: no image-leg asymmetry.
+  Linux legs run under WSL as well (WSLg's Linux-side clipboard) and
+  mirror the image leg's WSL handling; the Windows-side FileDropList +
+  wslpath conversion is the carried item (untestable here).
 - win32: `Get-Clipboard -Format FileDropList` mapped through `.FullName`
   (FileInfo objects — bare output formats as a truncated table when
   piped) with a plain-string fallback → one path per line.
@@ -419,8 +419,9 @@ unusable) aborts the paste silently (D11) and never falls through —
 pi's "no fall-through to the icon" test parity.
 
 Insertion mirrors pi — including its bash branch: verbatim
-`join("\n")` normally; when the composed text starts with `!` (the
-bang passthrough, `repl.ts:487`) paths are space-joined and
+`join("\n")` normally; when the composed text trimStart'ed starts with
+`!` (the bang passthrough — `repl.ts:490`; the editor trims at submit,
+`editor.js:1059`) paths are space-joined and
 shell-quoted by pi's `quoteIfNeeded` port (`interactive-mode.ts:331`:
 raw under `/^[a-zA-Z0-9_\-./~:@]*$/`, else `'…'` with `'\''` escapes).
 One leading/trailing space when the adjacent character is not whitespace
