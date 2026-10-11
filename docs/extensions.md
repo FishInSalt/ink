@@ -82,8 +82,8 @@ started in), `version` (Ink version string), and `origin`
   messages.
 - `run_start` — fires once when a top-level run begins. `run_end` does NOT
   fire if the run crashes (provider throw) — the crashed run fires `run_error`
-  instead, so tolerate an unpaired `run_start` only if you ignore `run_error`.
-  Subagent runs emit neither.
+  instead: treat `run_error` (or the next `run_start`) as the close of an open
+  run. Subagent runs emit neither.
 - `run_error` — fires exactly once when a top-level run crashes (provider
   throw, or a failed overflow-recovery/compaction): the paired `run_end`
   never arrives, and the payload is the crash `message` (first line, capped).
