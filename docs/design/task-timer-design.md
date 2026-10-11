@@ -455,6 +455,13 @@ shows a stale `running …`. Accepted: crashes are rare, the transcript shows th
 error prominently, and pi's ecosystem treats `session_*` cleanup as the proper
 hook — which imp deliberately does not add in this batch (non-goal §2).
 
+> **Superseded (2026-10-11, `feat/run-error-event`):** the `run_error` batch
+> (`docs/design/run-error-design.md`) added the crash-side event this section
+> accepted living without — task-timer now stops its tick and paints
+> `failed after M:SS` on crash. Everything else here stands: `run_end`'s
+> contract is unchanged ("ended, not crashed"), `notify.mjs` is untouched,
+> and the `/new`/`/resume` residue still waits on session-lifecycle events.
+
 ## 6. Alternatives considered
 
 1. **Per-call handler `ctx` with `ctx.ui.setStatus` (pi's pattern).** Rejected:

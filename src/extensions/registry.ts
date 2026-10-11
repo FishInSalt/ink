@@ -18,6 +18,7 @@ import type {
 	MessageEndEvent,
 	RegisteredExtensionCommand,
 	RunEndEvent,
+	RunErrorEvent,
 	RunStartEvent,
 	ToolCallEvent,
 	ToolCallHandler,
@@ -38,6 +39,7 @@ const KNOWN_EVENTS: readonly ExtensionEventName[] = [
 	"message_end",
 	"run_start",
 	"run_end",
+	"run_error",
 ];
 
 /** Defensive cap on a stored status text (code points — slicing by code
@@ -535,6 +537,12 @@ export class ExtensionRegistry {
 
 	emitRunEnd(event: RunEndEvent): void {
 		this.fireObservers("run_end", event);
+	}
+
+	/** #run-error: the crash-side pair of run_start — fires exactly once per
+	 *  crashed top-level run, never alongside run_end (design §4.1). */
+	emitRunError(event: RunErrorEvent): void {
+		this.fireObservers("run_error", event);
 	}
 
 	// --- extension status channel (shell-facing; task-timer design §4.2) ---

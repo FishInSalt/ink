@@ -422,4 +422,35 @@ describe("examples/extensions/task-timer.mjs", () => {
 		fake.handlers.get("run_end")?.();
 		expect(fake.statuses).toEqual([]);
 	});
+
+	it("#run-error: a crashed run stops the tick and paints failed after M:SS (design §4.6 item 11)", async () => {
+		const taskTimer = await loadTaskTimer();
+		const fake = timerFake();
+		taskTimer(fake.api);
+		fake.handlers.get("run_start")?.();
+		fake.advance(7000);
+		fake.paint();
+		expect(fake.statuses.at(-1)).toBe("running 0:07");
+
+		fake.handlers.get("run_error")?.();
+		expect(fake.clearSpy).toHaveBeenCalledTimes(1); // the tick is stopped
+		expect(fake.statuses.at(-1)).toBe("failed after 0:07");
+		// no further paints: the interval is cleared, so an advance + manual paint
+		// attempt changes nothing (paintFn closure still guards on roundStart too)
+		fake.advance(5000);
+		fake.paint();
+		expect(fake.statuses.at(-1)).toBe("failed after 0:07");
+
+		// the next run resets cleanly — no residue from the crashed round
+		fake.handlers.get("run_start")?.();
+		expect(fake.statuses.at(-1)).toBe("running 0:00");
+	});
+
+	it("#run-error: run_error with no open round is a no-op (design §4.6 item 12)", async () => {
+		const taskTimer = await loadTaskTimer();
+		const fake = timerFake();
+		taskTimer(fake.api);
+		fake.handlers.get("run_error")?.();
+		expect(fake.statuses).toEqual([]);
+	});
 });

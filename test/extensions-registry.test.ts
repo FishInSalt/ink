@@ -278,9 +278,26 @@ describe("extension registry — isolated emits (design §6.1/§7.2)", () => {
 			registry.subscribe("tool_end", "not a function");
 		});
 		expect(lines).toEqual([
-			'ink: extension odd could not subscribe to "session_shutdown" — known events: tool_call tool_end message_end run_start run_end',
+			// #run-error: run_error joined KNOWN_EVENTS — the enumerated list grew.
+			'ink: extension odd could not subscribe to "session_shutdown" — known events: tool_call tool_end message_end run_start run_end run_error',
 			"ink: extension odd could not subscribe to tool_end — handler must be a function, got string",
 		]);
+	});
+
+	it("#run-error: run_error subscribes and reaches its observers; a throwing handler is isolated (design §4.6 items 8-9)", () => {
+		const lines: string[] = [];
+		const seen: unknown[] = [];
+		const registry = new ExtensionRegistry({ report: (l) => lines.push(l) });
+		loadOne(registry, "crash-probe", () => {
+			registry.subscribe("run_error", (event) => {
+				seen.push(event);
+				throw new Error("handler exploded");
+			});
+		});
+		// a throwing handler is isolated — reported, never rethrown into the host
+		expect(() => registry.emitRunError({ type: "run_error", message: "boom" })).not.toThrow();
+		expect(seen).toEqual([{ type: "run_error", message: "boom" }]);
+		expect(lines.some((l) => l.includes("crash-probe") && l.includes("handler exploded"))).toBe(true);
 	});
 });
 

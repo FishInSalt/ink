@@ -81,9 +81,14 @@ started in), `version` (Ink version string), and `origin`
 - `tool_end` / `message_end` — observers: results and finalized assistant
   messages.
 - `run_start` — fires once when a top-level run begins. `run_end` does NOT
-  fire if the run crashes (provider throw) — tolerate an unpaired
-  `run_start` (e.g. reset state on the next one). Subagent runs emit
-  neither.
+  fire if the run crashes (provider throw) — the crashed run fires `run_error`
+  instead, so tolerate an unpaired `run_start` only if you ignore `run_error`.
+  Subagent runs emit neither.
+- `run_error` — fires exactly once when a top-level run crashes (provider
+  throw, or a failed overflow-recovery/compaction): the paired `run_end`
+  never arrives, and the payload is the crash `message` (first line, capped).
+  Mutually exclusive with `run_end`; aborted runs get `run_end`, not this.
+  Subagent crashes surface as tool results and never fire it.
 
 ## Failure behavior
 
