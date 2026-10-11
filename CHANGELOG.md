@@ -8,6 +8,41 @@ their original release identity.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-11
+
+### Added
+
+- **`run_error` extension event.** A top-level run that dies to a provider
+  throw (or a failed overflow-recovery/compaction) now fires `run_error`
+  — exactly once per crashed run, mutually exclusive with `run_end`,
+  never on aborts, never from subagent crashes (a child crash stays a tool
+  result). The payload is the crash `message` (first line, capped). The
+  shipped `task-timer` extension stops its footer timer and paints
+  `failed after M:SS` instead of ticking forever — previously a crashed
+  run left `running …` on screen until the next run started (the
+  documented `run_end` asymmetry; that contract is unchanged).
+
+### Changed
+
+- **Clipboard pastes real file paths.** Pasting a Finder/Explorer file
+  copy (Ctrl+V) now inserts the real file paths — read per-platform
+  (macOS `public.file-url` + `NSFilenamesPboardType`, Linux
+  `text/uri-list` via `wl-paste`/`xclip`, Windows FileDropList) and
+  joined with newlines; a bang draft shell-quotes and space-joins them.
+  Paste order becomes file paths → image → text, and a path containing
+  control characters drops the whole paste. A pasted absolute path at
+  line start now submits to the model instead of being mistaken for a
+  command (a candidate name containing `/` is never a command, except
+  the `skill:` prefix scheme).
+
+### Fixed
+
+- **Finder file copies no longer paste their icon.** The defect behind
+  the change above: a Finder **file** copy used to insert a tmp path
+  whose bytes were the file's *icon* image — the path reader now runs
+  before the image leg, and a garbage-reading platform reader aborts the
+  paste instead of falling through to the icon image.
+
 ## [0.3.0] - 2026-10-10
 
 ### Added

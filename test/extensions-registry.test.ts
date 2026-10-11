@@ -289,7 +289,7 @@ describe("extension registry — isolated emits (design §6.1/§7.2)", () => {
 		const seen: unknown[] = [];
 		const registry = new ExtensionRegistry({ report: (l) => lines.push(l) });
 		loadOne(registry, "crash-probe", () => {
-			registry.subscribe("run_error", (event) => {
+			registry.subscribe("run_error", (event: unknown) => {
 				seen.push(event);
 				throw new Error("handler exploded");
 			});

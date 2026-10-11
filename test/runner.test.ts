@@ -705,7 +705,7 @@ describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
 		registry.beginExtension("probe", "cli");
 		registry.subscribe("run_start", () => events.push("run_start"));
 		registry.subscribe("run_end", () => events.push("run_end"));
-		registry.subscribe("run_error", (event) => {
+		registry.subscribe("run_error", (event: { type: string; message: string }) => {
 			events.push("run_error");
 			seen.push(event.message);
 		});
@@ -743,7 +743,7 @@ describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
 		const seen: string[] = [];
 		const registry = new ExtensionRegistry();
 		registry.beginExtension("probe", "cli");
-		registry.subscribe("run_error", (event) => seen.push(event.message));
+		registry.subscribe("run_error", (event: { type: string; message: string }) => seen.push(event.message));
 		registry.commitExtension();
 		const long = `first line ${"x".repeat(400)}`;
 		const provider: LLMProvider = {
@@ -772,7 +772,7 @@ describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
 		// chars and appends an ellipsis (format.ts:18) — 161 total, one line only
 		expect(seen[0]).toBe(`first line ${"x".repeat(160 - "first line ".length)}…`);
 		expect(seen[0]).not.toContain("second line");
-		expect(seen[0].length).toBe(161);
+		expect(seen[0]?.length).toBe(161);
 	});
 
 	it("#run-error: overflow-recovery FAILURE — one run_error carrying the GUIDANCE text (design §4.6 item 2)", async () => {
@@ -783,7 +783,7 @@ describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
 		registry.beginExtension("probe", "cli");
 		registry.subscribe("run_start", () => events.push("run_start"));
 		registry.subscribe("run_end", () => events.push("run_end"));
-		registry.subscribe("run_error", (event) => {
+		registry.subscribe("run_error", (event: { type: string; message: string }) => {
 			events.push("run_error");
 			seen.push(event.message);
 		});
@@ -874,7 +874,7 @@ describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
 		const seen: string[] = [];
 		const registry = new ExtensionRegistry();
 		registry.beginExtension("probe", "cli");
-		registry.subscribe("run_error", (event) => seen.push(event.message));
+		registry.subscribe("run_error", (event: { type: string; message: string }) => seen.push(event.message));
 		registry.commitExtension();
 		const provider: LLMProvider = {
 			name: "throws-a-string",
