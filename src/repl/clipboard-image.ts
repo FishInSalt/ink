@@ -122,36 +122,50 @@ out;`;
  *  percent-decodes — with a legacy NSFilenamesPboardType fallback for
  *  apps that offer none. Emits a JSON array; the reader treats non-JSON
  *  output as a bug signal (abort), never as "no files". */
-const DARWIN_PATHS_JXA = `
+/** macOS file paths (§14.8): per-item public.file-url — NSURL.path
+ *  percent-decodes — with a legacy NSFilenamesPboardType fallback for
+ *  apps that offer none. Only file: URLs qualify (NSURL.path silently
+ *  coerces any scheme, e.g. https → "/x.png"). A crash emits an
+ *  INK_PATHS_ERROR sentinel instead of exiting nonzero: an osascript
+ *  nonzero exit is indistinguishable from "osascript absent" and would
+ *  fall through to the icon-image leg. Exported for the named-pasteboard
+ *  integration test. */
+export const DARWIN_PATHS_JXA = `
 ObjC.import('AppKit');
-const pb = $.NSPasteboard.generalPasteboard;
-const out = [];
-const items = pb.pasteboardItems;
-if (!items.isNil()) {
-  for (let i = 0; i < items.count; i++) {
-    const item = items.objectAtIndex(i);
-    const urlStr = item.stringForType('public.file-url');
-    if (!urlStr.isNil()) {
-      const url = $.NSURL.URLWithString(urlStr);
-      if (!url.isNil()) {
-        const p = url.path;
-        if (!p.isNil()) out.push(ObjC.unwrap(p));
+let result = '[]';
+try {
+  const pb = $.NSPasteboard.generalPasteboard;
+  const out = [];
+  const items = pb.pasteboardItems;
+  if (!items.isNil()) {
+    for (let i = 0; i < items.count; i++) {
+      const item = items.objectAtIndex(i);
+      const urlStr = item.stringForType('public.file-url');
+      if (!urlStr.isNil() && String(urlStr.js).indexOf('file:') === 0) {
+        const url = $.NSURL.URLWithString(urlStr);
+        if (!url.isNil()) {
+          const p = url.path;
+          if (!p.isNil()) out.push(ObjC.unwrap(p));
+        }
       }
     }
   }
-}
-if (out.length === 0) {
-  try {
-    const legacy = pb.propertyListForType('NSFilenamesPboardType');
-    if (!legacy.isNil()) {
-      const arr = ObjC.deepUnwrap(legacy);
-      if (Array.isArray(arr)) {
-        for (const p of arr) if (typeof p === 'string' && p !== '') out.push(p);
+  if (out.length === 0) {
+    try {
+      const legacy = pb.propertyListForType('NSFilenamesPboardType');
+      if (!legacy.isNil()) {
+        const arr = ObjC.deepUnwrap(legacy);
+        if (Array.isArray(arr)) {
+          for (const p of arr) if (typeof p === 'string' && p !== '') out.push(p);
+        }
       }
-    }
-  } catch (e) {}
+    } catch (e) {}
+  }
+  result = JSON.stringify(out);
+} catch (err) {
+  result = 'INK_PATHS_ERROR ' + (err && err.message ? err.message : String(err));
 }
-JSON.stringify(out);`;
+result;`;
 
 const WIN32_PS = `
 Add-Type -AssemblyName System.Windows.Forms;
@@ -167,11 +181,15 @@ if ($null -ne $img) {
  *  yields FileInfo objects whose bare output formats as a truncated
  *  table when piped — map .FullName (plain strings pass through). */
 const WIN32_FILE_LIST_PS = `
-$items = Get-Clipboard -Format FileDropList;
-if ($null -ne $items) {
-  foreach ($f in $items) {
-    if ($f -is [System.IO.FileInfo]) { $f.FullName } else { $f.ToString() }
+try {
+  $items = Get-Clipboard -Format FileDropList;
+  if ($null -ne $items) {
+    foreach ($f in $items) {
+      if ($f -is [System.IO.FileInfo]) { $f.FullName } else { $f.ToString() }
+    }
   }
+} catch {
+  'INK_PATHS_ERROR ' + $_.Exception.Message
 }`;
 
 export interface ReadClipboardImageOptions {
@@ -198,6 +216,9 @@ async function readViaDarwinPaths(run: typeof runClipboardCommand): Promise<stri
 	if (out === undefined) return undefined; // osascript missing/failed
 	const text = out.toString("utf-8").trim();
 	if (text === "") return null; // ran fine, nothing on the pasteboard
+	if (text.startsWith("INK_PATHS_ERROR")) {
+		throw new Error("clipboard file-path script error");
+	}
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(text);
@@ -396,12 +417,16 @@ async function readViaPowerShellPaths(run: typeof runClipboardCommand): Promise<
 		timeoutMs: DEFAULT_POWERSHELL_TIMEOUT_MS,
 	});
 	if (out === undefined) return undefined;
-	const paths = out
+	const lines = out
 		.toString("utf-8")
 		.split(/\r?\n/)
 		.map((l) => l.trim())
 		.filter(Boolean);
-	return paths.length > 0 ? paths : null;
+	// A mid-loop crash can print paths first, then the sentinel — scan lines.
+	if (lines.some((l) => l.startsWith("INK_PATHS_ERROR"))) {
+		throw new Error("clipboard file-path script error");
+	}
+	return lines.length > 0 ? lines : null;
 }
 
 /**

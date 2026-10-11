@@ -6574,4 +6574,39 @@ describe("TuiShell ctrl+v clipboard paste", () => {
 		expect(imageRead).toBe(false);
 		shell.close();
 	});
+
+	it("§14.8: an unavailable reader (undefined) falls through to the image leg", async () => {
+		const { terminal, shell } = makeShell({
+			pasteFilePaths: async () => undefined,
+			pasteImage: async () => ({ bytes: new Uint8Array([1, 2, 3]), mimeType: "image/png" }),
+		});
+		shell.start();
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toContain("ink-clipboard-");
+		shell.close();
+	});
+
+	it("§14.8: a bang draft with leading whitespace still quotes (trimStart keying)", async () => {
+		const { terminal, shell } = makeShell({
+			pasteFilePaths: async () => ["/tmp/My Photos/photo.png"],
+		});
+		shell.start();
+		terminal.data(" ! cat");
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toBe(" ! cat '/tmp/My Photos/photo.png'");
+		shell.close();
+	});
+
+	it("§14.8: pasting before existing text gets a trailing boundary space", async () => {
+		const { terminal, shell } = makeShell({ pasteFilePaths: async () => ["/tmp/photo.png"] });
+		shell.start();
+		terminal.data("x");
+		terminal.data("\x1b[D"); // left arrow — cursor before "x"
+		terminal.data("\x16");
+		await new Promise((r) => setTimeout(r, 20));
+		expect(shell.getText() ?? "").toBe("/tmp/photo.png x");
+		shell.close();
+	});
 });

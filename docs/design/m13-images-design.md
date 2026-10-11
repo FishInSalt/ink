@@ -394,19 +394,29 @@ addendum (branch `fix/clipboard-file-paths`, base 2cc6f2c):
 the clipboard matrix in `clipboard-image.ts`, command-based (D8):
 
 - darwin: a second JXA script — per pasteboard item
-  `stringForType("public.file-url")` → `NSURL.path` (percent-decoded);
+  `stringForType("public.file-url")` → `NSURL.path` (percent-decoded;
+  only `file:` URLs — NSURL.path coerces any scheme);
   `propertyListForType("NSFilenamesPboardType")` as fallback when items
-  carry none (legacy apps). Emits a JSON array.
+  carry none (legacy apps). Emits a JSON array; a script crash emits an
+  `INK_PATHS_ERROR` sentinel and the reader throws instead of falling
+  through (an osascript nonzero exit would read as "reader absent").
 - linux: `text/uri-list` via `wl-paste --list-types` / `xclip -t
   TARGETS` negotiation; per-line rules: `file://` only, percent-decoded
   (malformed decodes skip that line), comments/blanks/non-file schemes
-  skipped, CRLF tolerated; listed-but-empty read → null, no retry. The
-  Linux legs run under WSL as well (WSLg's Linux-side clipboard) and
-  mirror the image leg's WSL handling; the Windows-side FileDropList +
-  wslpath conversion is the carried item (untestable here).
+  skipped, CRLF tolerated; listed-but-empty read → null, no retry. pi's
+  native `getFilePaths` is darwin/win32-only
+  (`packages/tui/src/native-platform.ts:55-56`) — the Linux leg is ink's
+  command-based extension (D8-consistent). The Linux legs run under WSL
+  as well (WSLg's Linux-side clipboard) and mirror the image leg's WSL
+  handling; the Windows-side FileDropList + wslpath conversion is
+  carried (untestable here). WSL residual (review-confirmed): a Windows
+  file copy still reaches the image leg's PowerShell fallback — it
+  finds no bitmap (CF_HDROP carries none), so the icon-class defect does
+  not recur there.
 - win32: `Get-Clipboard -Format FileDropList` mapped through `.FullName`
   (FileInfo objects — bare output formats as a truncated table when
-  piped) with a plain-string fallback → one path per line.
+  piped) with a plain-string fallback → one path per line; the script
+  wraps in try/catch (mid-loop sentinel still throws in the reader).
 - TERMUX/unknown platform → null.
 
 Failure semantics follow the `readClipboardImage` precedent
@@ -432,29 +442,35 @@ snapshot was rejected (entangles two return shapes and two test seams to
 save one osascript).
 
 **A path line is never a command.** Every command-name source is
-slash-free: built-ins, extension names under `NAME_PATTERN`
-(`^[a-z][a-z0-9_-]{0,63}$`, `extensions/registry.ts:315`), md-command
-names (`NAME_RE`, `commands-md.ts:62`) and skill commands `skill:<name>`
-(`skills.ts:509`). `parseCommand` gains one guard: a candidate name
-containing "/" returns null, so the line submits to the model.
-Consequences recorded: slash typos that contain another slash
-(`/help/`) now submit as messages instead of teaching; bare-word typos
-still teach; `/` alone stays a command.
+slash-free except skill names: built-ins, extension names under
+`NAME_PATTERN` (`^[a-z][a-z0-9_-]{0,63}$`, `extensions/registry.ts:315`)
+and md-command names (`NAME_RE`, `commands-md.ts:62`) cannot contain
+"/"; skill frontmatter names are warn-not-block (`skills.ts:77-95`,
+registered as `skill:<name>`, `skills.ts:509`) and may. The guard
+returns null for a candidate name containing "/" **unless it carries
+the `skill:` prefix** — a registered slash-containing skill name stays
+invocable (code-review finding). Consequences recorded: slash typos
+that contain another slash (`/help/`) now submit as messages instead of
+teaching; bare-word typos still teach; `/` alone stays a command.
 
-Tests (review-folded): `images-resize.test.ts` (clipboard matrix) —
-darwin JSON/legacy/clean-empty(null)/malformed(throw)/command-missing
-(undefined); linux uri-list decode/comments/CRLF/malformed/non-file/
-listed-but-empty, WSL runs the Linux legs; win32 lines + FullName
-mapping; termux null; reader `{platform, env, run}` seam like
-`readClipboardImage`. `repl-tui.test.ts` — file-path precedence (image
-reader untouched), bash-mode quoting, punctuation spacing, control-char
-drop; the new `pasteFilePaths` shell option (typed in makeShell) is
-stubbed in BOTH existing Ctrl+V tests (repl-tui.test.ts:6457, 6471 —
-otherwise the real osascript runs). `repl.test.ts` — the end-to-end
-line-start submission through `handleLine` (machine harness; makeShell
-only records `onLine`). `repl-commands.test.ts` — parseCommand guard
-cases + the byte-pinned /help golden (HELP_KEYS gains the Ctrl+V line —
-update the golden consciously, repl-commands.test.ts:287).
+Tests (review-folded, round 2): `images-resize.test.ts` (clipboard
+matrix) — darwin JSON/legacy/clean-empty(null)/malformed(throw)/
+command-missing(undefined)/sentinel(throw); linux uri-list decode/
+comments/CRLF/malformed/non-file/listed-but-empty, WSL runs the Linux
+legs; win32 lines + FullName mapping + mid-loop sentinel; termux null;
+reader `{platform, env, run}` seam like `readClipboardImage`; plus a
+darwin-only named-pasteboard integration test that runs the real JXA
+(items incl. space/quote paths, legacy fallback, fresh board).
+`repl-tui.test.ts` — file-path precedence (image reader untouched),
+bash quoting (incl. a leading-whitespace draft), punctuation and
+trailing boundary spaces, control-char drop, reader-failure abort,
+undefined fall-through; the `pasteFilePaths` shell option (typed in
+makeShell) is stubbed in BOTH pre-existing Ctrl+V tests — otherwise the
+real osascript runs. `repl.test.ts` — the end-to-end line-start
+submission through `handleLine` (machine harness; makeShell only
+records `onLine`). `repl-commands.test.ts` — parseCommand guard cases
+(incl. the skill: exemption) + the byte-pinned /help golden (HELP_KEYS
+gains the Ctrl+V line — updated consciously).
 
 Docs, same batch (AGENTS.md): `docs/images.md` + zh-CN — Ctrl+V order
 (files → image → text), Finder reality, Cmd+V note, and reconcile the

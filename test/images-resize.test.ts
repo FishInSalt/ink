@@ -19,6 +19,7 @@ import { loadSettings, saveSettings } from "../src/core/settings.js";
 import { detectSupportedImageMimeType } from "../src/core/tools/image-sniff.js";
 import { createReadTool } from "../src/core/tools/read.js";
 import {
+	DARWIN_PATHS_JXA,
 	extensionForImageMimeType,
 	parseUriList,
 	readClipboardFilePaths,
@@ -724,6 +725,76 @@ describe("§14.8 clipboard file paths", () => {
 			),
 		).toEqual(["/tmp/a b.png", "/tmp/c.png"]);
 	});
+
+	it("darwin: a script-error sentinel throws (aborts, never falls through)", async () => {
+		const run = (): Promise<Buffer | undefined> =>
+			Promise.resolve(Buffer.from("INK_PATHS_ERROR TypeError: boom"));
+		await expect(readClipboardFilePaths({ platform: "darwin", run: run as Runner })).rejects.toThrow(
+			"script error",
+		);
+	});
+
+	it("win32: a mid-loop sentinel among paths still throws", async () => {
+		const run = (): Promise<Buffer | undefined> =>
+			Promise.resolve(Buffer.from("C:\\ok.png\r\nINK_PATHS_ERROR boom\r\n"));
+		await expect(readClipboardFilePaths({ platform: "win32", run: run as Runner })).rejects.toThrow(
+			"script error",
+		);
+	});
+
+	// The real JXA against a named pasteboard — the run-stub cases above cannot
+	// catch bridging/escaping bugs in the script itself (review finding). The
+	// production script reads the general pasteboard; only that line is swapped.
+	it.skipIf(process.platform !== "darwin")(
+		"darwin JXA integration: named pasteboard — items, legacy fallback, fresh",
+		async () => {
+			const { execFile } = await import("node:child_process");
+			const { promisify } = await import("node:util");
+			const exec = promisify(execFile);
+			const name = `ink-test-${process.pid}-${Date.now()}`;
+			const osa = (script: string) =>
+				exec("osascript", ["-l", "JavaScript", "-e", script], { timeout: 15000 });
+			const readPathsScript = async (): Promise<string> => {
+				const script = DARWIN_PATHS_JXA.replace(
+					"$.NSPasteboard.generalPasteboard",
+					`$.NSPasteboard.pasteboardWithName('${name}')`,
+				);
+				const { stdout } = await osa(script);
+				return stdout.trim();
+			};
+			try {
+				await osa(`
+ObjC.import('AppKit');
+const pb = $.NSPasteboard.pasteboardWithName('${name}');
+pb.clearContents;
+const a = $.NSMutableArray.array;
+a.addObject($.NSURL.fileURLWithPath('/tmp/My Photos/photo.png'));
+a.addObject($.NSURL.fileURLWithPath("/tmp/quote'back.png"));
+pb.writeObjects(a);
+`);
+				expect(JSON.parse(await readPathsScript())).toEqual([
+					"/tmp/My Photos/photo.png",
+					"/tmp/quote'back.png",
+				]);
+
+				await osa(`
+ObjC.import('AppKit');
+const pb = $.NSPasteboard.pasteboardWithName('${name}');
+pb.clearContents;
+pb.setPropertyListForType($.NSArray.arrayWithObject('/tmp/legacy-one.png'), 'NSFilenamesPboardType');
+`);
+				expect(JSON.parse(await readPathsScript())).toEqual(["/tmp/legacy-one.png"]);
+
+				await osa(`ObjC.import('AppKit'); $.NSPasteboard.pasteboardWithName('${name}').clearContents;`);
+				expect(JSON.parse(await readPathsScript())).toEqual([]);
+			} finally {
+				// Best-effort release; the name carries the pid, a leak is inert.
+				await osa(
+					`ObjC.import('AppKit'); $.NSPasteboard.pasteboardWithName('${name}').releaseGlobally();`,
+				).catch(() => undefined);
+			}
+		},
+	);
 });
 
 // ---------------------------------------------------------------------------

@@ -154,15 +154,21 @@ function thinkingMetaForRunner(runner: Runner): ReturnType<typeof thinkingMetaFo
 
 /** "/model glm-4.6 extra" → { name: "model", args: "glm-4.6 extra" }; non-slash → null.
  *  A candidate name containing "/" is not a command (§14.8): no command-name
- *  source allows one (built-ins, extension NAME_PATTERN, md/skill names), so
- *  an absolute path pasted at line start ("/var/…/ink-clipboard-….png") is a
- *  message for the model, never a slash command. */
+ *  source allows one (built-ins, extension NAME_PATTERN, md names; skill
+ *  names may, and are exempted via the skill: prefix), so an absolute path
+ *  pasted at line start ("/var/…/ink-clipboard-….png") is a message for the
+ *  model, never a slash command. */
 export function parseCommand(line: string): { name: string; args: string } | null {
 	if (line[0] !== "/") return null; // leading space (" /foo") makes it plain text
 	const rest = line.slice(1);
 	const spaceAt = rest.search(/\s/);
 	const name = spaceAt === -1 ? rest : rest.slice(0, spaceAt);
-	if (name.includes("/")) return null; // an absolute path is a message (§14.8)
+	// A candidate name containing "/" is not a command (§14.8): the name
+	// sources are slash-free (built-ins, extension NAME_PATTERN, md names)
+	// except skill frontmatter names, which are warn-not-block — the
+	// skill: prefix stays exempt so a registered "skill:a/b" remains
+	// invocable. Everything else with "/" is a message (paths).
+	if (name.includes("/") && !name.startsWith("skill:")) return null;
 	if (spaceAt === -1) return { name, args: "" };
 	return { name, args: rest.slice(spaceAt).trim() };
 }

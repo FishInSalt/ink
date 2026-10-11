@@ -231,12 +231,14 @@ describe("parseCommand", () => {
 		expect(parseCommand("/exit")).toEqual({ name: "exit", args: "" });
 		expect(parseCommand(" /foo")).toBeNull(); // leading space → plain text for the model
 		expect(parseCommand("hello")).toBeNull();
-		// §14.8: a candidate name containing "/" is not a command (built-ins
-		// + extension NAME_PATTERN + md/skill names are slash-free), so a
-		// line-start pasted absolute path submits to the model instead.
+		// §14.8: a candidate name containing "/" is not a command (built-ins,
+		// extension NAME_PATTERN and md names are slash-free), so a line-start
+		// pasted absolute path submits to the model instead. Skill names come
+		// from warn-not-block frontmatter — the skill: prefix stays exempt.
 		expect(parseCommand("/var/folders/y5/x/ink-clipboard-abc.png")).toBeNull();
 		expect(parseCommand("/Users/z/Desktop/image copy.png")).toBeNull();
 		expect(parseCommand("/help/")).toBeNull();
+		expect(parseCommand("/skill:foo/bar")).toEqual({ name: "skill:foo/bar", args: "" });
 	});
 });
 
