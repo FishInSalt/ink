@@ -66,7 +66,7 @@ import type { Tool } from "./core/tools/types.js";
 import { createWriteTool } from "./core/tools/write.js";
 import type { ExtensionRegistry } from "./extensions/registry.js";
 import type { ExtensionFailure } from "./extensions/types.js";
-import { formatTokens, shorten, usageMoneySegment, VERSION } from "./format.js";
+import { firstLine, formatTokens, shorten, usageMoneySegment, VERSION } from "./format.js";
 import { compactionSettingsFor } from "./provider/compaction-settings.js";
 import { withLogging } from "./provider/logging.js";
 import { LOGIN_TARGETS } from "./provider/login-targets.js";
@@ -103,6 +103,12 @@ export const NO_MODEL_SEGMENT = "no model available — run /login to connect on
 export const NO_MODEL_SHORT = "no model — /login";
 export const NO_MODEL_SELECTED_SEGMENT = "no model selected — /model to choose one";
 export const NO_MODEL_SELECTED_SHORT = "no model — /model";
+
+// #run-error: module-private coercion for the crash-message payload — same
+// shape as registry.ts's private errorText (design §4.2).
+function runErrorText(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
 
 /** #startup-model-resolution (D6): the copy picker. Only meaningful while
  *  the current model is unusable; `hasConfiguredProviders` flips the pointer
@@ -1318,7 +1324,32 @@ class RunnerImpl implements Runner {
 			session,
 			modelReference,
 			health,
-		).finally(() => health?.dispose());
+		)
+			.then(
+				(result) => result,
+				// #run-error (design §4.2): the crash-side mirror of run_start — one
+				// vantage over every crash shape (the overflow-recovery throws below
+				// never pass through runTurnInner's catch). Mutually exclusive with
+				// run_end's emit by construction: this handler runs only on rejection.
+				(err) => {
+					try {
+						this.options.extensions?.emitRunError({
+							type: "run_error",
+							message: firstLine(runErrorText(err), 160),
+						});
+					} catch {
+						// The emission must never mask the crash itself: a throwing
+						// coercion (non-coercible null-prototype object) or emitter
+						// must not swallow run_error AND replace the host's rejection
+						// with a TypeError (design §4.1 item 1 / §6.1b) — `throw err`
+						// below is unconditional. Defense-in-depth: the inner catch's
+						// log line coerces first today, so this guard protects future
+						// changes there.
+					}
+					throw err;
+				},
+			)
+			.finally(() => health?.dispose());
 	}
 
 	/** #overflow-grace: a live "context window exceeded" provider error gets

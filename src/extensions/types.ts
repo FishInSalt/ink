@@ -148,6 +148,7 @@ export interface ExtensionApi {
 	on(event: "message_end", handler: (event: MessageEndEvent) => void): void;
 	on(event: "run_start", handler: (event: RunStartEvent) => void): void;
 	on(event: "run_end", handler: (event: RunEndEvent) => void): void;
+	on(event: "run_error", handler: (event: RunErrorEvent) => void): void;
 
 	/** Set this extension's status text for the TUI footer; undefined clears.
 	 *  Runtime method (like confirm): valid from event handlers, timers, and
@@ -230,7 +231,8 @@ export interface MessageEndEvent {
  *  synchronously on the run's critical path and must return promptly. Its pair
  *  is `run_end`, which does NOT fire if the run crashes (provider throw) —
  *  consumers must tolerate an unpaired `run_start` (e.g. reset state on the
- *  next one). Subagent runs emit neither event (task-timer design §4.1). */
+ *  next one); a crashed run fires `run_error` instead. Subagent runs emit
+ *  neither event (task-timer design §4.1). */
 export interface RunStartEvent {
 	type: "run_start";
 }
@@ -242,8 +244,27 @@ export interface RunEndEvent {
 	usage: Usage;
 }
 
+/** `run_error` fires when a top-level run crashes — the provider (or the
+ *  overflow-recovery/compaction path) threw, and the paired `run_end` will
+ *  never arrive. Exactly one `run_error` per crashed run. Mutually exclusive
+ *  with `run_end` for the same run: a run ends with either, never both.
+ *  Subagent runs emit neither this nor `run_start`/`run_end`. */
+export interface RunErrorEvent {
+	type: "run_error";
+	/** The crash message — the thrown error's `message` (or String of it),
+	 *  first line, capped at 160 chars (`firstLine`'s default cap,
+	 *  `format.ts:18`). */
+	message: string;
+}
+
 /** The normative event set (design §17 risk 7) — additions require a named consumer (M5+). */
-export type ExtensionEventName = "tool_call" | "tool_end" | "message_end" | "run_start" | "run_end";
+export type ExtensionEventName =
+	| "tool_call"
+	| "tool_end"
+	| "message_end"
+	| "run_start"
+	| "run_end"
+	| "run_error";
 
 /** All handler shapes, keyed by event name. */
 export interface ExtensionEventHandlerMap {
@@ -252,6 +273,7 @@ export interface ExtensionEventHandlerMap {
 	message_end: (event: MessageEndEvent) => void;
 	run_start: (event: RunStartEvent) => void;
 	run_end: (event: RunEndEvent) => void;
+	run_error: (event: RunErrorEvent) => void;
 }
 
 /** A slash command contributed by an extension, tagged with its source name. */

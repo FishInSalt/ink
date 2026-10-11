@@ -504,13 +504,16 @@ describe("Runner.newSession", () => {
 });
 
 describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
-	/** A registry with one "probe" extension recording observer-event order. */
+	/** A registry with one "probe" extension recording observer-event order.
+	 *  #run-error: run_error is subscribed too — the negative assertions
+	 *  (no run_error on success/abort/subagent) must be able to FAIL. */
 	function probeRegistry(events: string[]): ExtensionRegistry {
 		const registry = new ExtensionRegistry();
 		registry.beginExtension("probe", "cli");
 		registry.subscribe("run_start", () => events.push("run_start"));
 		registry.subscribe("message_end", () => events.push("message_end"));
 		registry.subscribe("run_end", () => events.push("run_end"));
+		registry.subscribe("run_error", () => events.push("run_error"));
 		registry.commitExtension();
 		return registry;
 	}
@@ -583,6 +586,10 @@ describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
 		expect(events.filter((e) => e === "run_end")).toHaveLength(1);
 		expect(events[0]).toBe("run_start");
 		expect(events.at(-1)).toBe("run_end");
+		// #run-error (design §4.6 item 3): recovery SUCCESS must not fire the
+		// crash event — the one path where an inner-catch emission would
+		// double-fire (first throw + successful run_end).
+		expect(events.filter((e) => e === "run_error")).toHaveLength(0);
 	});
 
 	it("#loop-health: the main monitor spans the overflow retry (no reset) — post-merge review finding 2", async () => {
@@ -684,11 +691,25 @@ describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
 		expect(result.stopReason).toBe("completed");
 		expect(events.filter((e) => e === "run_start")).toHaveLength(1);
 		expect(events.filter((e) => e === "run_end")).toHaveLength(1);
+		// #run-error: a subagent provider crash becomes an isError tool result
+		// (subagent.ts settles "crash"; runTool never rejects) — no parent
+		// run_error, no run_end skip.
+		expect(events.filter((e) => e === "run_error")).toHaveLength(0);
 	});
 
-	it("a provider crash emits run_start but no run_end (documented asymmetry, design §3.3)", async () => {
+	it("a provider crash emits run_start then run_error, never run_end (run-error design §4.6 item 1)", async () => {
 		const { baseDir, cwd } = await setup();
 		const events: string[] = [];
+		const seen: string[] = [];
+		const registry = new ExtensionRegistry();
+		registry.beginExtension("probe", "cli");
+		registry.subscribe("run_start", () => events.push("run_start"));
+		registry.subscribe("run_end", () => events.push("run_end"));
+		registry.subscribe("run_error", (event) => {
+			events.push("run_error");
+			seen.push(event.message);
+		});
+		registry.commitExtension();
 		const provider: LLMProvider = {
 			name: "always-fails",
 			// biome-ignore lint/correctness/useYield: the contract is an async generator; this fake must throw before any event
@@ -707,10 +728,176 @@ describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
 			sessionBaseDir: baseDir,
 			renderer: makeRenderer().renderer,
 			provider,
+			extensions: registry,
+		});
+		// #run-error (§4.6 item 6): the event fires BEFORE the host sees the
+		// rejection — recording happens inside the handler, so by the time the
+		// await below resolves the sequence is already complete.
+		await expect(runner.runTurn({ userMessage: "go" })).rejects.toThrow("provider exploded");
+		expect(events).toEqual(["run_start", "run_error"]);
+		expect(seen).toEqual(["provider exploded"]);
+	});
+
+	it("#run-error: the payload is first-line, 160-capped (design §4.1 item 6)", async () => {
+		const { baseDir, cwd } = await setup();
+		const seen: string[] = [];
+		const registry = new ExtensionRegistry();
+		registry.beginExtension("probe", "cli");
+		registry.subscribe("run_error", (event) => seen.push(event.message));
+		registry.commitExtension();
+		const long = `first line ${"x".repeat(400)}`;
+		const provider: LLMProvider = {
+			name: "throws-multiline",
+			// biome-ignore lint/correctness/useYield: the contract is an async generator; this fake must throw before any event
+			async *stream() {
+				throw new Error(`${long}\nsecond line never ships\nthird line neither`);
+			},
+		};
+		const runner = await createRunner({
+			cwd,
+			argv: [],
+			model: "test-model",
+			maxTokens: 1024,
+			maxTurns: 10,
+			noContextFiles: true,
+			noSession: true,
+			sessionBaseDir: baseDir,
+			renderer: makeRenderer().renderer,
+			provider,
+			extensions: registry,
+		});
+		await expect(runner.runTurn({ userMessage: "go" })).rejects.toThrow();
+		expect(seen).toHaveLength(1);
+		// collapsed to the first line AND capped: firstLine keeps the first 160
+		// chars and appends an ellipsis (format.ts:18) — 161 total, one line only
+		expect(seen[0]).toBe(`first line ${"x".repeat(160 - "first line ".length)}…`);
+		expect(seen[0]).not.toContain("second line");
+		expect(seen[0].length).toBe(161);
+	});
+
+	it("#run-error: overflow-recovery FAILURE — one run_error carrying the GUIDANCE text (design §4.6 item 2)", async () => {
+		const { baseDir, cwd } = await setup();
+		const events: string[] = [];
+		const seen: string[] = [];
+		const registry = new ExtensionRegistry();
+		registry.beginExtension("probe", "cli");
+		registry.subscribe("run_start", () => events.push("run_start"));
+		registry.subscribe("run_end", () => events.push("run_end"));
+		registry.subscribe("run_error", (event) => {
+			events.push("run_error");
+			seen.push(event.message);
+		});
+		registry.commitExtension();
+		let call = 0;
+		const provider: LLMProvider = {
+			name: "overflow-and-compaction-fail",
+			// biome-ignore lint/correctness/useYield: the contract is an async generator; this fake throws before any event
+			async *stream() {
+				call++;
+				if (call === 1) throw new Error('OpenAI API error 400: {"error":{"code":"context_length_exceeded"}}');
+				if (call === 2) throw new Error("summarizer exploded"); // the recovery compaction
+				throw new Error("unreachable");
+			},
+		};
+		const store = createSession(cwd, baseDir);
+		const big = "context ".repeat(6000); // compaction needs material beyond keepRecent
+		store.appendMessage(userMsg(`old work A ${big}`));
+		store.appendMessage(assistantText(`answer A ${big}`));
+		store.appendMessage(userMsg(`old work B ${big}`));
+		const runner = await createRunner({
+			cwd,
+			argv: [],
+			model: "test-model",
+			maxTokens: 1024,
+			maxTurns: 10,
+			noContextFiles: true,
+			noSession: false,
+			sessionBaseDir: baseDir,
+			resume: store.isPersisted ? store.header.id : undefined,
+			renderer: makeRenderer().renderer,
+			provider,
+			extensions: registry,
+		});
+		await expect(runner.runTurn({ userMessage: "please continue" })).rejects.toThrow();
+		expect(events).toEqual(["run_start", "run_error"]);
+		// The guidance form is the discriminator vs an inner-catch emission
+		// (which would carry the raw overflow 400 on the FIRST throw).
+		expect(seen[0]).toContain("compaction failed");
+		expect(seen[0]).not.toContain("context_length_exceeded");
+	});
+
+	it("#run-error: abort yields run_end only — never run_error (design §4.6 item 4)", async () => {
+		const { baseDir, cwd } = await setup();
+		const events: string[] = [];
+		const controller = new AbortController();
+		const provider: LLMProvider = {
+			name: "abort-mid-stream",
+			// biome-ignore lint/correctness/useYield: the contract is an async generator; this fake must end without yielding
+			async *stream(request) {
+				// Abort DURING the first stream call (the top-of-loop check at
+				// loop.ts:201 has already passed — this call really starts). A real
+				// provider converts undici's aborted-fetch rejection into a clean
+				// generator end via abortSafe (provider/shared.ts:31, wired inside
+				// every provider stream) — this fake mirrors that conversion so the
+				// loop sees a silent end: streamAssistant returns null ⇒ stopReason
+				// "aborted" ⇒ run_end, NOT run_error. The discrimination this test
+				// pins: an aborted run must never reach the crash emission.
+				controller.abort();
+				try {
+					throw Object.assign(new Error("request aborted"), { name: "AbortError" });
+				} catch (err) {
+					if (request.signal?.aborted) return; // abortSafe parity
+					throw err;
+				}
+			},
+		};
+		const runner = await createRunner({
+			cwd,
+			argv: [],
+			model: "test-model",
+			maxTokens: 1024,
+			maxTurns: 10,
+			noContextFiles: true,
+			noSession: true,
+			sessionBaseDir: baseDir,
+			renderer: makeRenderer().renderer,
+			provider,
 			extensions: probeRegistry(events),
 		});
-		await expect(runner.runTurn({ userMessage: "go" })).rejects.toThrow("provider exploded");
-		expect(events).toEqual(["run_start"]);
+		const result = await runner.runTurn({ userMessage: "go", signal: controller.signal });
+		expect(result.stopReason).toBe("aborted");
+		expect(events).toEqual(["run_start", "run_end"]);
+	});
+
+	it("#run-error: a bare non-Error throw value is coerced; the host rejection carries the original (design §4.6 item 7)", async () => {
+		const { baseDir, cwd } = await setup();
+		const seen: string[] = [];
+		const registry = new ExtensionRegistry();
+		registry.beginExtension("probe", "cli");
+		registry.subscribe("run_error", (event) => seen.push(event.message));
+		registry.commitExtension();
+		const provider: LLMProvider = {
+			name: "throws-a-string",
+			// biome-ignore lint/correctness/useYield: the contract is an async generator; this fake must throw before any event
+			async *stream() {
+				throw "boom"; // deliberately non-Error (design §4.6 item 7)
+			},
+		};
+		const runner = await createRunner({
+			cwd,
+			argv: [],
+			model: "test-model",
+			maxTokens: 1024,
+			maxTurns: 10,
+			noContextFiles: true,
+			noSession: true,
+			sessionBaseDir: baseDir,
+			renderer: makeRenderer().renderer,
+			provider,
+			extensions: registry,
+		});
+		await expect(runner.runTurn({ userMessage: "go" })).rejects.toBe("boom");
+		expect(seen).toEqual(["boom"]);
 	});
 });
 
