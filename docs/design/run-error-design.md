@@ -36,9 +36,10 @@ Goals:
    run, never alongside `run_end` for the same crash, never for subagent runs.
 2. Payload: `message` (the crash message) only. `turns` is deliberately
    absent: the turn counter lives inside `runAgentLoop` as a local
-   (`loop.ts:99,229`) — the runner has no live counter at the catch site, and
-   no named consumer needs one (M4 §17 discipline: payload additions also
-   need named consumers). Additive later without breaking the event.
+   (`let turns = 0`, loop.ts:193, incremented at :229) — the runner has no
+   live counter at the catch site, and no named consumer needs one (M4 §17
+   discipline: payload additions also need named consumers). Additive later
+   without breaking the event.
 3. `examples/extensions/task-timer.mjs` stops its interval and paints
    `failed after M:SS` on `run_error`; its header limitation list drops the
    first limitation (the `/new`, `/resume` residue limitation stays).
@@ -98,7 +99,8 @@ tool renders an error tool result. A child crash never propagates as a throw
 through the parent's `runTurn`, so `run_error` stays top-level-only by
 construction, symmetric with `run_start`/`run_end`. A second backstop holds
 even if `runSubagent` itself threw: `runTool`'s never-reject invariant converts
-any throw into an `isError` tool result inside the child loop.
+any throw into an `isError` tool result in the parent's loop (the task tool
+executes there, not in the child).
 
 ### 3.4 The registry already generalizes
 
@@ -106,7 +108,7 @@ any throw into an `isError` tool result inside the child loop.
 dispatch by name; an error event needs only registration, an emitter, and type
 plumbing. Handler isolation (try/catch + promise catch + `reportHandlerError`)
 covers sync throws and rejections in *handlers* — not throws on the emit path
-itself (§6.1).
+itself (§6.1b).
 
 ### 3.5 Crash shapes are bounded
 
@@ -141,9 +143,11 @@ Semantics (the short list a reviewer should attack):
 
 1. **Exactly once per crashed run.** One crash shape, one site, one emit.
    Enforced by a try/catch around the emission body: a throwing coercion
-   (e.g. a non-coercible thrown `Symbol`) must not swallow `run_error` AND
-   replace the host's rejection with a `TypeError` (§6.1) — `throw err`
-   runs unconditionally.
+   must not swallow `run_error` AND replace the host's rejection with a
+   `TypeError` (§6.1b) — `throw err` runs unconditionally. Defense-in-depth
+   today (the inner catch's log line already coerces first, so a
+   non-coercible value surfaces as a `TypeError` before this site); the
+   guard protects against future changes to that inner path.
 2. **Mutual exclusivity with `run_end`.** `runTurn` returns a result or
    rejects; the catch and the success-path emit are structurally exclusive.
 3. **Top-level only.** By construction (§3.3).
@@ -176,9 +180,11 @@ return this.runTurnOrRecoverFromOverflow(...).then(
 			});
 		} catch {
 			// The emission must never mask the crash itself: a throwing
-			// coercion (non-coercible Symbol) or emitter must not swallow
-			// run_error AND replace the host's rejection with a TypeError
-			// (design §4.1 item 1 / §6.1) — `throw err` below is unconditional.
+			// coercion (non-coercible null-prototype object) or emitter must
+			// not swallow run_error AND replace the host's rejection with a
+			// TypeError (design §4.1 item 1 / §6.1b) — `throw err` below is
+			// unconditional. Defense-in-depth: the inner catch's log line
+			// coerces first today, so this guard protects future changes there.
 		}
 		throw err;
 	},
@@ -212,22 +218,18 @@ event set (§6 item 4).
 On `run_error`: `stopTick()`; if a round is open, paint `failed after M:SS`
 and close the round (`roundStart = null`). A `run_error` without an open round
 (should be impossible) is a no-op. The "already-open round means the previous
-run crashed" logic in `run_start` stays — it now also covers host restarts
-between crash and next run, where no `run_error` was observed by the new
-process. The `/new`/`/resume` residue limitation stays (session-lifecycle
-events remain a non-goal).
+run crashed" logic in `run_start` stays — its residual value is the uncovered
+shapes (a sync preamble throw between `emitRunStart` and the promise; a
+report-sink throw); a host restart re-instantiates the module with
+`roundStart === null`, so the branch cannot fire there. The
+`/new`/`/resume` residue limitation stays (session-lifecycle events remain a
+non-goal).
 
 Header: drop the first "Known limitations" bullet (the crash residue) AND
 reword the third bullet ("on the crash path nothing clears it" — false once
 `run_error` clears the tick; the `unref` advice itself stays correct for
 host-kill and early-throw shapes). Add a line to the Timing model note:
 crash ⇒ `run_error` stops the timer and paints `failed after M:SS`.
-
-The "already-open round" branch in `run_start` stays — its residual value is
-the uncovered shapes (a sync preamble throw between `emitRunStart` and the
-promise; a report-sink throw), not host restarts (a restarted process
-re-instantiates the module with `roundStart === null`, so the branch cannot
-fire there).
 
 ### 4.5 Docs
 
@@ -257,9 +259,12 @@ Runner tests (extend `test/runner.test.ts`, the `run_start` describe block):
 2. Overflow-recovery FAILURE: the first provider call throws a live
    `context_length_exceeded`, and the recovery summarizer call also throws ⇒
    exactly one `run_start`, one `run_error` whose `message` is the GUIDANCE
-   text ("…compaction failed:…" / "still over the window…"), no `run_end`.
-   Pinning the guidance message content is what distinguishes the outer
-   emission site from the rejected inner-catch alternative (§5.6): an
+   text — with the summarizer THROWING, deterministically the
+   `compaction failed:` form (`runner.ts:1353`; the `still over the window…`
+   form is the different path where the retried run overflows again, :1380-
+   1388 — a separate sub-scenario if ever needed, not asserted here). No
+   `run_end`. Pinning the guidance message content is what distinguishes the
+   outer emission site from the rejected inner-catch alternative (§5.6): an
    inner-catch emission would fire on the FIRST throw and carry the raw
    overflow message instead. (A pre-prompt-compaction throw alone does NOT
    lock this — its catch lives inside `runTurnInner`.)
@@ -274,9 +279,15 @@ Runner tests (extend `test/runner.test.ts`, the `run_start` describe block):
    child crash becomes a tool result); NO parent `run_error`. Locks §3.3.
 6. Ordering: `run_error` fires before the promise rejects to the host (probe
    records event sequence vs an outer `await expect(...).rejects`).
-7. Emission isolation: a thrown non-coercible value (e.g. `Symbol()` via a
-   provider whose `complete` does `throw Symbol()`) still rejects to the host
-   with the ORIGINAL value and does not crash the process (§4.1 item 1).
+7. Non-Error throw values: a provider whose `stream()` throws a bare
+   non-Error value (a string) ⇒ `run_error` still fires with
+   `message: "boom"` (`String(err)` coercion) and the host rejection carries
+   the ORIGINAL value (not a TypeError). Pins the coercion path end to end.
+   (The truly non-coercible case — a null-prototype object, where `String()`
+   itself throws — is unreachable as behavior today because the inner
+   catch's log line coerces first; the §4.2 guard covers it as
+   defense-in-depth, untestable without removing that log line — not
+   asserted here.)
 
 Registry tests (extend `test/extensions-registry.test.ts`):
 
@@ -347,10 +358,13 @@ E2E (`test/cli-run-start.test.ts` already runs a crashed print-mode run):
    count; the same class as `run_start`/`run_end`. fireObservers isolation
    covers throwers.
 1b. **A throwing coercion inside the emission swallows both halves of the
-   contract.** `String(err)` throws for a non-coercible thrown value (e.g. a
-   `Symbol`): without a guard, `run_error` never fires AND the host's
-   rejection carries a `TypeError` instead of the crash. Mitigation: the
-   emission body is wrapped in try/catch and `throw err` runs unconditionally
+   contract.** `String(err)` throws for a genuinely non-coercible thrown value
+   (a null-prototype object): without a guard, `run_error` never fires AND the
+   host's rejection carries a `TypeError` instead of the crash. (A `Symbol`
+   is NOT such a value — `String(Symbol())` is `"Symbol()"`.) Unreachable as
+   behavior today — the inner catch's log line coerces first — so this is
+   defense-in-depth against future changes there. Mitigation: the emission
+   body is wrapped in try/catch and `throw err` runs unconditionally
    (§4.1 item 1, §4.2). fireObservers isolation covers *handler* throws only —
    not the emit path itself; the guard is what closes that gap.
 2. *test/runner.test.ts:689* **already locks "no run_end on crash" — this
@@ -402,4 +416,22 @@ E2E (`test/cli-run-start.test.ts` already runs a crashed print-mode run):
   the uncovered shapes); docs "tolerate unpaired run_start" sentence gets the
   pointer too (§4.5); citation drift corrected throughout (types.ts:245-246
   for the normative set; runner.ts:1280/1331/1500-1509; loop.ts:226;
-  subagent.ts:414-464; registry.ts:35-41; format.ts:18). All incorporated.
+  subagent.ts:414-464; registry.ts:35-41; format.ts:18). All incorporated
+  (per this revision).
+- Rev2 (same reviewer, re-verification): verdict **NOT CLOSED** — 2 × P2,
+  4 × N. All five rev1 P2s structurally addressed; the architecture was
+  again confirmed (no re-examination needed). New: (P2) test item 7 as
+  specified was un-implementable and vacuous — `LLMProvider` has no
+  `complete` (the throw seam is `stream()`, provider/types.ts:31-34), and
+  `String(Symbol())` does not throw, so the guard was never exercised;
+  re-specified as a bare string throw via `stream()` pinning
+  coercion+original-rejection, with the null-prototype case documented as
+  defense-in-depth (risk 1b's example corrected the same way). (P2) §4.4
+  kept both the old host-restart sentence and the correction —
+  self-contradictory; consolidated to one rationale. Ns: "§6.1" → "§6.1b"
+  at the three emit-path references; §3.3's backstop mislocated the
+  conversion (task tool runs in the PARENT's loop — fixed); item 2's
+  parenthetical conflated the `compaction failed:` and `still over the
+  window` paths (pinned to the deterministic one); §2 goal 2's `loop.ts:99`
+  citation corrected to the actual local at :193. All incorporated (per
+  this revision).
