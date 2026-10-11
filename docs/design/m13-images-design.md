@@ -390,45 +390,76 @@ addendum (branch `fix/clipboard-file-paths`, base 2cc6f2c):
    path `/Users/…/image copy.png` starts with "/" as well.
 
 **Ctrl+V order becomes: file paths → image → text** (pi's order).
-`readClipboardFilePaths(): Promise<string[] | null>` joins the clipboard
-matrix in `clipboard-image.ts`, command-based (D8):
+`readClipboardFilePaths(): Promise<string[] | null | undefined>` joins
+the clipboard matrix in `clipboard-image.ts`, command-based (D8):
 
 - darwin: a second JXA script — per pasteboard item
   `stringForType("public.file-url")` → `NSURL.path` (percent-decoded);
   `propertyListForType("NSFilenamesPboardType")` as fallback when items
   carry none (legacy apps). Emits a JSON array.
 - linux: `text/uri-list` via `wl-paste --list-types` / `xclip -t
-  TARGETS` negotiation; `file://` lines only, percent-decoded, comments
-  skipped. Skipped under WSL (carried with the WSL track — the
-  Windows-side read would need its own path conversion, untestable
-  here).
-- win32: `Get-Clipboard -Format FileDropList` → one path per line.
+  TARGETS` negotiation; per-line rules: `file://` only, percent-decoded
+  (malformed decodes skip that line), comments/blanks/non-file schemes
+  skipped, CRLF tolerated; listed-but-empty read → null, no retry. The
+  Linux legs run under WSL as well (WSLg's Linux-side clipboard); the
+  Windows-side FileDropList + wslpath conversion is carried
+  (untestable here) — review scope note: no image-leg asymmetry.
+- win32: `Get-Clipboard -Format FileDropList` mapped through `.FullName`
+  (FileInfo objects — bare output formats as a truncated table when
+  piped) with a plain-string fallback → one path per line.
 - TERMUX/unknown platform → null.
 
-Insertion mirrors pi: any copied files (not just images) insert as
-`join("\n")`; one leading/trailing space when the adjacent character is
-not whitespace (`Review:` + paste → ` /tmp/photo.png`); any path with a
-control character drops the whole paste (D11: silently). Two readers,
-two spawns — pi's native shape has the same two calls; a single combined
+Failure semantics follow the `readClipboardImage` precedent
+(clipboard-image.ts): `string[]` = files (empty normalizes to null);
+`null` = ran clean, no file URLs → fall through to the image leg;
+`undefined` = command unavailable → also fall through (reader-absent =
+feature-absent; both legs share the same command matrix, so a missing
+tool cannot hand the image leg an icon); a throw (ran but output
+unusable) aborts the paste silently (D11) and never falls through —
+pi's "no fall-through to the icon" test parity.
+
+Insertion mirrors pi — including its bash branch: verbatim
+`join("\n")` normally; when the composed text starts with `!` (the
+bang passthrough, `repl.ts:487`) paths are space-joined and
+shell-quoted by pi's `quoteIfNeeded` port (`interactive-mode.ts:331`:
+raw under `/^[a-zA-Z0-9_\-./~:@]*$/`, else `'…'` with `'\''` escapes).
+One leading/trailing space when the adjacent character is not whitespace
+(`Review:` + paste → ` /tmp/photo.png`); any path with a control
+character drops the whole paste (D11: silently). Two readers, two
+spawns — pi's native shape has the same two calls; a single combined
 snapshot was rejected (entangles two return shapes and two test seams to
 save one osascript).
 
-**A path line is never a command.** Command names are bare words —
-built-ins plus extension names under `NAME_PATTERN`
-(`^[a-z][a-z0-9_-]{0,63}$`, `core/constants.ts:61`) cannot contain "/".
-`parseCommand` gains one guard: a candidate name containing "/" returns
-null, so the line submits to the model. Bare-word behavior is unchanged
-(unknown-command teaching; `/` alone stays a command).
+**A path line is never a command.** Every command-name source is
+slash-free: built-ins, extension names under `NAME_PATTERN`
+(`^[a-z][a-z0-9_-]{0,63}$`, `extensions/registry.ts:315`), md-command
+names (`NAME_RE`, `commands-md.ts:62`) and skill commands `skill:<name>`
+(`skills.ts:509`). `parseCommand` gains one guard: a candidate name
+containing "/" returns null, so the line submits to the model.
+Consequences recorded: slash typos that contain another slash
+(`/help/`) now submit as messages instead of teaching; bare-word typos
+still teach; `/` alone stays a command.
 
-Tests: `images-resize.test.ts` — darwin JSON/legacy/empty, linux
-uri-list rules + WSL null, win32 lines, termux null;
-`repl-tui.test.ts` — file-path precedence (image reader untouched),
-punctuation spacing, control-char drop, and an end-to-end line-start
-submission through `onLine`; `repl-commands.test.ts` — parseCommand
-guard.
+Tests (review-folded): `images-resize.test.ts` (clipboard matrix) —
+darwin JSON/legacy/clean-empty(null)/malformed(throw)/command-missing
+(undefined); linux uri-list decode/comments/CRLF/malformed/non-file/
+listed-but-empty, WSL runs the Linux legs; win32 lines + FullName
+mapping; termux null; reader `{platform, env, run}` seam like
+`readClipboardImage`. `repl-tui.test.ts` — file-path precedence (image
+reader untouched), bash-mode quoting, punctuation spacing, control-char
+drop; the new `pasteFilePaths` shell option (typed in makeShell) is
+stubbed in BOTH existing Ctrl+V tests (repl-tui.test.ts:6457, 6471 —
+otherwise the real osascript runs). `repl.test.ts` — the end-to-end
+line-start submission through `handleLine` (machine harness; makeShell
+only records `onLine`). `repl-commands.test.ts` — parseCommand guard
+cases + the byte-pinned /help golden (HELP_KEYS gains the Ctrl+V line —
+update the golden consciously, repl-commands.test.ts:287).
 
-Docs, same batch (AGENTS.md): `docs/images.md` + zh-CN (order, Finder
-reality, Cmd+V note); `HELP_KEYS` line.
+Docs, same batch (AGENTS.md): `docs/images.md` + zh-CN — Ctrl+V order
+(files → image → text), Finder reality, Cmd+V note, and reconcile the
+"Windows is not supported yet" line with the shipped win32 readers
+(verify wording against code reality, not aspiration — review P3);
+`HELP_KEYS` line.
 
 Acceptance: Finder copy of `/Users/z/Desktop/image copy.png` pastes that
 exact path (spaces intact) and the model reads the real image; screenshot
