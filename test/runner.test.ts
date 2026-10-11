@@ -504,13 +504,16 @@ describe("Runner.newSession", () => {
 });
 
 describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
-	/** A registry with one "probe" extension recording observer-event order. */
+	/** A registry with one "probe" extension recording observer-event order.
+	 *  #run-error: run_error is subscribed too — the negative assertions
+	 *  (no run_error on success/abort/subagent) must be able to FAIL. */
 	function probeRegistry(events: string[]): ExtensionRegistry {
 		const registry = new ExtensionRegistry();
 		registry.beginExtension("probe", "cli");
 		registry.subscribe("run_start", () => events.push("run_start"));
 		registry.subscribe("message_end", () => events.push("message_end"));
 		registry.subscribe("run_end", () => events.push("run_end"));
+		registry.subscribe("run_error", () => events.push("run_error"));
 		registry.commitExtension();
 		return registry;
 	}
@@ -733,6 +736,43 @@ describe("run_start extension event (task-timer design §4.1/§4.6)", () => {
 		await expect(runner.runTurn({ userMessage: "go" })).rejects.toThrow("provider exploded");
 		expect(events).toEqual(["run_start", "run_error"]);
 		expect(seen).toEqual(["provider exploded"]);
+	});
+
+	it("#run-error: the payload is first-line, 160-capped (design §4.1 item 6)", async () => {
+		const { baseDir, cwd } = await setup();
+		const seen: string[] = [];
+		const registry = new ExtensionRegistry();
+		registry.beginExtension("probe", "cli");
+		registry.subscribe("run_error", (event) => seen.push(event.message));
+		registry.commitExtension();
+		const long = `first line ${"x".repeat(400)}`;
+		const provider: LLMProvider = {
+			name: "throws-multiline",
+			// biome-ignore lint/correctness/useYield: the contract is an async generator; this fake must throw before any event
+			async *stream() {
+				throw new Error(`${long}\nsecond line never ships\nthird line neither`);
+			},
+		};
+		const runner = await createRunner({
+			cwd,
+			argv: [],
+			model: "test-model",
+			maxTokens: 1024,
+			maxTurns: 10,
+			noContextFiles: true,
+			noSession: true,
+			sessionBaseDir: baseDir,
+			renderer: makeRenderer().renderer,
+			provider,
+			extensions: registry,
+		});
+		await expect(runner.runTurn({ userMessage: "go" })).rejects.toThrow();
+		expect(seen).toHaveLength(1);
+		// collapsed to the first line AND capped: firstLine keeps the first 160
+		// chars and appends an ellipsis (format.ts:18) — 161 total, one line only
+		expect(seen[0]).toBe(`first line ${"x".repeat(160 - "first line ".length)}…`);
+		expect(seen[0]).not.toContain("second line");
+		expect(seen[0].length).toBe(161);
 	});
 
 	it("#run-error: overflow-recovery FAILURE — one run_error carrying the GUIDANCE text (design §4.6 item 2)", async () => {
