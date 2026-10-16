@@ -8,6 +8,18 @@ their original release identity.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-16
+
+### Fixed
+
+- **Provider-aware context window status.** The status bar and `/status`
+  now look up the selected provider and model together. Previously the
+  provider was lost, so catalog-only models such as
+  `openai-codex/gpt-6.1-sol` could show the 131k fallback instead of their
+  catalog window, inflating usage percentages and triggering premature
+  low-context warnings. Cached catalog data now works without first opening
+  `/model`; model routing and automatic-compaction policy are unchanged.
+
 ## [0.4.0] - 2026-10-11
 
 ### Added

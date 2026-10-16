@@ -3,6 +3,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSession, listSessions } from "../src/core/session/manager.js";
 import { type SessionModel, SessionStore } from "../src/core/session/store.js";
+import { loadCatalogCache, resetCatalogForTest } from "../src/provider/catalog.js";
+import { compactionSettingsFor } from "../src/provider/compaction-settings.js";
+import { resetDiscoveredWindowsForTest } from "../src/provider/discover.js";
+import { contextWindowInfoFor } from "../src/provider/models.js";
 import type { LLMRequest } from "../src/provider/types.js";
 import { createRunner, type RunnerOptions } from "../src/runner.js";
 import { assistant, makeRenderer, scriptedProvider } from "./helpers/fakes.js";
@@ -393,5 +397,123 @@ describe("runner per-session model restoration", () => {
 		await live.runTurn({ userMessage: "still original provider" });
 		expect(calls.at(-1)?.family).toBe(initial.provider);
 		expect(calls.at(-1)?.request.model).toBe(initial.modelId);
+	});
+});
+
+describe("runner context window provider identity", () => {
+	const modelId = "gpt-catalog-window-test";
+	const providerWindows = { anthropic: 200_000, openai: 272_000, "openai-codex": 500_000 };
+
+	function installWindowCatalog(windows: Record<string, number> = providerWindows): void {
+		const providers = Object.fromEntries(
+			Object.entries(windows).map(([provider, contextWindow]) => [
+				provider,
+				{ models: { [modelId]: { id: modelId, contextWindow } }, checkedAt: 1 },
+			]),
+		);
+		fs.writeFileSync(process.env.INK_CATALOG_PATH!, JSON.stringify({ version: 1, providers }));
+		resetCatalogForTest();
+		expect(loadCatalogCache()).toBe(true);
+	}
+
+	beforeEach(() => {
+		vi.stubEnv("INK_CONTEXT_WINDOW", undefined);
+		resetCatalogForTest();
+		resetDiscoveredWindowsForTest();
+		installWindowCatalog();
+	});
+	afterEach(() => {
+		resetCatalogForTest();
+		resetDiscoveredWindowsForTest();
+	});
+
+	it.each(Object.entries(providerWindows))(
+		"uses the selected %s catalog window at construction",
+		async (provider, window) => {
+			const reference = qualified({ provider, modelId });
+			const live = await runner({ model: reference, provider: scriptedProvider([]), noSession: true });
+			expect(live.providerName).toBe(provider);
+			expect(live.model).toBe(modelId);
+			expect(live.contextWindow).toBe(window);
+			expect(live.contextWindow).toBe(compactionSettingsFor(reference).contextWindow);
+		},
+	);
+
+	it("uses a cached Codex-only model without model discovery or a static entry", async () => {
+		installWindowCatalog({ "openai-codex": 500_000 });
+		// The bare id has no static/discovery fallback to conceal a lost provider.
+		expect(contextWindowInfoFor(modelId)).toEqual({ contextWindow: 131_072, source: "fallback" });
+		const live = await runner({
+			model: `openai-codex/${modelId}`,
+			provider: scriptedProvider([]),
+			noSession: true,
+		});
+		expect(live.contextWindow).toBe(500_000);
+		expect(fetch).not.toHaveBeenCalled();
+		expect(calls).toEqual([]);
+	});
+
+	it("changes the window when switching providers without changing the model id", async () => {
+		const live = await runner({
+			model: `anthropic/${modelId}`,
+			provider: scriptedProvider([]),
+			noSession: true,
+		});
+		for (const provider of ["openai", "openai-codex", "anthropic"] as const) {
+			live.setModel(`${provider}/${modelId}`);
+			expect(live.providerName).toBe(provider);
+			expect(live.model).toBe(modelId);
+			expect(live.contextWindow).toBe(providerWindows[provider]);
+		}
+		expect(fetch).not.toHaveBeenCalled();
+		expect(calls).toEqual([]);
+	});
+
+	it.each(["resume", "continue"])("restores the Codex catalog window on startup %s", async (mode) => {
+		const store = saved({ provider: "openai-codex", modelId });
+		const live = await runner({
+			provider: scriptedProvider([]),
+			...(mode === "resume" ? { resume: store.header.id } : { continueRecent: true }),
+		});
+		expect(live.session?.header.id).toBe(store.header.id);
+		expect(live.providerName).toBe("openai-codex");
+		expect(live.model).toBe(modelId);
+		expect(live.contextWindow).toBe(500_000);
+		expect(fetch).not.toHaveBeenCalled();
+		expect(calls).toEqual([]);
+	});
+
+	it("uses each restored session's provider when resuming the same model id", async () => {
+		const stores = Object.entries(providerWindows).map(([provider, window]) => ({
+			provider,
+			window,
+			store: saved({ provider, modelId }),
+		}));
+		const live = await runner({ provider: scriptedProvider([]) });
+		for (const { provider, window, store } of stores) {
+			live.resumeSession(store.header.id);
+			expect(live.session?.header.id).toBe(store.header.id);
+			expect(live.providerName).toBe(provider);
+			expect(live.model).toBe(modelId);
+			expect(live.contextWindow).toBe(window);
+		}
+		expect(fetch).not.toHaveBeenCalled();
+		expect(calls).toEqual([]);
+	});
+
+	it("preserves the environment override and the unknown-model fallback", async () => {
+		const live = await runner({
+			model: `openai-codex/${modelId}`,
+			provider: scriptedProvider([]),
+			noSession: true,
+		});
+		vi.stubEnv("INK_CONTEXT_WINDOW", "65536");
+		expect(live.contextWindow).toBe(65_536);
+		live.setModel("openai-codex/gpt-unknown-window-test");
+		expect(live.contextWindow).toBe(65_536);
+		vi.stubEnv("INK_CONTEXT_WINDOW", undefined);
+		expect(live.contextWindow).toBe(131_072);
+		live.setModel(`openai-codex/${modelId}`);
+		expect(live.contextWindow).toBe(500_000);
 	});
 });
