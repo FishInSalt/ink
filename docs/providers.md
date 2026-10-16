@@ -118,6 +118,14 @@ than 4 hours; opening `/model` re-checks the same window. No periodic
 polling. On a successful fetch the catalog always wins over the bundled
 tables, so new models and price changes arrive without an Ink release.
 
+The status bar's context window and `/status` usage percentage query the
+catalog using the selected provider and model together. The same model id
+can have different windows under `openai` and `openai-codex`; loading a
+cached catalog is enough to use that provider's window without first
+opening `/model`. `INK_CONTEXT_WINDOW` overrides the lookup. If the catalog
+has no window, Ink tries runtime discovery metadata, then the bundled static
+table, and finally the 131,072-token default for unknown models.
+
 ```bash
 INK_CATALOG_BASE_URL=https://mirror.example   # redirect the catalog source
 INK_CATALOG_PATH=/path/to/models-catalog.json # relocate the cache

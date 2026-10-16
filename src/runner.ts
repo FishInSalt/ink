@@ -1274,7 +1274,7 @@ class RunnerImpl implements Runner {
 	}
 
 	get contextWindow(): number {
-		return contextWindowFor(this.model);
+		return contextWindowFor(qualifiedReference(this.providerName, this.model));
 	}
 
 	/** #compaction-ux F1: the current estimate floor for consumers that read
