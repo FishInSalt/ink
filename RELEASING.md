@@ -3,9 +3,11 @@
 Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/design/ink-rename-design.md)
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
-The selected package/version is **`ink-agent@0.4.1`**, with the sole `ink`
-executable. The repository is **`FishInSalt/ink`** (renamed from
-`FishInSalt/imp`; old URLs redirect). Package metadata,
+The selected package/version is **`ink-agent@0.4.2`**, with the sole `ink`
+executable. This is a local, unpublished release candidate; the dated
+CHANGELOG section records its intended release notes, not publication.
+The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
+URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
 agree. Never publish as `imp-agent` or plain `ink`, and never reuse `v0.1.0`.
 No publication, tag push, workflow dispatch, account configuration, or global
@@ -32,7 +34,7 @@ require their ordinary approvals. Preserve historical tags/workflow files and
 [`docs/design/publishing-design.md`](docs/design/publishing-design.md) is an archival design,
 not the current release procedure.
 
-## OIDC publication is live (`0.4.0` published); remaining steps
+## OIDC publication is live (`0.4.1` published); remaining steps
 
 `ink-agent@0.2.0` was published manually from the reviewed artifact (no
 provenance); the trusted publisher is bound; the repository is
@@ -101,8 +103,30 @@ re-publishing the same version fails. The `v0.4.0` GitHub Release page
 was published from the dated CHANGELOG section (2026-10-11, not
 prerelease, same shape as `v0.3.0`).
 
+`ink-agent@0.4.1` is published from `d6b8bf4`. Read-only checks on
+2026-10-17 confirmed that npm `latest` selects `0.4.1`, the version's
+metadata includes its tarball and a provenance-attestation URL, and the
+non-prerelease GitHub Release `v0.4.1` exists. These observations do not
+claim independent verification of the attestation contents or the
+publication workflow's outcome. Do not rerun the `v0.4.1` workflow or reuse
+its tag/version.
+
+`ink-agent@0.4.2` is prepared locally for the Codex tool-argument and
+session-cumulative cache-hit fixes. The preparation record is
+[`docs/design/release-0.4.2-preparation.md`](docs/design/release-0.4.2-preparation.md).
+No `0.4.2` tag, push, publication, release page, or global installation is
+part of this local preparation. Registry availability must be rechecked
+before publication; a previous HTTP 404 does not reserve the version.
+
 Remaining external actions, each requiring explicit approval:
 
+- push reviewed main after local merge; this triggers CI and, for these
+  documentation changes, the Pages deployment. Wait for CI on both Node
+  22.19.0 and 24 before requesting publication approval;
+- push the matching new version tag only after that approval. With the
+  publication gates enabled, this can publish npm automatically;
+- verify registry artifact/provenance, then obtain separate approval for a
+  GitHub Release page or global installation;
 - re-verify the publisher binding after any further repository rename.
 
 The binding must match `release.yml`: GitHub Actions, repository
@@ -168,9 +192,10 @@ bodies/padding, two zero end blocks and a zero-only remainder. It rejects
 entries or nonzero bytes after even a single zero block. It checks the Node
 shebang, required `dist/cli.js`/`bin/ink.js`,
 and absence of old launcher, runtime roots, dotenv, credentials, source,
-tests, docs, or unexpected artifacts. It installs locally in a private
+tests, design docs, or unexpected artifacts. Top-level English and zh-CN
+user documentation is intentionally shipped. It installs locally in a private
 temporary prefix with temporary HOME/cache, no credentials, no install
-scripts, and no network. It executes help and exact `Ink 0.4.1` version
+scripts, and no network. It executes help and exact `Ink 0.4.2` version
 (for this release), then checks npm-exec's single-bin inference against the
 **local tarball from a neutral cwd**. It never invokes `npx ink` or modifies
 shared dependencies. The optional cache source is read-only; missing cached
