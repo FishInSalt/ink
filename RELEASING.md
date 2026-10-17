@@ -4,8 +4,8 @@ Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/desig
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
 The selected package/version is **`ink-agent@0.4.2`**, with the sole `ink`
-executable. This is a local, unpublished release candidate; the dated
-CHANGELOG section records its intended release notes, not publication.
+executable. This is an unpublished release candidate; the dated CHANGELOG
+section records its intended release notes, not npm publication.
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -111,18 +111,28 @@ claim independent verification of the attestation contents or the
 publication workflow's outcome. Do not rerun the `v0.4.1` workflow or reuse
 its tag/version.
 
-`ink-agent@0.4.2` is prepared locally for the Codex tool-argument and
-session-cumulative cache-hit fixes. The preparation record is
-[`docs/design/release-0.4.2-preparation.md`](docs/design/release-0.4.2-preparation.md).
-No `0.4.2` tag, push, publication, release page, or global installation is
-part of this local preparation. Registry availability must be rechecked
-before publication; a previous HTTP 404 does not reserve the version.
+`ink-agent@0.4.2` is prepared for the Codex tool-argument and
+session-cumulative cache-hit fixes plus the development-only `source-map-js`
+security update. The initial preparation record is
+[`docs/design/release-0.4.2-preparation.md`](docs/design/release-0.4.2-preparation.md);
+the security follow-up and its validation are recorded in
+[`docs/design/source-map-js-security-update.md`](docs/design/source-map-js-security-update.md).
+
+The owner-approved initial main push reached `6cadcef` on 2026-10-17.
+CI on Node 22.19.0 and 24 passed in run `39016738576`, and Pages deployment
+passed in run `39016738579`. Those results predate the security follow-up
+and do not validate its changed lockfile. The follow-up remains local until
+separate merge/push approval; a new CI result is required afterward.
+No `v0.4.2` tag, npm publication, release page, or global installation has
+been performed. Registry availability must be rechecked before publication;
+a previous HTTP 404 does not reserve the version.
 
 Remaining external actions, each requiring explicit approval:
 
-- push reviewed main after local merge; this triggers CI and, for these
-  documentation changes, the Pages deployment. Wait for CI on both Node
-  22.19.0 and 24 before requesting publication approval;
+- push the reviewed security follow-up after local merge; this triggers CI
+  and, for these documentation changes, the Pages deployment. Wait for
+  fresh CI on both Node 22.19.0 and 24 and recheck the dependency alert
+  before requesting publication approval;
 - push the matching new version tag only after that approval. With the
   publication gates enabled, this can publish npm automatically;
 - verify registry artifact/provenance, then obtain separate approval for a
