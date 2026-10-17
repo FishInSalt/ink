@@ -2101,6 +2101,85 @@ describe("runRepl with shell:tui", () => {
 		await env.repl;
 	});
 
+	it("cumulative CH includes all branches, child and summary usage after reopen and resets on /new", async () => {
+		const env = await startTuiRepl([reply("fresh")], {
+			seedSession: (store) => {
+				const root = store.appendMessage({ role: "user", content: "hello" });
+				store.appendMessage(
+					assistant([{ type: "text", text: "abandoned" }], "end_turn", {
+						inputTokens: 100,
+						outputTokens: 10,
+						cacheReadTokens: 900,
+					}),
+				);
+				store.branchTo(root);
+				store.appendMessage(
+					assistant([{ type: "text", text: "before compaction" }], "end_turn", {
+						inputTokens: 100,
+						outputTokens: 10,
+						cacheReadTokens: 300,
+						cacheWriteTokens: 100,
+					}),
+				);
+				store.appendMessage({
+					role: "toolResult",
+					results: [
+						{
+							toolCallId: "call-ch",
+							toolName: "task",
+							content: "done",
+							isError: false,
+							taskRecord: buildTaskRecord({
+								attemptId: "attempt-ch",
+								sourceId: "source-ch",
+								launched: true,
+								cwd: "/tmp",
+								status: "completed",
+								turns: 1,
+								textPresent: true,
+								usage: { inputTokens: 200, outputTokens: 20, cacheReadTokens: 100, cacheWriteTokens: 200 },
+							}),
+						},
+					],
+				});
+				store.appendCompaction("## Goal\nsummary", [], 3000, {
+					inputTokens: 300,
+					outputTokens: 30,
+					cacheReadTokens: 200,
+				});
+				store.appendMessage(
+					assistant([{ type: "text", text: "after compaction" }], "end_turn", {
+						inputTokens: 400,
+						outputTokens: 40,
+						cacheReadTokens: 400,
+						cacheWriteTokens: 100,
+					}),
+				);
+			},
+		});
+		try {
+			env.terminal.resize(160);
+			await settle();
+			// The live history has only the post-compaction assistant; recorded
+			// totals also include the abandoned branch, child and summarizer.
+			expect(env.runner.history.filter((m) => m.role === "assistant")).toHaveLength(1);
+			// 1900/(1100+1900+400) = 55.9%, not the live response's 44.4%.
+			expect(env.terminal.frameSince(0)).toContain("↑1.1k ↓110 R1.9k W400 CH55.9%");
+
+			const resetMark = env.terminal.writes.length;
+			env.terminal.data("/new\r");
+			await waitUntil(() => env.terminal.frameSince(resetMark).includes("0.0%/"));
+			expect(env.terminal.frameSince(resetMark)).not.toContain("CH");
+			const freshMark = env.terminal.writes.length;
+			env.terminal.data("hello\r");
+			await waitUntil(() => env.terminal.frameSince(freshMark).includes("↑10 ↓5"));
+			expect(env.terminal.frameSince(freshMark)).toContain("↑10 ↓5 CH0.0%");
+		} finally {
+			env.terminal.data("/exit\r");
+			await env.repl;
+		}
+	});
+
 	async function startTuiRepl(
 		scripts: ScriptStep[],
 		options?: {

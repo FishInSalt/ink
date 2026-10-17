@@ -2,7 +2,7 @@ import type { Readable } from "node:stream";
 import { estimateContextTokens } from "../core/compaction.js";
 import { type HealthSignal, healthSignalText } from "../core/health.js";
 import type { AgentEvent, RunAgentLoopResult } from "../core/loop.js";
-import { type AgentMessage, contentText, type Usage } from "../core/messages.js";
+import { type AgentMessage, contentText } from "../core/messages.js";
 import { killTrackedDetachedChildren } from "../core/process-tree.js";
 import type { SessionStore } from "../core/session/store.js";
 import { type QueueMode, saveSettings } from "../core/settings.js";
@@ -978,34 +978,24 @@ class ReplMachine {
 		const session = this.runner.session;
 		if (session !== null) parts.push(session.header.id.slice(0, 8));
 
-		// Session-wide work-usage segments (pi footer semantics) now come from
-		// the SA-05 durable aggregate (#sa-05-usage-totals): WHOLE-session totals
-		// — children and summarization included; compaction cannot erase them —
-		// priced per producer model at the CURRENT catalog rates (an estimate,
-		// not an invoice). Missing pricing shows as `~`, known-missing usage as
-		// `!`, and `$?` when nothing could be priced; unstamped legacy usage is
-		// never repriced at the current model. CH (cache hit of the LAST
-		// response) stays a live-history fact; ctx% is untouched.
+		// Session-wide work-usage segments come from the SA-05 durable aggregate
+		// (#sa-05-usage-totals): WHOLE-session totals — children and summarization
+		// included; compaction cannot erase them — priced per producer model at
+		// the CURRENT catalog rates (an estimate, not an invoice). Missing pricing
+		// shows as `~`, known-missing usage as `!`, and `$?` when nothing could be
+		// priced; unstamped legacy usage is never repriced at the current model.
+		// CH uses those same cumulative input counts; ctx% stays live-history based.
 		const totals = this.runner.usageTotals();
-		let lastCacheUsage: Usage | undefined;
-		for (const m of this.runner.history) {
-			if (m.role === "assistant" && m.usage.cacheReadTokens !== undefined) lastCacheUsage = m.usage;
-		}
 		if (totals !== null) {
 			const t = totals.total;
 			if (t.inputTokens > 0 || t.outputTokens > 0 || t.cacheReadTokens > 0 || t.cacheWriteTokens > 0) {
 				const usageParts = [`\u2191${formatTokens(t.inputTokens)}`, `\u2193${formatTokens(t.outputTokens)}`];
 				if (t.cacheReadTokens > 0) usageParts.push(`R${formatTokens(t.cacheReadTokens)}`);
 				if (t.cacheWriteTokens > 0) usageParts.push(`W${formatTokens(t.cacheWriteTokens)}`);
-				if (lastCacheUsage) {
-					// pi's CH: hit share of the FULL prompt (input + cache read + write)
-					const denom =
-						lastCacheUsage.inputTokens +
-						(lastCacheUsage.cacheReadTokens ?? 0) +
-						(lastCacheUsage.cacheWriteTokens ?? 0);
-					if (denom > 0) {
-						usageParts.push(`CH${(((lastCacheUsage.cacheReadTokens ?? 0) / denom) * 100).toFixed(1)}%`);
-					}
+				// Token-weighted cache hit share of all recorded full prompts.
+				const promptTokens = t.inputTokens + t.cacheReadTokens + t.cacheWriteTokens;
+				if (promptTokens > 0) {
+					usageParts.push(`CH${((t.cacheReadTokens / promptTokens) * 100).toFixed(1)}%`);
 				}
 				parts.push(usageParts.join(" "));
 			}
