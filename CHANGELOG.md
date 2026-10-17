@@ -8,6 +8,27 @@ their original release identity.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-17
+
+### Fixed
+
+- **Codex tool-call arguments.** The ChatGPT-plan provider (`openai-codex`)
+  now reconciles initial arguments, streamed fragments, and completion-event
+  snapshots instead of losing arguments supplied outside delta events.
+  Parallel calls retain their own arguments and output order. Completed
+  responses with missing finalization, missing argument data, invalid JSON,
+  or conflicting call identities fail before any tool in that response is
+  executed; explicit `{}` still goes through tool-schema validation.
+  Cancellation and output-truncation protections are preserved.
+
+- **Session-cumulative cache hit rate.** The interactive footer's `CH` now
+  uses the same recorded whole-session totals as its adjacent usage counters:
+  `100 × R / (↑ + R + W)`, rather than the last cache-reporting response.
+  The input-token-weighted rate includes all branches, subagent attempts,
+  and summarization; compaction and model/branch changes do not reset it.
+  Resuming restores the totals and `/new` starts fresh. Missing cache
+  counters still contribute zero; no usage is reconstructed.
+
 ## [0.4.1] - 2026-10-16
 
 ### Fixed
