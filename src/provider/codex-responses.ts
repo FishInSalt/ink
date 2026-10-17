@@ -157,6 +157,216 @@ function usageFromResponse(raw: ResponsesUsage | undefined): Usage {
 	};
 }
 
+type ToolCallBlock = Extract<AssistantBlock, { type: "toolCall" }>;
+interface ToolSlot {
+	type: "toolCall";
+	block: ToolCallBlock;
+	index: number;
+	itemId?: string;
+	raw: string;
+	argumentsDone: boolean;
+	done: boolean;
+}
+type OutputSlot = ToolSlot | { type: "text"; block: Extract<AssistantBlock, { type: "text" }> };
+
+function protocolError(event: string, index: unknown, reason: string): Error {
+	// Never include argument text, untrusted identities, or native JSON errors.
+	const location = typeof index === "number" ? ` at output_index ${index}` : "";
+	return new Error(`Codex protocol error (${event}${location}): ${reason}`);
+}
+
+function requireIndex(value: unknown, event: string): number {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+		throw protocolError(event, undefined, "expected a nonnegative integer output_index");
+	}
+	return value;
+}
+
+function identityField(item: Record<string, unknown>, key: string, event: string, index: unknown) {
+	const value = item[key];
+	if (value === undefined) return undefined;
+	if (typeof value !== "string" || value.trim() === "") {
+		throw protocolError(event, index, `expected a nonempty string ${key}`);
+	}
+	return value;
+}
+
+/** Reconcile incremental and final argument sources without mixing calls.
+ * Final blocks follow output_index, not discovery order (a done item can
+ * introduce a call whose added event was absent). Streaming stays in arrival order. */
+class CodexOutput {
+	private readonly slots = new Map<number, OutputSlot>();
+	private readonly toolsByItemId = new Map<string, ToolSlot>();
+	private readonly callIds = new Set<string>();
+
+	private bindItemId(slot: ToolSlot, itemId: string | undefined, event: string): void {
+		if (itemId === undefined) return;
+		const owner = this.toolsByItemId.get(itemId);
+		if ((slot.itemId !== undefined && slot.itemId !== itemId) || (owner !== undefined && owner !== slot)) {
+			throw protocolError(event, slot.index, "conflicting or duplicate tool item ID");
+		}
+		slot.itemId = itemId;
+		this.toolsByItemId.set(itemId, slot);
+	}
+
+	private createTool(index: number, item: Record<string, unknown>, event: string): ToolSlot {
+		if (this.slots.has(index)) throw protocolError(event, index, "duplicate output slot");
+		const callId = identityField(item, "call_id", event, index);
+		const name = identityField(item, "name", event, index);
+		if (callId === undefined || name === undefined) {
+			throw protocolError(event, index, "a new function call requires call_id and name");
+		}
+		if (this.callIds.has(callId)) throw protocolError(event, index, "duplicate tool call ID");
+		const slot: ToolSlot = {
+			type: "toolCall",
+			block: { type: "toolCall", id: callId, name, arguments: {} },
+			index,
+			raw: "",
+			argumentsDone: false,
+			done: false,
+		};
+		this.bindItemId(slot, identityField(item, "id", event, index), event);
+		this.slots.set(index, slot);
+		this.callIds.add(callId);
+		return slot;
+	}
+
+	private argumentSlot(data: Record<string, unknown>, event: string): ToolSlot {
+		const itemId = identityField(data, "item_id", event, data.output_index);
+		let slot: OutputSlot | undefined;
+		if (data.output_index !== undefined) {
+			slot = this.slots.get(requireIndex(data.output_index, event));
+		} else if (itemId !== undefined) {
+			slot = this.toolsByItemId.get(itemId);
+		}
+		if (slot?.type !== "toolCall") {
+			throw protocolError(event, data.output_index, "unknown function call target");
+		}
+		// An indexed event may first-bind an ID omitted by the added item.
+		// Index-less events can only resolve a binding that already exists.
+		this.bindItemId(slot, itemId, event);
+		return slot;
+	}
+
+	private *snapshot(slot: ToolSlot, value: unknown, event: string): Generator<LLMEvent> {
+		if (value === undefined) return;
+		if (typeof value !== "string") {
+			throw protocolError(event, slot.index, "expected string arguments");
+		}
+		if (value.trim() === "") return; // omission/blank must not erase a known buffer
+		const previous = slot.raw;
+		slot.raw = value;
+		// The event interface is append-only: corrections are authoritative in
+		// message_end, while an extending snapshot can stream just its suffix.
+		if (value.startsWith(previous) && value.length > previous.length) {
+			yield { type: "tool_call_delta", id: slot.block.id, jsonDelta: value.slice(previous.length) };
+		}
+	}
+
+	*addItem(data: Record<string, unknown>): Generator<LLMEvent> {
+		const item = (data.item ?? {}) as Record<string, unknown>;
+		if (item.type !== "message" && item.type !== "function_call") return;
+		const event = "response.output_item.added";
+		const index = requireIndex(data.output_index, event);
+		if (this.slots.has(index)) throw protocolError(event, index, "duplicate output slot");
+		if (item.type === "message") {
+			this.slots.set(index, { type: "text", block: { type: "text", text: "" } });
+		} else {
+			const slot = this.createTool(index, item, event);
+			yield { type: "tool_call_start", id: slot.block.id, name: slot.block.name };
+			yield* this.snapshot(slot, item.arguments, event);
+		}
+	}
+
+	textDelta(data: Record<string, unknown>): LLMEvent | undefined {
+		const slot = this.slots.get(data.output_index as number);
+		if (slot?.type !== "text") return undefined;
+		const delta = String(data.delta ?? "");
+		slot.block.text += delta;
+		return { type: "text_delta", text: delta };
+	}
+
+	*appendArguments(data: Record<string, unknown>): Generator<LLMEvent> {
+		const event = "response.function_call_arguments.delta";
+		const slot = this.argumentSlot(data, event);
+		if (slot.argumentsDone || slot.done) throw protocolError(event, slot.index, "arguments already closed");
+		if (typeof data.delta !== "string") throw protocolError(event, slot.index, "expected string delta");
+		slot.raw += data.delta;
+		if (data.delta !== "") yield { type: "tool_call_delta", id: slot.block.id, jsonDelta: data.delta };
+	}
+
+	*finishArguments(data: Record<string, unknown>): Generator<LLMEvent> {
+		const event = "response.function_call_arguments.done";
+		const slot = this.argumentSlot(data, event);
+		if (slot.argumentsDone || slot.done) throw protocolError(event, slot.index, "arguments already closed");
+		if (typeof data.arguments !== "string") {
+			throw protocolError(event, slot.index, "expected string arguments");
+		}
+		yield* this.snapshot(slot, data.arguments, event);
+		slot.argumentsDone = true;
+	}
+
+	*finishItem(data: Record<string, unknown>): Generator<LLMEvent> {
+		const item = (data.item ?? {}) as Record<string, unknown>;
+		if (item.type !== "function_call") return; // text/reasoning snapshots are outside this repair
+		const event = "response.output_item.done";
+		const index = requireIndex(data.output_index, event);
+		let slot = this.slots.get(index);
+		if (slot === undefined) {
+			slot = this.createTool(index, item, event);
+			yield { type: "tool_call_start", id: slot.block.id, name: slot.block.name };
+		}
+		if (slot.type !== "toolCall") throw protocolError(event, index, "function call collides with text slot");
+		if (slot.done) throw protocolError(event, index, "function call already closed");
+		for (const [key, expected] of [
+			["call_id", slot.block.id],
+			["name", slot.block.name],
+		] as const) {
+			const supplied = identityField(item, key, event, index);
+			if (supplied !== undefined && supplied !== expected) {
+				throw protocolError(event, index, `conflicting function call ${key}`);
+			}
+		}
+		this.bindItemId(slot, identityField(item, "id", event, index), event);
+		yield* this.snapshot(slot, item.arguments, event);
+		slot.done = true;
+	}
+
+	blocks(incomplete: boolean): AssistantBlock[] {
+		return [...this.slots.entries()]
+			.sort(([a], [b]) => a - b)
+			.map(([index, slot]) => {
+				if (slot.type === "text") return slot.block;
+				if (incomplete) {
+					// The loop refuses the entire max_tokens batch. Preserve its existing
+					// partial-message/usage/replay behavior rather than throwing here.
+					slot.block.arguments = slot.raw.trim() === "" ? {} : safeParseJson(slot.raw);
+				} else {
+					const event = "response.completed";
+					if (!slot.done) throw protocolError(event, index, "function call missing output_item.done");
+					if (slot.raw.trim() === "") throw protocolError(event, index, "function call has no argument data");
+					try {
+						slot.block.arguments = JSON.parse(slot.raw);
+					} catch {
+						throw protocolError(event, index, "function call arguments are not valid JSON");
+					}
+				}
+				return slot.block;
+			});
+	}
+}
+
+/** One SSE item may emit start + snapshot. Check before advancing the
+ * suspended assembler again, not merely after its next yield: it may throw
+ * while inspecting a snapshot the caller cancelled at tool_call_start. */
+function* untilAborted(events: Iterable<LLMEvent>, signal?: AbortSignal): Generator<LLMEvent> {
+	if (signal?.aborted) return;
+	for (const event of events) {
+		yield event;
+		if (signal?.aborted) return;
+	}
+}
+
 export function createCodexResponsesProvider(options: CodexResponsesProviderOptions = {}): LLMProvider {
 	const baseUrl = (options.baseUrl ?? process.env.OPENAI_CODEX_BASE_URL ?? DEFAULT_BASE_URL).replace(
 		/\/+$/,
@@ -239,10 +449,7 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 				throw new Error(`OpenAI Codex API error ${response.status}${hint}: ${text.slice(0, 500)}`);
 			}
 
-			// Assembly state, keyed by the wire's output_index.
-			const blocks: AssistantBlock[] = [];
-			const slotByIndex = new Map<number, Extract<AssistantBlock, { type: "toolCall" } | { type: "text" }>>();
-			const toolRawByIndex = new Map<number, string>();
+			const output = new CodexOutput();
 			let usage: Usage = { inputTokens: 0, outputTokens: 0 };
 			// SA-04: did a mapped counter hold a number on the terminal event?
 			let sawUsage = false;
@@ -252,50 +459,25 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 			for await (const sse of abortSafe(parseSse(response.body), request.signal)) {
 				if (request.signal?.aborted) return;
 				const data = sse.data as Record<string, unknown>;
-				const outputIndex = data.output_index as number | undefined;
 
 				switch (sse.event) {
-					case "response.output_item.added": {
-						const item = (data.item ?? {}) as Record<string, unknown>;
-						if (item.type === "message") {
-							const ours: Extract<AssistantBlock, { type: "text" }> = { type: "text", text: "" };
-							slotByIndex.set(outputIndex ?? -1, ours);
-							blocks.push(ours);
-						} else if (item.type === "function_call") {
-							const ours: Extract<AssistantBlock, { type: "toolCall" }> = {
-								type: "toolCall",
-								id: String(item.call_id ?? item.id ?? `call_${outputIndex}`),
-								name: String(item.name ?? ""),
-								arguments: {},
-							};
-							slotByIndex.set(outputIndex ?? -1, ours);
-							blocks.push(ours);
-							toolRawByIndex.set(outputIndex ?? -1, "");
-							yield { type: "tool_call_start", id: ours.id, name: ours.name };
-						}
-						// reasoning items: intentionally ignored (v0.1 policy)
+					case "response.output_item.added":
+						yield* untilAborted(output.addItem(data), request.signal);
 						break;
-					}
 					case "response.output_text.delta": {
-						const slot = slotByIndex.get(outputIndex ?? -1);
-						if (slot?.type === "text") {
-							const delta = String(data.delta ?? "");
-							slot.text += delta;
-							yield { type: "text_delta", text: delta };
-						}
+						const delta = output.textDelta(data);
+						if (delta !== undefined) yield delta;
 						break;
 					}
-					case "response.function_call_arguments.delta": {
-						const slot = slotByIndex.get(outputIndex ?? -1);
-						if (slot?.type === "toolCall") {
-							const delta = String(data.delta ?? "");
-							if (delta !== "") {
-								toolRawByIndex.set(outputIndex ?? -1, (toolRawByIndex.get(outputIndex ?? -1) ?? "") + delta);
-								yield { type: "tool_call_delta", id: slot.id, jsonDelta: delta };
-							}
-						}
+					case "response.function_call_arguments.delta":
+						yield* untilAborted(output.appendArguments(data), request.signal);
 						break;
-					}
+					case "response.function_call_arguments.done":
+						yield* untilAborted(output.finishArguments(data), request.signal);
+						break;
+					case "response.output_item.done":
+						yield* untilAborted(output.finishItem(data), request.signal);
+						break;
 					case "response.completed":
 					case "response.incomplete": {
 						sawCompleted = true;
@@ -330,16 +512,10 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 						);
 					}
 					default:
-						// output_item.done / reasoning deltas / unknown: nothing to do
+						// Reasoning deltas / unknown events: intentionally ignored.
 						break;
 				}
-			}
-
-			for (const [index, raw] of toolRawByIndex) {
-				const ours = slotByIndex.get(index);
-				if (ours?.type === "toolCall") {
-					ours.arguments = raw.trim() === "" ? {} : safeParseJson(raw);
-				}
+				if (request.signal?.aborted) return;
 			}
 
 			if (request.signal?.aborted) return;
@@ -348,6 +524,7 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 			if (!sawCompleted) {
 				throw new Error("Codex stream ended without response.completed — response may be truncated");
 			}
+			const blocks = output.blocks(stopReason === "max_tokens");
 			if (stopReason === null && blocks.some((b) => b.type === "toolCall")) stopReason = "tool_use";
 			if (stopReason === "end_turn" && blocks.some((b) => b.type === "toolCall")) stopReason = "tool_use";
 			if (blocks.length === 0) blocks.push({ type: "text", text: "(empty)" });
