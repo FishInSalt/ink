@@ -25,6 +25,20 @@ sessions (subagent transcripts whose parent file no longer exists) after an
 interactive confirm. The exit line always shows how to resume:
 `ink -r <id>`.
 
+The interactive status bar's `↑` (ordinary input), `↓` (output), `R` (cache
+read), and `W` (cache write) counts are cumulative across the whole session,
+including all branches, subagent attempts, and summarization. Zero `R`/`W`
+counts are omitted. `CH` is the cumulative, input-token-weighted cache hit
+rate: `100 × R / (↑ + R + W)`, calculated from the raw counts and shown to
+one decimal place. It is not the last response's rate or an arithmetic
+average of response percentages; output tokens do not enter the formula.
+A positive denominator with no cache reads shows `CH0.0%`; a zero denominator
+omits CH. Compaction and model/branch changes do not reset these totals;
+resuming restores them, while `/new` starts fresh. Without a session
+(`--no-session`), these usage segments are absent. The rate reflects recorded
+usage only: unreported cache counters contribute zero, and missing usage is
+not reconstructed.
+
 ## The tree
 
 Every session's messages form a tree, not a line. Forking or jumping creates

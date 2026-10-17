@@ -252,11 +252,11 @@ describe("footer context percentage", () => {
 	});
 });
 
-// ── footer: pi-style usage segments (R/W, CH, $) ─────────────────────────
+// ── footer: cumulative usage segments (R/W, CH, $) ──────────────────────
 
 describe("footer usage segments", () => {
-	it("cache read/write and the LATEST cache hit rate follow pi's formulas", async () => {
-		// two responses with cache data; CH must come from the last one
+	it("cache hit rate uses raw session totals, weighted by full input tokens", async () => {
+		// Unequal prompt sizes distinguish token weighting from averaging rates.
 		const env = await startTuiRepl([
 			reply("one", { inputTokens: 100, outputTokens: 10, cacheReadTokens: 900, cacheWriteTokens: 0 }),
 			reply("two", { inputTokens: 100, outputTokens: 10, cacheReadTokens: 1900, cacheWriteTokens: 8000 }),
@@ -264,26 +264,97 @@ describe("footer usage segments", () => {
 		await settle();
 		env.terminal.data("hi\r");
 		await waitUntil(() => env.terminal.frameSince(0).includes("CH90.0%"));
+		const mark = env.terminal.writes.length;
 		env.terminal.data("again\r");
-		await waitUntil(() => env.terminal.frameSince(0).includes("R2.8k"));
-		const frame = env.terminal.frameSince(0);
-		// cumulative: ↑200 ↓20 R2.8k W8.0k; CH from the LAST response:
-		// 1900/(100+1900+8000) = 19.0%
-		expect(frame).toContain("↑200 ↓20 R2.8k W8.0k CH19.0%");
+		await waitUntil(() => env.terminal.frameSince(mark).includes("R2.8k"));
+		const frame = env.terminal.frameSince(mark);
+		// 2800/(200+2800+8000) = 25.5%, not the latest rate (19.0%)
+		// or the arithmetic average of response rates (54.5%).
+		expect(frame).toContain("↑200 ↓20 R2.8k W8.0k CH25.5%");
 		env.terminal.data("/exit\r");
 		await env.repl;
 	});
 
-	it("no cache data anywhere → no R/W/CH segments", async () => {
+	it("input without cache data shows CH0.0% and omits R/W", async () => {
 		const env = await startTuiRepl([reply("ok", { inputTokens: 50, outputTokens: 5 })]);
 		await settle();
 		env.terminal.data("hi\r");
 		await waitUntil(() => env.terminal.frameSince(0).includes("↑50 ↓5"));
 		const frame = env.terminal.frameSince(0);
 		expect(frame).not.toContain(" R");
-		expect(frame).not.toContain("CH");
+		expect(frame).not.toContain(" W");
+		expect(frame).toContain("↑50 ↓5 CH0.0%");
 		env.terminal.data("/exit\r");
 		await env.repl;
+	});
+
+	it.each([
+		["explicit zero", 0],
+		["omitted", undefined],
+	] as const)(
+		"a later response with %s cache reads lowers cumulative CH",
+		async (_label, cacheReadTokens) => {
+			const env = await startTuiRepl([
+				reply("one", { inputTokens: 100, outputTokens: 10, cacheReadTokens: 900 }),
+				reply("two", {
+					inputTokens: 1000,
+					outputTokens: 10,
+					...(cacheReadTokens !== undefined && { cacheReadTokens }),
+				}),
+			]);
+			try {
+				await settle();
+				env.terminal.data("hi\r");
+				await waitUntil(() => env.terminal.frameSince(0).includes("CH90.0%"));
+				const mark = env.terminal.writes.length;
+				env.terminal.data("again\r");
+				await waitUntil(() => env.terminal.frameSince(mark).includes("↑1.1k ↓20 R900"));
+				expect(env.terminal.frameSince(mark)).toContain("↑1.1k ↓20 R900 CH45.0%");
+			} finally {
+				env.terminal.data("/exit\r");
+				await env.repl;
+			}
+		},
+	);
+
+	it.each<{ label: string; usage: Usage; segment: string | null }>([
+		{ label: "empty usage", usage: { inputTokens: 0, outputTokens: 0 }, segment: null },
+		{ label: "output-only usage", usage: { inputTokens: 0, outputTokens: 5 }, segment: null },
+		{
+			label: "cache-read-only input",
+			usage: { inputTokens: 0, outputTokens: 5, cacheReadTokens: 100 },
+			segment: "↑0 ↓5 R100 CH100.0%",
+		},
+		{
+			label: "cache-write-only input",
+			usage: { inputTokens: 0, outputTokens: 5, cacheWriteTokens: 100 },
+			segment: "↑0 ↓5 W100 CH0.0%",
+		},
+		{
+			label: "non-round input counts",
+			usage: { inputTokens: 1049, outputTokens: 5, cacheReadTokens: 1951 },
+			// Raw: 1951/3000 = 65.0%; displayed 2.0k/3.0k would be 66.7%.
+			segment: "↑1.0k ↓5 R2.0k CH65.0%",
+		},
+	])("handles $label using recorded input totals", async ({ usage, segment }) => {
+		const env = await startTuiRepl([reply("ok", usage)]);
+		try {
+			await settle();
+			expect(env.terminal.frameSince(0)).not.toContain("CH");
+			const mark = env.terminal.writes.length;
+			env.terminal.data("hi\r");
+			await waitUntil(() => env.terminal.frameSince(mark).includes("(/ for commands"));
+			const frame = env.terminal.frameSince(mark);
+			if (segment === null) {
+				expect(frame).not.toContain("CH");
+				if (usage.outputTokens > 0) expect(frame).toContain("↑0 ↓5");
+			} else {
+				expect(frame).toContain(segment);
+			}
+		} finally {
+			env.terminal.data("/exit\r");
+			await env.repl;
+		}
 	});
 
 	it("cost prices every response at its producer model's rates", async () => {
