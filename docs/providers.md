@@ -65,6 +65,15 @@ API key: `export OPENAI_API_KEY=...`, or `/login openai`. ChatGPT plan:
 OpenAI-compatible service (OpenRouter, MiniMax, …) works through
 `OPENAI_BASE_URL` + a model id that endpoint serves.
 
+The ChatGPT-plan provider (`openai-codex`) accepts tool arguments from
+streamed fragments and from complete argument snapshots, including parallel
+tool calls. On a completed response, missing finalization, missing argument
+data, invalid JSON, or conflicting call identities produce a `Codex protocol
+error`; no tools from that response are executed. Explicit `{}` remains
+subject to each tool's required-field validation. Output-truncated responses
+retain the existing behavior: their entire tool batch is refused, and the
+model can issue complete calls on the next turn.
+
 ### DeepSeek
 
 ```bash
