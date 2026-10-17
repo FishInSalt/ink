@@ -29,6 +29,14 @@ their original release identity.
   Resuming restores the totals and `/new` starts fresh. Missing cache
   counters still contribute zero; no usage is reconstructed.
 
+### Security
+
+- Update the locked development-only transitive dependency `source-map-js`
+  from `1.2.1` to `1.2.2` for `GHSA-68fv-2mgg-jv7q` (`CVE-2026-93749`),
+  which addresses event-loop denial of service from indexed source-map
+  section offsets. This dependency belongs to the Vitest/Vite/PostCSS
+  toolchain; production runtime dependencies are unchanged.
+
 ## [0.4.1] - 2026-10-16
 
 ### Fixed
