@@ -118,6 +118,10 @@ alt 系列快捷键的终端说明：iTerm2、Ghostty、Kitty 和较新的 VS Co
 npm 包会随包发布这些文档；agent 会把自己的问题路由到文档里。内置的
 [示例](examples/README.md)——扩展、一个具名子代理、一个技能——随包安装。
 
+想了解 Ink 背后的实现原理，可以阅读中文技术博客系列
+[《Coding Agent 原理与实践》](https://zheteng-garden.pages.dev/ink/)，
+从源码理解 agent 循环、工具、会话与上下文。
+
 ## 平台支持
 
 - **macOS**——开发平台；功能最先在这里验证。

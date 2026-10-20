@@ -30,6 +30,14 @@ const defaultOutDir = resolve(root, "_site");
 
 const REPO_URL = "https://github.com/FishInSalt/ink";
 const SITE_URL = "https://fishinsalt.github.io/ink";
+const BLOG_URL = "https://zheteng-garden.pages.dev/ink/";
+// Search Console's public verification token is versioned so local builds
+// and Pages deployments use the same value. Keep it after verification.
+const siteConfig = JSON.parse(await readFile(new URL("./docs-site-config.json", import.meta.url), "utf8"));
+if (typeof siteConfig.googleSiteVerification !== "string") {
+	throw new Error("docs-site-config.json: googleSiteVerification must be a string");
+}
+const GOOGLE_SITE_VERIFICATION = siteConfig.googleSiteVerification.trim();
 const OG_IMAGE =
 	"https://raw.githubusercontent.com/FishInSalt/ink/main/assets/social-preview.png";
 
@@ -116,11 +124,13 @@ const SIDEBAR_LINKS = {
 	en: [
 		["GitHub", REPO_URL],
 		["npm", "https://www.npmjs.com/package/ink-agent"],
+		["Technical blog (Chinese)", BLOG_URL],
 		["Changelog", `${REPO_URL}/blob/main/CHANGELOG.md`],
 	],
 	zh: [
 		["GitHub", REPO_URL],
 		["npm", "https://www.npmjs.com/package/ink-agent"],
+		["技术博客（中文）", BLOG_URL],
 		["更新日志", `${REPO_URL}/blob/main/CHANGELOG.md`],
 	],
 };
@@ -386,6 +396,32 @@ function renderPage({ lang, title, description, outPath, content, activeFile }) 
 	const sidebar = SIDEBAR_LINKS[lang]
 		.map(([label, href]) => `<a href="${href}">${label}</a>`)
 		.join("\n");
+	const structuredData = isDocsPage
+		? ""
+		: `<script type="application/ld+json">${JSON.stringify({
+				"@context": "https://schema.org",
+				"@graph": [
+					{
+						"@type": "WebSite",
+						"@id": `${SITE_URL}/#website`,
+						url: `${SITE_URL}${canonicalPath}`,
+						name: "Ink",
+						description,
+						inLanguage: config.htmlLang,
+					},
+					{
+						"@type": "SoftwareSourceCode",
+						"@id": `${REPO_URL}#source`,
+						name: "Ink",
+						url: `${SITE_URL}/`,
+						codeRepository: REPO_URL,
+						description,
+						programmingLanguage: "TypeScript",
+						runtimePlatform: "Node.js >=22.19.0",
+						license: `${REPO_URL}/blob/main/LICENSE`,
+					},
+				],
+			}).replaceAll("<", "\\u003c")}</script>`;
 	return `<!doctype html>
 <html lang="${config.htmlLang}">
 <head>
@@ -393,7 +429,9 @@ function renderPage({ lang, title, description, outPath, content, activeFile }) 
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeAttr(title)}</title>
 <meta name="description" content="${escapeAttr(description)}">
+${GOOGLE_SITE_VERIFICATION ? `<meta name="google-site-verification" content="${escapeAttr(GOOGLE_SITE_VERIFICATION)}">` : ""}
 <link rel="canonical" href="${SITE_URL}${canonicalPath}">
+<link rel="sitemap" type="application/xml" title="Sitemap" href="${SITE_URL}/sitemap.xml">
 <link rel="alternate" hreflang="en" href="${SITE_URL}${enCanonicalPath}">
 <link rel="alternate" hreflang="zh-CN" href="${SITE_URL}${zhCanonicalPath}">
 <link rel="alternate" hreflang="x-default" href="${SITE_URL}${enCanonicalPath}">
@@ -404,6 +442,7 @@ function renderPage({ lang, title, description, outPath, content, activeFile }) 
 <meta property="og:url" content="${SITE_URL}${canonicalPath}">
 <meta property="og:image" content="${OG_IMAGE}">
 <meta name="twitter:card" content="summary_large_image">
+${structuredData}
 <link rel="icon" href="${FAVICON}">
 <style>${STYLE}</style>
 </head>

@@ -134,6 +134,10 @@ The npm package ships this documentation; the agent routes its own questions
 through it. The bundled [examples](examples/README.md) — extensions, a named
 subagent, a skill — install alongside.
 
+For the implementation principles behind Ink, read
+[Coding Agent 原理与实践](https://zheteng-garden.pages.dev/ink/), a Chinese
+technical blog series covering the agent loop, tools, sessions, and context.
+
 ## Platform support
 
 - **macOS** — the development platform; features are exercised here first.

@@ -6,6 +6,9 @@ Ink 是一个开源的终端 AI 助手与 agent 运行框架。代码仓库是
 [FishInSalt/ink](https://github.com/FishInSalt/ink)；npm 包是 `ink-agent`。
 安装方式和完整选项参考见 [cli.md](cli.md)。
 
+想从源码理解 Ink 的实现，可以阅读中文技术博客系列
+[《Coding Agent 原理与实践》](https://zheteng-garden.pages.dev/ink/)。
+
 ## 你想做什么？
 
 - 快速上手、登录、选择模型 → [providers.md](providers.md)
