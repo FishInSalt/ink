@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildSite, headingSlugs } from "../scripts/build-docs-site.mjs";
 
 const SITE_URL = "https://fishinsalt.github.io/ink";
+const BLOG_URL = "https://zheteng-garden.pages.dev/ink/";
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
 let outDir: string;
@@ -86,6 +87,52 @@ describe("docs site build", () => {
 		expect(zhUrls).toHaveLength(11);
 		expect(zhUrls).toContain(`${SITE_URL}/zh/`);
 		expect(zhUrls).toContain(`${SITE_URL}/zh/docs/cli.html`);
+	});
+
+	it("every published page exposes the blog, sitemap and persisted Search Console verification", async () => {
+		const siteConfig = JSON.parse(await readFile(join(repoRoot, "scripts", "docs-site-config.json"), "utf8"));
+		const token = siteConfig.googleSiteVerification.trim();
+		expect(token).not.toBe("");
+		const sitemap = await page("sitemap.xml");
+		const urls = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1] ?? "");
+		expect(urls).toHaveLength(22);
+		for (const url of urls) {
+			const path = url.slice(`${SITE_URL}/`.length);
+			const html = await page(path === "" || path.endsWith("/") ? `${path}index.html` : path);
+			const head = html.split("</head>")[0] ?? "";
+			expect(head).toContain(`<meta name="google-site-verification" content="${token}">`);
+			expect(head).toContain(
+				`<link rel="sitemap" type="application/xml" title="Sitemap" href="${SITE_URL}/sitemap.xml">`,
+			);
+			expect(head).toContain(`<link rel="canonical" href="${url}">`);
+			expect(html).toContain(`<a href="${BLOG_URL}">`);
+		}
+	});
+
+	it("home JSON-LD describes the documentation site and source code with accurate product identity", async () => {
+		for (const [path, language] of [
+			["index.html", "en"],
+			["zh/index.html", "zh-CN"],
+		]) {
+			const html = await page(path ?? "");
+			const json = /<script type="application\/ld\+json">([^<]+)<\/script>/.exec(html)?.[1] ?? "";
+			const data = JSON.parse(json);
+			expect(data["@context"]).toBe("https://schema.org");
+			expect(data["@graph"]).toEqual([
+				expect.objectContaining({ "@type": "WebSite", name: "Ink", inLanguage: language }),
+				expect.objectContaining({
+					"@type": "SoftwareSourceCode",
+					name: "Ink",
+					codeRepository: "https://github.com/FishInSalt/ink",
+					programmingLanguage: "TypeScript",
+				}),
+			]);
+			const description = data["@graph"][0].description;
+			expect(description).toContain(
+				language === "en" ? "AI assistant and agent harness" : "AI 助手与 agent 运行框架",
+			);
+		}
+		expect(await page("docs/cli.html")).not.toContain('type="application/ld+json"');
 	});
 
 	it("resolves every emitted href and src on sample pages against the built tree", async () => {

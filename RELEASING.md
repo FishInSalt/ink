@@ -251,6 +251,23 @@ registry version/artifact/provenance; do not infer success from a green
 skipped run. Global installation and release-page publication need separate
 approval and an appropriate isolated/production acceptance plan.
 
+## Documentation site and Search Console
+
+The Pages workflow builds the public documentation with `npm run docs:site`.
+The public Google Search Console HTML verification token lives in
+`scripts/docs-site-config.json`; local builds and CI read the same file.
+Keep this token and the generated verification meta tag after verification
+to retain verified ownership. It is public site metadata, not an API key.
+The build omits the tag if the configured string is empty.
+
+For the `https://fishinsalt.github.io/ink/` URL-prefix property, submit
+`https://fishinsalt.github.io/ink/sitemap.xml` directly in Search Console.
+The generated `/ink/robots.txt` is below the host root and cannot replace
+`https://fishinsalt.github.io/robots.txt`; its sitemap directive alone is
+not a discovery mechanism for this project site. Every page also links the
+sitemap in its HTML head. Submission and verification do not guarantee
+indexing or search ranking.
+
 ## Troubleshooting
 
 - **Publication skipped:** confirm event is a tag push, new gate equals

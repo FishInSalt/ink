@@ -7,6 +7,9 @@ The repository is [FishInSalt/ink](https://github.com/FishInSalt/ink);
 the npm package is `ink-agent`. See [cli.md](cli.md) for installation and
 the full option reference.
 
+To learn how Ink works from its source code, read the Chinese technical
+series [Coding Agent 原理与实践](https://zheteng-garden.pages.dev/ink/).
+
 ## What are you trying to do?
 
 - Get started, sign in, pick a model → [providers.md](providers.md)
