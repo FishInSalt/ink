@@ -8,6 +8,14 @@ their original release identity.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Codex stream interruptions.** A mid-stream socket close from the
+  ChatGPT-plan backend now reports `Codex stream interrupted — ...` instead
+  of a bare `terminated`, and a transport error after `response.completed`
+  no longer discards a completed response. Completed tool results remain
+  resumable with "继续".
+
 ## [0.4.2] - 2026-10-17
 
 ### Fixed

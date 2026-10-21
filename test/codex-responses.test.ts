@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AgentMessage } from "../src/core/messages.js";
 import { createCodexResponsesProvider } from "../src/provider/codex-responses.js";
+import { StreamInterruptedError } from "../src/provider/shared.js";
 import type { LLMRequest } from "../src/provider/types.js";
 
 /**
@@ -51,7 +52,10 @@ describe("codex-responses provider", () => {
 	let server: Server;
 	let baseUrl = "";
 	const captured: CapturedRequest[] = [];
-	let script: { status: number; chunks: string[]; hold?: boolean } = { status: 200, chunks: [] };
+	let script: { status: number; chunks: string[]; hold?: boolean; cut?: boolean } = {
+		status: 200,
+		chunks: [],
+	};
 
 	beforeAll(async () => {
 		server = createServer((req, res) => {
@@ -65,6 +69,15 @@ describe("codex-responses provider", () => {
 					),
 				});
 				res.writeHead(script.status, { "content-type": "text/event-stream" });
+				if (script.cut) {
+					// Flush every event before destroying the socket: the provider must
+					// see the chunks, then the transport error.
+					const last = script.chunks.at(-1);
+					for (const c of script.chunks.slice(0, -1)) res.write(c);
+					if (last === undefined) res.destroy();
+					else res.write(last, () => res.destroy());
+					return;
+				}
 				for (const c of script.chunks) res.write(c);
 				if (script.hold) {
 					req.on("close", () => res.destroy());
@@ -241,6 +254,105 @@ describe("codex-responses provider", () => {
 		await expect(
 			collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }]))),
 		).rejects.toThrow("without response.completed");
+	});
+
+	it("a mid-stream socket cut is a typed, actionable error", async () => {
+		script = {
+			status: 200,
+			cut: true,
+			chunks: [
+				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
+				sse("response.output_text.delta", { output_index: 0, delta: "partial" }),
+			],
+		};
+		let caught: unknown;
+		try {
+			await collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }])));
+		} catch (err) {
+			caught = err;
+		}
+		expect(caught).toBeInstanceOf(StreamInterruptedError);
+		const error = caught as StreamInterruptedError;
+		expect(error.cause).toBeInstanceOf(Error);
+		expect(error.message).toContain("Codex stream interrupted");
+		expect(error.message).toMatch(/UND_ERR_SOCKET|terminated/);
+		expect(error.message).toContain('send "继续" to resume');
+		expect(error.message).not.toContain("\n");
+		expect(error.message.length).toBeLessThanOrEqual(160);
+	});
+
+	it("a cut before the first SSE event is a typed error, not the truncation fallback", async () => {
+		script = { status: 200, cut: true, chunks: [": keep-alive\n\n"] };
+		let caught: unknown;
+		try {
+			await collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }])));
+		} catch (err) {
+			caught = err;
+		}
+		expect(caught).toBeInstanceOf(StreamInterruptedError);
+		expect((caught as Error).message).not.toContain("without response.completed");
+	});
+
+	it("a trailing socket cut after response.completed is a clean end", async () => {
+		script = {
+			status: 200,
+			cut: true,
+			chunks: [
+				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
+				sse("response.output_text.delta", { output_index: 0, delta: "done" }),
+				sse("response.completed", {
+					response: { status: "completed", usage: { input_tokens: 2, output_tokens: 1 } },
+				}),
+			],
+		};
+		const events = await collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }])));
+		expect(events.filter((e) => e.type === "message_end")).toHaveLength(1);
+		const msg = lastMessage(events);
+		expect(msg.stopReason).toBe("end_turn");
+		expect(msg.blocks).toEqual([{ type: "text", text: "done" }]);
+		expect(msg.usage).toMatchObject({ inputTokens: 2, outputTokens: 1 });
+		expect(msg.usage.cacheReadTokens).toBeUndefined();
+		expect(msg.usageMissing).toBeUndefined();
+	});
+
+	it("a trailing socket cut after response.incomplete preserves max_tokens", async () => {
+		script = {
+			status: 200,
+			cut: true,
+			chunks: [
+				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
+				sse("response.output_text.delta", { output_index: 0, delta: "capped" }),
+				sse("response.incomplete", {
+					response: { status: "incomplete", usage: { input_tokens: 3, output_tokens: 1 } },
+				}),
+			],
+		};
+		const events = await collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }])));
+		expect(events.filter((e) => e.type === "message_end")).toHaveLength(1);
+		expect(lastMessage(events).stopReason).toBe("max_tokens");
+	});
+
+	it("protocol errors after response.completed are not swallowed", async () => {
+		script = {
+			status: 200,
+			chunks: [
+				sse("response.completed", { response: { status: "completed" } }),
+				sse("response.failed", { response: { error: { message: "late failure" } } }),
+			],
+		};
+		await expect(
+			collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }]))),
+		).rejects.toThrow("late failure");
+		script = {
+			status: 200,
+			chunks: [
+				sse("response.completed", { response: { status: "completed" } }),
+				sse("error", { message: "late error" }),
+			],
+		};
+		await expect(
+			collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }]))),
+		).rejects.toThrow("late error");
 	});
 
 	it("response.failed and error events throw with the server's message", async () => {

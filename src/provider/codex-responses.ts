@@ -5,7 +5,9 @@ import {
 	downgradeUnsupportedImages,
 	parseSse,
 	postJsonWithRetry,
+	StreamInterruptedError,
 	safeParseJson,
+	wrapStreamInterruptions,
 } from "./shared.js";
 import { clampThinkingLevel, effortFor, thinkingMetaFor } from "./thinking.js";
 import type { LLMEvent, LLMProvider, LLMRequest } from "./types.js";
@@ -456,66 +458,75 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 			let stopReason: StopReason = null;
 			let sawCompleted = false;
 
-			for await (const sse of abortSafe(parseSse(response.body), request.signal)) {
-				if (request.signal?.aborted) return;
-				const data = sse.data as Record<string, unknown>;
+			try {
+				for await (const sse of abortSafe(
+					wrapStreamInterruptions(parseSse(response.body), "Codex"),
+					request.signal,
+				)) {
+					if (request.signal?.aborted) return;
+					const data = sse.data as Record<string, unknown>;
 
-				switch (sse.event) {
-					case "response.output_item.added":
-						yield* untilAborted(output.addItem(data), request.signal);
-						break;
-					case "response.output_text.delta": {
-						const delta = output.textDelta(data);
-						if (delta !== undefined) yield delta;
-						break;
-					}
-					case "response.function_call_arguments.delta":
-						yield* untilAborted(output.appendArguments(data), request.signal);
-						break;
-					case "response.function_call_arguments.done":
-						yield* untilAborted(output.finishArguments(data), request.signal);
-						break;
-					case "response.output_item.done":
-						yield* untilAborted(output.finishItem(data), request.signal);
-						break;
-					case "response.completed":
-					case "response.incomplete": {
-						sawCompleted = true;
-						const responseObj = (data.response ?? {}) as Record<string, unknown>;
-						const rawUsage = responseObj.usage as ResponsesUsage | undefined;
-						if (
-							typeof rawUsage?.input_tokens === "number" ||
-							typeof rawUsage?.output_tokens === "number" ||
-							typeof rawUsage?.input_tokens_details?.cached_tokens === "number"
-						) {
-							sawUsage = true;
+					switch (sse.event) {
+						case "response.output_item.added":
+							yield* untilAborted(output.addItem(data), request.signal);
+							break;
+						case "response.output_text.delta": {
+							const delta = output.textDelta(data);
+							if (delta !== undefined) yield delta;
+							break;
 						}
-						usage = usageFromResponse(rawUsage);
-						const status = String(responseObj.status ?? "completed");
-						if (sse.event === "response.incomplete" || status === "incomplete") {
-							stopReason = "max_tokens";
-						} else {
-							stopReason = "end_turn";
+						case "response.function_call_arguments.delta":
+							yield* untilAborted(output.appendArguments(data), request.signal);
+							break;
+						case "response.function_call_arguments.done":
+							yield* untilAborted(output.finishArguments(data), request.signal);
+							break;
+						case "response.output_item.done":
+							yield* untilAborted(output.finishItem(data), request.signal);
+							break;
+						case "response.completed":
+						case "response.incomplete": {
+							sawCompleted = true;
+							const responseObj = (data.response ?? {}) as Record<string, unknown>;
+							const rawUsage = responseObj.usage as ResponsesUsage | undefined;
+							if (
+								typeof rawUsage?.input_tokens === "number" ||
+								typeof rawUsage?.output_tokens === "number" ||
+								typeof rawUsage?.input_tokens_details?.cached_tokens === "number"
+							) {
+								sawUsage = true;
+							}
+							usage = usageFromResponse(rawUsage);
+							const status = String(responseObj.status ?? "completed");
+							if (sse.event === "response.incomplete" || status === "incomplete") {
+								stopReason = "max_tokens";
+							} else {
+								stopReason = "end_turn";
+							}
+							break;
 						}
-						break;
+						case "response.failed": {
+							const responseObj = (data.response ?? {}) as Record<string, unknown>;
+							const error = (responseObj.error ?? data.error ?? {}) as Record<string, unknown>;
+							throw new Error(
+								`Codex response failed: ${String(error.message ?? JSON.stringify(data).slice(0, 300))}`,
+							);
+						}
+						case "error": {
+							throw new Error(
+								`Codex stream error: ${String(data.message ?? JSON.stringify(data).slice(0, 300))}`,
+							);
+						}
+						default:
+							// Reasoning deltas / unknown events: intentionally ignored.
+							break;
 					}
-					case "response.failed": {
-						const responseObj = (data.response ?? {}) as Record<string, unknown>;
-						const error = (responseObj.error ?? data.error ?? {}) as Record<string, unknown>;
-						throw new Error(
-							`Codex response failed: ${String(error.message ?? JSON.stringify(data).slice(0, 300))}`,
-						);
-					}
-					case "error": {
-						throw new Error(
-							`Codex stream error: ${String(data.message ?? JSON.stringify(data).slice(0, 300))}`,
-						);
-					}
-					default:
-						// Reasoning deltas / unknown events: intentionally ignored.
-						break;
+					if (request.signal?.aborted) return;
 				}
-				if (request.signal?.aborted) return;
+			} catch (err) {
+				// response.completed / response.incomplete already arrived: a
+				// trailing socket close is a benign end of stream, not a truncation.
+				if (!(err instanceof StreamInterruptedError) || !sawCompleted) throw err;
 			}
 
 			if (request.signal?.aborted) return;

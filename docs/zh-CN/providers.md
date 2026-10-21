@@ -62,6 +62,11 @@ API key：`export OPENAI_API_KEY=...`，或者 `/login openai`。ChatGPT 套餐�
 `ink logout` 只删除 ChatGPT 套餐的凭据。任何 OpenAI 兼容服务（OpenRouter、
 MiniMax 等）都可以通过 `OPENAI_BASE_URL` 配合该端点提供的模型 id 来使用。
 
+如果 ChatGPT 后端在回答中途关闭响应流（代理或网络重置），Ink 会显示
+`Codex stream interrupted — ...`，而不是裸的 `terminated`。已完成的工具结果
+会保留在会话中：用 `ink -r <id>` 恢复，并发送“继续”即可接着做。若传输错误
+发生在 `response.completed` 或 `response.incomplete` 之后，Ink 会忽略它，按本轮已完成处理。
+
 ### DeepSeek
 
 ```bash

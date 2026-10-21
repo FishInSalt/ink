@@ -37,6 +37,85 @@ export async function* abortSafe<T>(source: AsyncIterable<T>, signal?: AbortSign
 	}
 }
 
+/** A transport-level interruption of an SSE response body — the socket or
+ *  proxy closed after headers, before the protocol's terminal event. Only
+ *  adapters that opt in with wrapStreamInterruptions() throw this; the raw
+ *  undici error stays available as `cause`. */
+export class StreamInterruptedError extends Error {
+	readonly provider: string;
+
+	constructor(provider: string, detail: string, options?: ErrorOptions) {
+		const head = `${provider} stream interrupted — `;
+		const tail = '; send "继续" to resume';
+		// Keep the whole message under the run-error event's 160-char cap so
+		// the recovery hint survives; the raw error remains in `cause`.
+		const room = Math.max(0, 160 - head.length - tail.length);
+		super(`${head}${detail.slice(0, room)}${tail}`, options);
+		this.name = "StreamInterruptedError";
+		this.provider = provider;
+	}
+}
+
+/** Recognize undici/socket failures that mean "the response body was cut",
+ *  as opposed to protocol errors the adapter itself throws. Walk the cause
+ *  chain so a direct `SocketError` and a `TypeError: terminated` wrapper are
+ *  both classified. */
+function streamInterruptionDetail(err: unknown): string | undefined {
+	const chain: Error[] = [];
+	let current: unknown = err;
+	for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
+		chain.push(current);
+		current = (current as { cause?: unknown }).cause;
+	}
+	// Prefer the socket code + its message (e.g. "UND_ERR_SOCKET: other side
+	// closed") over the outer wrapper's generic "terminated".
+	for (const node of chain) {
+		const codeValue = (node as { code?: unknown }).code;
+		const code = typeof codeValue === "string" ? codeValue : undefined;
+		if (code === "UND_ERR_SOCKET" || code === "ECONNRESET" || code === "EPIPE") {
+			return normalizeStreamDetail(`${code}: ${node.message}`);
+		}
+	}
+	let sawTransportMessage = false;
+	for (const node of chain) {
+		if (node.message === "terminated" || node.message === "fetch failed") {
+			sawTransportMessage = true;
+			break;
+		}
+	}
+	if (!sawTransportMessage) return undefined;
+	// No socket code: prefer the deepest specific message over the wrapper's
+	// generic "terminated"/"fetch failed", so a cause like "other side closed"
+	// is not dropped.
+	for (let i = chain.length - 1; i >= 0; i--) {
+		const node = chain[i];
+		if (node !== undefined && node.message !== "terminated" && node.message !== "fetch failed") {
+			return normalizeStreamDetail(node.message);
+		}
+	}
+	return "connection closed";
+}
+
+function normalizeStreamDetail(text: string): string {
+	const collapsed = text.replace(/\s+/g, " ").trim();
+	return collapsed === "" ? "connection closed" : collapsed;
+}
+
+/** Wrap an SSE event source so a mid-stream socket close becomes a typed,
+ *  actionable error. Non-transport errors pass through untouched. */
+export async function* wrapStreamInterruptions<T>(
+	source: AsyncIterable<T>,
+	provider: string,
+): AsyncGenerator<T> {
+	try {
+		for await (const item of source) yield item;
+	} catch (err) {
+		const detail = streamInterruptionDetail(err);
+		if (detail === undefined) throw err;
+		throw new StreamInterruptedError(provider, detail, { cause: err });
+	}
+}
+
 export interface SseEvent {
 	event: string;
 	data: unknown;
