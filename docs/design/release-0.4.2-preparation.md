@@ -144,3 +144,11 @@ its exact-output and identity tests passed and the independent review
 covered it. No additional feature-code review is required for this batch.
 No external release operation or main merge has been executed. Supported
 Node CI, registry recheck and each external-action approval remain pending.
+
+## 6. Publication update (2026-10-21)
+
+`v0.4.2` was subsequently tagged at `76d65cd` and published: npm `latest`
+selects `0.4.2` with `gitHead` `76d65cd`, and the non-prerelease GitHub
+Release `v0.4.2` was published on 2026-10-17. This section is a dated
+post-publication note; the earlier record above is retained verbatim as
+history.
