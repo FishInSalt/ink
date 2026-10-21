@@ -1,7 +1,7 @@
 # Ink 0.4.3 local release preparation
 
 Date: 2026-10-21
-Status: local candidate verified; independent final release-diff review approved.
+Status: published 2026-10-21; npm and GitHub Release verified.
 Branch: `release/0.4.3`
 Base: `bbbb265` (`origin/main`, the Codex stream-interruption fix).
 
@@ -154,3 +154,14 @@ count, and the absence of dist/dependency/credential/unrelated files. The
 reviewer's first pass requested restoring the original 0.4.2 preparation
 sentences verbatim and a dated note in the security record; both were
 addressed before this approval.
+
+## 7. Publication record (2026-10-21)
+
+Tag `v0.4.3` was created on merge commit `85cbcec` and pushed. Release
+workflow run `39547269288` completed green: gate, release identity,
+publication artifact smoke, npm publish, and registry visibility check.
+npm `latest` selects `0.4.3` with `gitHead` `85cbcec` and integrity
+`sha512-l7s6zjnHzwPfGuc98zo/ABToWyv364+eNpH2Yz40y4PpgbOIctTL4q6mA+H4H+Ajtnnc4oGb8+Yzaq3L8MC4CA==`;
+the provenance attestation is present. The non-prerelease GitHub Release
+`v0.4.3` is published at
+<https://github.com/FishInSalt/ink/releases/tag/v0.4.3>.
