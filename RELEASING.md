@@ -4,8 +4,8 @@ Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/desig
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
 The selected package/version is **`ink-agent@0.4.3`**, with the sole `ink`
-executable. This is a local release candidate; the dated CHANGELOG section
-records its intended release notes, not npm publication.
+executable. This release is published; the dated CHANGELOG section records
+its release notes.
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -34,7 +34,7 @@ require their ordinary approvals. Preserve historical tags/workflow files and
 [`docs/design/publishing-design.md`](docs/design/publishing-design.md) is an archival design,
 not the current release procedure.
 
-## OIDC publication is live (through `0.4.2`); `0.4.3` preparation
+## OIDC publication is live (through `0.4.3`)
 
 `ink-agent@0.2.0` was published manually from the reviewed artifact (no
 provenance); the trusted publisher is bound; the repository is
@@ -122,25 +122,16 @@ CI notes and the pending security follow-up described a pre-publication
 state; the publication record above supersedes them. Do not rerun the
 `v0.4.2` workflow or reuse its tag/version.
 
-`ink-agent@0.4.3` is prepared for the Codex stream-interruption diagnostics
-and completed-response recovery fix. The preparation record is
+`ink-agent@0.4.3` is published from `85cbcec`. The preparation record is
 [`docs/design/release-0.4.3-preparation.md`](docs/design/release-0.4.3-preparation.md).
-It is a local candidate; no `v0.4.3` tag, npm publication, release page, or
-global installation has been performed. The base `bbbb265` passed CI on Node
-22.19.0 and 24 in run `39543990652` and Pages in run `39543990645`; those
-results validate the merged fix, not the release-metadata diff. Registry
-availability must be rechecked before publication; a previous HTTP 404 does
-not reserve the version.
-
-Current external actions for `0.4.3`, each requiring explicit approval:
-
-- push the release branch and merge it to `main` with `--no-ff`; wait for
-  fresh CI on Node 22.19.0 and 24;
-- push `v0.4.3` only after that approval; with the publication gates
-  enabled, this can publish npm automatically;
-- verify the registry artifact/provenance, then obtain separate approval
-  for a GitHub Release page or global installation;
-- re-verify the publisher binding after any further repository rename.
+Tag `v0.4.3` was pushed on 2026-10-21; npm `latest` selects `0.4.3` with
+`gitHead` `85cbcec` and integrity
+`sha512-l7s6zjnHzwPfGuc98zo/ABToWyv364+eNpH2Yz40y4PpgbOIctTL4q6mA+H4H+Ajtnnc4oGb8+Yzaq3L8MC4CA==`;
+the non-prerelease GitHub Release `v0.4.3` exists. Release workflow run
+`39547269288` completed green, including the gate, artifact smoke, npm
+publish, and registry visibility check. No further `0.4.3` publication
+action is pending. A global installation remains a separate operator action;
+future releases require the same separate approvals.
 
 The binding must match `release.yml`: GitHub Actions, repository
 `FishInSalt/ink`, workflow filename `release.yml`, no environment. Ownership and
