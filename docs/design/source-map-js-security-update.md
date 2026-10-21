@@ -12,8 +12,8 @@ The owner approved a local dependency-security follow-up before publishing
 `ink-agent@0.4.2`. Prepare and commit the fix on this isolated branch; do
 not merge, push, tag, dispatch, publish, modify account settings, inspect
 credentials, or change the global installation. Retain application version
-`0.4.2`, which has not been published. Future external actions require their
-own explicit approval.
+`0.4.2`, which had not been published at the time of this task. Future
+external actions require their own explicit approval.
 
 This is a development dependency fix, not a production-runtime behavior
 change. No provider, tool, session, workflow, dependency range, or supported
@@ -184,3 +184,10 @@ was unnecessary; independent dependency/artifact review was performed due
 to the security-sensitive lock update. The remote alert remains open until
 a separately approved push and GitHub rescan; no source push, merge, tag,
 release or global install was performed by this task.
+
+## Publication update (2026-10-21)
+
+`ink-agent@0.4.2` was subsequently published from `76d65cd`: npm `latest`
+selects `0.4.2` with `gitHead` `76d65cd`, and the non-prerelease GitHub
+Release `v0.4.2` was published on 2026-10-17. The earlier "not been
+published" statements describe the pre-publication state of this record.

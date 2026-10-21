@@ -3,9 +3,9 @@
 Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/design/ink-rename-design.md)
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
-The selected package/version is **`ink-agent@0.4.2`**, with the sole `ink`
-executable. This is an unpublished release candidate; the dated CHANGELOG
-section records its intended release notes, not npm publication.
+The selected package/version is **`ink-agent@0.4.3`**, with the sole `ink`
+executable. This is a local release candidate; the dated CHANGELOG section
+records its intended release notes, not npm publication.
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -34,7 +34,7 @@ require their ordinary approvals. Preserve historical tags/workflow files and
 [`docs/design/publishing-design.md`](docs/design/publishing-design.md) is an archival design,
 not the current release procedure.
 
-## OIDC publication is live (`0.4.1` published); remaining steps
+## OIDC publication is live (through `0.4.2`); `0.4.3` preparation
 
 `ink-agent@0.2.0` was published manually from the reviewed artifact (no
 provenance); the trusted publisher is bound; the repository is
@@ -111,32 +111,35 @@ claim independent verification of the attestation contents or the
 publication workflow's outcome. Do not rerun the `v0.4.1` workflow or reuse
 its tag/version.
 
-`ink-agent@0.4.2` is prepared for the Codex tool-argument and
-session-cumulative cache-hit fixes plus the development-only `source-map-js`
-security update. The initial preparation record is
+`ink-agent@0.4.2` is published from `76d65cd`. The preparation record is
 [`docs/design/release-0.4.2-preparation.md`](docs/design/release-0.4.2-preparation.md);
 the security follow-up and its validation are recorded in
 [`docs/design/source-map-js-security-update.md`](docs/design/source-map-js-security-update.md).
+Read-only checks on 2026-10-21 confirmed that npm `latest` selects `0.4.2`,
+the package metadata includes `gitHead` `76d65cd`, and the non-prerelease
+GitHub Release `v0.4.2` exists (published 2026-10-17). The earlier `6cadcef`
+CI notes and the pending security follow-up described a pre-publication
+state; the publication record above supersedes them. Do not rerun the
+`v0.4.2` workflow or reuse its tag/version.
 
-The owner-approved initial main push reached `6cadcef` on 2026-10-17.
-CI on Node 22.19.0 and 24 passed in run `39016738576`, and Pages deployment
-passed in run `39016738579`. Those results predate the security follow-up
-and do not validate its changed lockfile. The follow-up remains local until
-separate merge/push approval; a new CI result is required afterward.
-No `v0.4.2` tag, npm publication, release page, or global installation has
-been performed. Registry availability must be rechecked before publication;
-a previous HTTP 404 does not reserve the version.
+`ink-agent@0.4.3` is prepared for the Codex stream-interruption diagnostics
+and completed-response recovery fix. The preparation record is
+[`docs/design/release-0.4.3-preparation.md`](docs/design/release-0.4.3-preparation.md).
+It is a local candidate; no `v0.4.3` tag, npm publication, release page, or
+global installation has been performed. The base `bbbb265` passed CI on Node
+22.19.0 and 24 in run `39543990652` and Pages in run `39543990645`; those
+results validate the merged fix, not the release-metadata diff. Registry
+availability must be rechecked before publication; a previous HTTP 404 does
+not reserve the version.
 
-Remaining external actions, each requiring explicit approval:
+Current external actions for `0.4.3`, each requiring explicit approval:
 
-- push the reviewed security follow-up after local merge; this triggers CI
-  and, for these documentation changes, the Pages deployment. Wait for
-  fresh CI on both Node 22.19.0 and 24 and recheck the dependency alert
-  before requesting publication approval;
-- push the matching new version tag only after that approval. With the
-  publication gates enabled, this can publish npm automatically;
-- verify registry artifact/provenance, then obtain separate approval for a
-  GitHub Release page or global installation;
+- push the release branch and merge it to `main` with `--no-ff`; wait for
+  fresh CI on Node 22.19.0 and 24;
+- push `v0.4.3` only after that approval; with the publication gates
+  enabled, this can publish npm automatically;
+- verify the registry artifact/provenance, then obtain separate approval
+  for a GitHub Release page or global installation;
 - re-verify the publisher binding after any further repository rename.
 
 The binding must match `release.yml`: GitHub Actions, repository
@@ -205,7 +208,7 @@ and absence of old launcher, runtime roots, dotenv, credentials, source,
 tests, design docs, or unexpected artifacts. Top-level English and zh-CN
 user documentation is intentionally shipped. It installs locally in a private
 temporary prefix with temporary HOME/cache, no credentials, no install
-scripts, and no network. It executes help and exact `Ink 0.4.2` version
+scripts, and no network. It executes help and exact `Ink 0.4.3` version
 (for this release), then checks npm-exec's single-bin inference against the
 **local tarball from a neutral cwd**. It never invokes `npx ink` or modifies
 shared dependencies. The optional cache source is read-only; missing cached

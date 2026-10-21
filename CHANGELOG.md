@@ -8,6 +8,8 @@ their original release identity.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-21
+
 ### Fixed
 
 - **Codex stream interruptions.** A mid-stream socket close from the
@@ -15,6 +17,13 @@ their original release identity.
   of a bare `terminated`, and a transport error after `response.completed`
   no longer discards a completed response. Completed tool results remain
   resumable with "继续".
+
+### Documentation
+
+- **Docs site discovery.** The published documentation site now exposes a
+  sitemap and structured data, carries Google Search Console verification,
+  and links to the Chinese technical blog series. The Pages workflow also
+  rebuilds when the docs-site configuration changes.
 
 ## [0.4.2] - 2026-10-17
 
