@@ -4,8 +4,8 @@ Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/desig
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
 The selected package/version is **`ink-agent@0.4.4`**, with the sole `ink`
-executable. This version is prepared; publication is pending. The dated
-CHANGELOG section records its release notes once published.
+executable. This release is published; the dated CHANGELOG section records
+its release notes.
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -34,7 +34,7 @@ require their ordinary approvals. Preserve historical tags/workflow files and
 [`docs/design/publishing-design.md`](docs/design/publishing-design.md) is an archival design,
 not the current release procedure.
 
-## OIDC publication is live (through `0.4.3`)
+## OIDC publication is live (through `0.4.4`)
 
 `ink-agent@0.2.0` was published manually from the reviewed artifact (no
 provenance); the trusted publisher is bound; the repository is
@@ -133,12 +133,18 @@ publish, and registry visibility check. No further `0.4.3` publication
 action is pending. A global installation remains a separate operator action;
 future releases require the same separate approvals.
 
-`ink-agent@0.4.4` is prepared on branch `release/0.4.4` from `23f6d79`, the
-compaction surrogate-pair fix. The preparation record is
+`ink-agent@0.4.4` is published from merge commit `e6d9194`. The preparation
+record is
 [`docs/design/release-0.4.4-preparation.md`](docs/design/release-0.4.4-preparation.md).
-The version is not published yet: npm `latest` still selects `0.4.3`, no
-`v0.4.4` tag exists, and this paragraph does not imply that any publication
-action has occurred.
+Tag `v0.4.4` was pushed on 2026-10-26; npm `latest` selects `0.4.4` with
+`gitHead` `e6d9194` and integrity
+`sha512-W4IgP5+PCcUe4KwDrjkdPFQ0rrJkX3CgGngNVp3P6ofkh1UZV0yNXpW8Kj3BzR8gQDqgXpJS9//Usz03TO2/FQ==`;
+the non-prerelease GitHub Release `v0.4.4` exists. Release workflow run
+`40216586734` completed green, including the gate, artifact smoke, npm
+publish, and registry visibility check. The provenance statement was
+published to the transparency log (index 3463928943). No further `0.4.4`
+publication action is pending. A global installation remains a separate
+operator action; future releases require the same separate approvals.
 
 The binding must match `release.yml`: GitHub Actions, repository
 `FishInSalt/ink`, workflow filename `release.yml`, no environment. Ownership and
