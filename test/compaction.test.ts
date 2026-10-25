@@ -20,6 +20,10 @@ import type { LLMProvider, LLMRequest } from "../src/provider/types.js";
 import { assistant, scriptedProvider } from "./helpers/fakes.js";
 import { mkTempDirAsync } from "./helpers/mktemp.js";
 
+// A lone high/low surrogate, the shape strict JSON parsers reject once
+// JSON.stringify has escaped it as \udXXX.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
 const user = (content: string): AgentMessage => ({ role: "user", content });
 const assistantText = (text: string, inputTokens = 100): AgentMessage => ({
 	role: "assistant",
@@ -152,6 +156,38 @@ describe("serializeForSummary", () => {
 			results: [{ toolCallId: "x", toolName: "read", content: "y".repeat(5000), isError: false }],
 		};
 		expect(serializeForSummary([longMsg])).toContain("[truncated");
+	});
+
+	it("never splits a surrogate pair at a truncation boundary", () => {
+		// The live failure: a 4242-char web_search result whose 800th code unit
+		// was the high half of 📣. The old cut left a lone \uD83D in the
+		// transcript, which DeepSeek's serde_json gateway rejected with
+		// "unexpected end of hex escape".
+		const content = `${"a".repeat(799)}📣${"b".repeat(100)}`;
+		const text = serializeForSummary([
+			{
+				role: "toolResult",
+				results: [{ toolCallId: "x", toolName: "web_search", content, isError: false }],
+			},
+		]);
+		expect(text).toContain("[truncated 102 chars]");
+		// The cut backed off to the pair boundary, so the sanitizer never fired.
+		// Without the backoff this fails: the old cut left U+D83D, which
+		// wellFormed would have replaced with U+FFFD.
+		expect(text).not.toContain("\uFFFD");
+		expect(text).not.toMatch(LONE_SURROGATE);
+	});
+
+	it("replaces unpaired surrogates that arrive from elsewhere", () => {
+		const text = serializeForSummary([user("high \uD83D low \uDC00 text")]);
+		expect(text).not.toMatch(LONE_SURROGATE);
+		expect(text).toContain("high \uFFFD low \uFFFD text");
+	});
+
+	it("preserves well-formed astral characters", () => {
+		const text = serializeForSummary([user("ok 📣 done")]);
+		expect(text).toContain("ok 📣 done");
+		expect(text).not.toContain("\uFFFD");
 	});
 });
 

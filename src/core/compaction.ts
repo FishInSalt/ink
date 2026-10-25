@@ -242,9 +242,25 @@ export function findCutIndex(messages: AgentMessage[], keepRecentTokens: number)
 const MAX_TOOL_RESULT_CHARS = 800;
 const MAX_USER_CHARS = 4000;
 
+/** Replace unpaired UTF-16 surrogates with U+FFFD.
+ *
+ *  A `slice` between the halves of an astral code point leaves a lone
+ *  surrogate behind. `JSON.stringify` serializes it as `\udXXX` — valid
+ *  RFC 8259, but strict parsers reject it: DeepSeek's serde_json gateway
+ *  answers 400 "unexpected end of hex escape". `truncate` no longer splits
+ *  pairs; this also guards lone surrogates that arrive from elsewhere (tool
+ *  output, stored summaries, pasted text). */
+function wellFormed(text: string): string {
+	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+}
+
 function truncate(text: string, max: number): string {
 	if (text.length <= max) return text;
-	return `${text.slice(0, max)}\n…[truncated ${text.length - max} chars]`;
+	// Back off one code unit when the cut lands on a high surrogate: keep the
+	// whole pair or drop it whole — never half of it.
+	const last = text.charCodeAt(max - 1);
+	const end = last >= 0xd800 && last <= 0xdbff ? max - 1 : max;
+	return `${text.slice(0, end)}\n…[truncated ${text.length - end} chars]`;
 }
 
 export function serializeForSummary(messages: AgentMessage[]): string {
@@ -274,7 +290,7 @@ export function serializeForSummary(messages: AgentMessage[]): string {
 				break;
 		}
 	}
-	return lines.join("\n\n");
+	return wellFormed(lines.join("\n\n"));
 }
 
 // ============================================================================
@@ -538,7 +554,7 @@ export async function summarizeBranchSegment(args: {
 		provider: args.provider,
 		model: args.model,
 		system: SUMMARIZATION_SYSTEM_PROMPT,
-		userContent: `${transcript}\n\n---\n\n${BRANCH_SUMMARY_PROMPT}${suffix}`,
+		userContent: wellFormed(`${transcript}\n\n---\n\n${BRANCH_SUMMARY_PROMPT}${suffix}`),
 		// Half the derived budget: branch segments are shorter than full
 		// sessions (#derived-budget).
 		maxTokens: Math.floor(
@@ -638,10 +654,11 @@ export async function compactHistory(args: {
 	const retainedTail = args.messages.slice(cut);
 
 	const transcript = serializeForSummary(toSummarize);
-	const userContent =
+	const userContent = wellFormed(
 		previousSummary === undefined
 			? `${transcript}\n\n---\n\n${SUMMARIZATION_PROMPT}`
-			: `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n${transcript}\n\n---\n\n${UPDATE_SUMMARIZATION_PROMPT}`;
+			: `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n${transcript}\n\n---\n\n${UPDATE_SUMMARIZATION_PROMPT}`,
+	);
 	const run = await summarizeWithRetry({
 		provider: args.provider,
 		model: args.model,
