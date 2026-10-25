@@ -8,6 +8,19 @@ their original release identity.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-26
+
+### Fixed
+
+- **Compaction failures on split surrogate pairs.** The summarizer transcript
+  was truncated with a UTF-16 code-unit cut, which could split an emoji's
+  surrogate pair in a long tool result. The lone surrogate was escaped as
+  `\udXXX`, and strict JSON parsers rejected the `/compact` request with HTTP
+  400 `unexpected end of hex escape`. Truncation now backs off to a code-point
+  boundary, and the final prompt replaces any remaining unpaired surrogate
+  with `U+FFFD`. Branch summaries and custom summarization instructions use
+  the same guarded path.
+
 ## [0.4.3] - 2026-10-21
 
 ### Fixed

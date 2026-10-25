@@ -3,9 +3,9 @@
 Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/design/ink-rename-design.md)
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
-The selected package/version is **`ink-agent@0.4.3`**, with the sole `ink`
-executable. This release is published; the dated CHANGELOG section records
-its release notes.
+The selected package/version is **`ink-agent@0.4.4`**, with the sole `ink`
+executable. This version is prepared; publication is pending. The dated
+CHANGELOG section records its release notes once published.
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -133,6 +133,13 @@ publish, and registry visibility check. No further `0.4.3` publication
 action is pending. A global installation remains a separate operator action;
 future releases require the same separate approvals.
 
+`ink-agent@0.4.4` is prepared on branch `release/0.4.4` from `23f6d79`, the
+compaction surrogate-pair fix. The preparation record is
+[`docs/design/release-0.4.4-preparation.md`](docs/design/release-0.4.4-preparation.md).
+The version is not published yet: npm `latest` still selects `0.4.3`, no
+`v0.4.4` tag exists, and this paragraph does not imply that any publication
+action has occurred.
+
 The binding must match `release.yml`: GitHub Actions, repository
 `FishInSalt/ink`, workflow filename `release.yml`, no environment. Ownership and
 publishability of `ink-agent` are established (registry presence is not
@@ -199,7 +206,7 @@ and absence of old launcher, runtime roots, dotenv, credentials, source,
 tests, design docs, or unexpected artifacts. Top-level English and zh-CN
 user documentation is intentionally shipped. It installs locally in a private
 temporary prefix with temporary HOME/cache, no credentials, no install
-scripts, and no network. It executes help and exact `Ink 0.4.3` version
+scripts, and no network. It executes help and exact `Ink 0.4.4` version
 (for this release), then checks npm-exec's single-bin inference against the
 **local tarball from a neutral cwd**. It never invokes `npx ink` or modifies
 shared dependencies. The optional cache source is read-only; missing cached
