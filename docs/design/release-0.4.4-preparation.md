@@ -1,7 +1,8 @@
 # Ink 0.4.4 local release preparation
 
 Date: 2026-10-26
-Status: prepared; publication pending.
+Status: published 2026-10-26; npm, provenance, CI, Pages, and GitHub
+Release verified.
 Branch: `release/0.4.4`
 Base: `23f6d79` (the compaction surrogate-pair fix, on top of `origin/main`
 `9636090`).
@@ -198,4 +199,21 @@ committed pre-publication state, accurate until the tag push.
 
 ## 7. Publication record
 
-Pending.
+Tag `v0.4.4` was created on merge commit `e6d9194` and pushed. Release
+workflow run `40216586734` completed green: gate, release identity,
+publication artifact smoke, npm publish, and registry visibility check.
+npm `latest` selects `0.4.4` with `gitHead` `e6d9194` and integrity
+`sha512-W4IgP5+PCcUe4KwDrjkdPFQ0rrJkX3CgGngNVp3P6ofkh1UZV0yNXpW8Kj3BzR8gQDqgXpJS9//Usz03TO2/FQ==`;
+`npm audit signatures` reports 7 verified registry signatures and 4 verified
+attestations; the provenance statement is at transparency-log index
+`3463928943`. The non-prerelease GitHub Release `v0.4.4` is published at
+<https://github.com/FishInSalt/ink/releases/tag/v0.4.4> and carries the dated
+CHANGELOG section. The `ci` and `pages` runs on `e6d9194` also completed
+green.
+
+The local smoke artifact SHA-512
+(`utCgxQgqElBNWlZXcVf+/wrSfF0+HfVPIHsOVFseMy+TjXhzkLfO3CrCNQnOrU58k46p3O898x1QMLIrM+wYCg==`)
+differs from the registry integrity because `npm publish` repacks the
+artifact in the publish job. The 386 unpacked file SHA-256 values are
+identical between the smoke artifact and the registry tarball, and the
+registry integrity matches the publish log byte for byte.
