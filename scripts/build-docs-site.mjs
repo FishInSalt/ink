@@ -68,7 +68,7 @@ const LANGUAGES = {
 		strings: {
 			homeTitle: "Ink — an open-source AI assistant and agent harness for the terminal",
 			homeDescription:
-				"Ink — an open-source AI assistant and agent harness for the terminal. Sessions, extensions, skills, subagents, and MCP; works with Anthropic, OpenAI, GLM, DeepSeek, and Kimi.",
+				"Ink (FishInSalt/ink, npm: ink-agent) is an open-source AI assistant and agent harness for the terminal. Documentation for models, sessions, skills, extensions, subagents, and MCP.",
 			tagline: "an AI agent harness for the terminal",
 			home: "Home",
 			editLabel: "Edit this page on GitHub",
@@ -87,6 +87,58 @@ const LANGUAGES = {
 			"subagents.md": "Subagents",
 			"images.md": "Images",
 		},
+		docMetadata: {
+			"index.md": {
+				title: "Documentation overview — Ink",
+				description:
+					"Find installation, models, sessions, settings, extensions, Skills, MCP, subagents, and image input in the Ink terminal AI assistant documentation.",
+			},
+			"cli.md": {
+				title: "Installation and CLI reference — Ink",
+				description:
+					"Install the ink-agent npm package and run Ink from your terminal. Learn command-line flags, print mode, piping, attachments, and session options.",
+			},
+			"providers.md": {
+				title: "Model providers, login, and model selection — Ink",
+				description:
+					"Connect model providers to Ink, sign in with /login, configure API credentials, and choose models using the CLI and interactive model picker.",
+			},
+			"sessions.md": {
+				title: "Sessions, conversation trees, and compaction — Ink",
+				description:
+					"Resume and fork Ink sessions, navigate the conversation tree, and understand JSONL history storage, queued messages, and context compaction.",
+			},
+			"settings.md": {
+				title: "Settings files and configuration reference — Ink",
+				description:
+					"Configure Ink with global and project settings.json files. Learn setting keys, default models, queue modes, images, MCP, and CLI overrides.",
+			},
+			"extensions.md": {
+				title: "Extensions: tools, commands, and event hooks — Ink",
+				description:
+					"Write ESM extensions for Ink to add tools, slash commands, system-prompt sections, event gates, and tool colors through the extension API.",
+			},
+			"skills.md": {
+				title: "Agent Skills and SKILL.md packages — Ink",
+				description:
+					"Create and load Agent Skills in Ink with SKILL.md packages. Learn skill directories, frontmatter, on-demand loading, and /skill:name commands.",
+			},
+			"mcp.md": {
+				title: "MCP server setup: stdio and Streamable HTTP — Ink",
+				description:
+					"Connect Ink to MCP tool servers over stdio or Streamable HTTP. Configure mcpServers, environment variables, credentials, and server connections.",
+			},
+			"subagents.md": {
+				title: "Subagents, task delegation, and worktrees — Ink",
+				description:
+					"Delegate work with Ink's task tool, configure named subagents, and use isolated Git worktrees. Learn context boundaries and task result handling.",
+			},
+			"images.md": {
+				title: "Image input, clipboard paste, and vision models — Ink",
+				description:
+					"Attach or paste images into Ink, use vision-capable models, and understand supported image formats, automatic resizing, and image size limits.",
+			},
+		},
 	},
 	zh: {
 		htmlLang: "zh-CN",
@@ -98,7 +150,7 @@ const LANGUAGES = {
 		strings: {
 			homeTitle: "Ink — 开源终端 AI 助手与 agent 运行框架",
 			homeDescription:
-				"Ink —— 一个开源的终端 AI 助手与 agent 运行框架：会话、扩展、技能、子代理与 MCP；支持 Anthropic、OpenAI、GLM、DeepSeek 和 Kimi。",
+				"Ink（FishInSalt/ink，npm 包 ink-agent）是开源终端 AI 助手与 agent 运行框架。文档包含安装、模型配置、会话、扩展、Skills、子代理与 MCP 接入。",
 			tagline: "面向终端的 AI agent 运行框架",
 			home: "首页",
 			editLabel: "在 GitHub 上编辑此页",
@@ -117,6 +169,58 @@ const LANGUAGES = {
 			"subagents.md": "子代理",
 			"images.md": "图片",
 		},
+		docMetadata: {
+			"index.md": {
+				title: "安装、模型与功能文档总览 — Ink 文档",
+				description:
+					"Ink 终端 AI 助手的文档入口：查找 ink-agent 安装、模型配置、会话、设置、扩展、Skills 技能、MCP、子代理与图片输入指南。",
+			},
+			"cli.md": {
+				title: "安装与 CLI 命令行参考 — Ink 文档",
+				description:
+					"安装 npm 包 ink-agent，在终端运行 Ink。查看命令行参数、打印模式、管道、附件与会话选项，以及安装验证和卸载方法。",
+			},
+			"providers.md": {
+				title: "模型提供商、登录与模型切换 — Ink 文档",
+				description:
+					"为 Ink 接入模型提供商，通过 /login 登录并配置 API 凭据，使用命令行或交互式模型选择器切换模型，了解模型目录与兼容接口配置。",
+			},
+			"sessions.md": {
+				title: "会话恢复、消息树与上下文压缩 — Ink 文档",
+				description:
+					"恢复与分叉 Ink 会话，浏览消息树，了解 JSONL 历史保存、排队消息与上下文压缩，并使用 /tree、/fork 和命令行会话选项。",
+			},
+			"settings.md": {
+				title: "settings.json 设置与配置参考 — Ink 文档",
+				description:
+					"使用全局和项目 settings.json 配置 Ink，了解各设置键、默认模型、队列模式、图片、MCP 与 CLI 覆盖规则，以及项目配置的信任要求。",
+			},
+			"extensions.md": {
+				title: "扩展开发：工具、命令与事件钩子 — Ink 文档",
+				description:
+					"为 Ink 编写 ESM 扩展，通过扩展 API 添加工具、斜杠命令、系统提示段落、事件门控与工具配色，并了解扩展加载路径和错误处理。",
+			},
+			"skills.md": {
+				title: "Agent Skills 技能与 SKILL.md — Ink 文档",
+				description:
+					"在 Ink 中创建和加载 Agent Skills 技能包，了解 SKILL.md 的目录结构、frontmatter、按需加载机制与 /skill:name 命令。",
+			},
+			"mcp.md": {
+				title: "接入 MCP 服务器：stdio 与 HTTP — Ink 文档",
+				description:
+					"通过 stdio 或 Streamable HTTP 为 Ink 接入 MCP 工具服务器，配置 mcpServers、环境变量与凭据，并了解服务器连接和工具使用方式。",
+			},
+			"subagents.md": {
+				title: "子代理、task 任务委派与 worktree — Ink 文档",
+				description:
+					"使用 Ink 的 task 工具委派任务，配置具名子代理并通过 Git worktree 隔离工作，了解上下文边界、任务结果与执行记录。",
+			},
+			"images.md": {
+				title: "图片输入、剪贴板粘贴与视觉模型 — Ink 文档",
+				description:
+					"在 Ink 中附加或粘贴图片，选择支持视觉的模型，了解图片格式识别、自动缩放、大小限制，以及 read 工具如何将图片交给模型。",
+			},
+		},
 	},
 };
 
@@ -124,13 +228,13 @@ const SIDEBAR_LINKS = {
 	en: [
 		["GitHub", REPO_URL],
 		["npm", "https://www.npmjs.com/package/ink-agent"],
-		["Technical blog (Chinese)", BLOG_URL],
+		["Coding Agent 原理与实践 (Chinese)", BLOG_URL],
 		["Changelog", `${REPO_URL}/blob/main/CHANGELOG.md`],
 	],
 	zh: [
 		["GitHub", REPO_URL],
 		["npm", "https://www.npmjs.com/package/ink-agent"],
-		["技术博客（中文）", BLOG_URL],
+		["《Coding Agent 原理与实践》", BLOG_URL],
 		["更新日志", `${REPO_URL}/blob/main/CHANGELOG.md`],
 	],
 };
@@ -281,29 +385,6 @@ async function rewriteArticleLinks(html, context) {
 async function renderMarkdown(markdown, context) {
 	const html = await marked.parse(markdown);
 	return rewriteArticleLinks(addHeadingIds(html), context);
-}
-
-// First plain paragraph, stripped of inline markdown, for meta description.
-function summarize(markdown) {
-	let inFence = false;
-	for (const raw of markdown.split("\n")) {
-		const line = raw.trim();
-		if (line.startsWith("```")) {
-			inFence = !inFence;
-			continue;
-		}
-		if (inFence || line === "") continue;
-		if (/^[#<>\-*|]/.test(line)) continue;
-		const text = line
-			.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-			.replace(/[*_`]/g, "")
-			.replace(/\s+/g, " ")
-			.trim();
-		if (text.length >= 40) {
-			return text.length > 160 ? `${text.slice(0, 157).trimEnd()}…` : text;
-		}
-	}
-	return "";
 }
 
 function escapeAttr(text) {
@@ -524,8 +605,8 @@ export async function buildSite({ outDir = defaultOutDir } = {}) {
 				outPath,
 				renderPage({
 					lang,
-					title: `${config.labels[file]} — Ink`,
-					description: summarize(markdown) || config.strings.homeDescription,
+					title: config.docMetadata[file].title,
+					description: config.docMetadata[file].description,
 					outPath,
 					content: await renderMarkdown(markdown, context),
 					activeFile: file,
