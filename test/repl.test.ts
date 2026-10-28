@@ -819,11 +819,12 @@ describe("runRepl", () => {
 		await waitUntil(() => env.requests.length >= 1);
 		env.send("again\n");
 		await waitUntil(() => env.output().includes("ink: boom"));
-		// mid-run failure note: work is saved, next message resumes (dogfood fix)
-		expect(env.output()).toContain("resume from the break");
-		env.send("third\n");
-		await waitUntil(() => env.requests.length >= 3);
-		expect(env.output()).toContain("fine again");
+		expect(env.output()).toContain(
+			'completed work from this turn is saved in the session — send another message (e.g. "continue") to resume from the break',
+		);
+		env.send("continue\n");
+		await waitUntil(() => env.output().includes("fine again"));
+		expect(env.requests[2]?.messages.at(-1)).toMatchObject({ role: "user", content: "continue" });
 		env.fake.eof();
 		expect(await env.repl).toBe(0);
 	});

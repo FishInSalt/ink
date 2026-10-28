@@ -276,7 +276,7 @@ describe("codex-responses provider", () => {
 		expect(error.cause).toBeInstanceOf(Error);
 		expect(error.message).toContain("Codex stream interrupted");
 		expect(error.message).toMatch(/UND_ERR_SOCKET|terminated/);
-		expect(error.message).toContain('send "继续" to resume');
+		expect(error.message.endsWith('; send "continue" to resume')).toBe(true);
 		expect(error.message).not.toContain("\n");
 		expect(error.message.length).toBeLessThanOrEqual(160);
 	});

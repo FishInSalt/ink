@@ -2347,6 +2347,28 @@ describe("runRepl with shell:tui", () => {
 		expect(code).toBe(0);
 	});
 
+	it("provider failures show an English recovery hint without translating upstream details or replies", async () => {
+		const recoveryHint =
+			'completed work from this turn is saved in the session — send another message (e.g. "continue") to resume from the break';
+		const env = await startTuiRepl([
+			() => {
+				throw new Error("连接已关闭");
+			},
+			reply("已恢复"),
+		]);
+		try {
+			env.terminal.data("go\r");
+			await waitUntil(() => env.transcript.completedLines().includes(recoveryHint));
+			expect(env.transcript.completedLines()).toContain("ink: 连接已关闭");
+			env.terminal.data("continue\r");
+			await waitUntil(() => env.transcript.completedLines().includes("已恢复"));
+			expect(env.requests[1]?.messages.at(-1)).toMatchObject({ role: "user", content: "continue" });
+		} finally {
+			env.terminal.data("/exit\r");
+			await env.repl;
+		}
+	});
+
 	it("Ctrl+C routes through the machine: the quit hint lands in the transcript", async () => {
 		const env = await startTuiRepl([reply("ok")]);
 		await settle();

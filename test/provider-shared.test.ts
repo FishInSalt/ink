@@ -30,8 +30,14 @@ describe("wrapStreamInterruptions", () => {
 		const error = caught as StreamInterruptedError;
 		expect(error.cause).toBe(original);
 		expect(error.message.length).toBeLessThanOrEqual(160);
-		expect(error.message).toContain('send "继续" to resume');
+		expect(error.message.endsWith('; send "continue" to resume')).toBe(true);
 		expect(error.message).not.toContain("\n");
+	});
+
+	it("keeps upstream Unicode details unchanged and the recovery hint in English", () => {
+		const detail = "连接已关闭 — café 🔌";
+		const error = new StreamInterruptedError("Codex", detail);
+		expect(error.message).toBe(`Codex stream interrupted — ${detail}; send "continue" to resume`);
 	});
 
 	it("uses a direct socket code without requiring a wrapped cause", async () => {

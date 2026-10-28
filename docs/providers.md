@@ -77,8 +77,9 @@ model can issue complete calls on the next turn.
 If the ChatGPT backend closes the response stream mid-answer (a proxy or
 network reset), Ink reports `Codex stream interrupted — ...` instead of a
 bare `terminated`. Completed tool results stay in the session: resume with
-`ink -r <id>` and send "继续" to continue. A transport error that arrives
-after `response.completed` or `response.incomplete` is ignored — the turn is
+`ink -r <id>` and send a message such as "continue". This is an ordinary
+message, not a special command. A transport error that arrives after
+`response.completed` or `response.incomplete` is ignored — the turn is
 treated as complete.
 
 ### DeepSeek
