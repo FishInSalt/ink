@@ -562,13 +562,14 @@ describe("url_read direct extension contract", () => {
 		expect(await page()).toEqual({ isError: true, output: `url_read HTTP ${status}: page request failed` });
 		expect(cancel).toHaveBeenCalledOnce();
 	});
-	it("suggests chrome for HTTP 403 without retrying", async () => {
+	it.each([401, 403])("keeps HTTP %i advice local to the tool", async (status) => {
 		const cancel = vi.fn();
-		fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({ cancel }), { status: 403 }));
+		fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({ cancel }), { status }));
 		const result = await page();
 		expect(result.isError).toBe(true);
-		expect(result.output).toContain("HTTP 403");
-		expect(result.output).toContain("chrome");
+		expect(result.output).toContain(`HTTP ${status}`);
+		expect(result.output).toContain("another source");
+		expect(result.output).not.toContain("chrome");
 		expect(result.output).not.toContain("retry");
 		expect(cancel).toHaveBeenCalledOnce();
 	});
@@ -607,7 +608,7 @@ describe("url_read direct extension contract", () => {
 	it.each([
 		["UND_ERR_TOO_MANY_REDIRECTS", "too many redirects", "direct source"],
 		["ENOTFOUND", "DNS lookup failed", "hostname"],
-		["CERT_HAS_EXPIRED", "TLS certificate verification failed", "chrome"],
+		["CERT_HAS_EXPIRED", "TLS certificate verification failed", "proxy or TLS settings"],
 		["ECONNRESET", "connection reset", "retry once"],
 	])("names transport cause %s", async (code, expected, hint) => {
 		const cause = Object.assign(new Error(secret), { code });
@@ -616,6 +617,7 @@ describe("url_read direct extension contract", () => {
 		expect(result.isError).toBe(true);
 		expect(result.output).toContain(expected);
 		expect(result.output).toContain(hint);
+		expect(result.output).not.toContain("chrome");
 		expect(result.output).not.toContain(secret);
 		expect(result.output).not.toContain("network or response-read failure");
 	});

@@ -129,83 +129,12 @@ describe("read tool", () => {
 		expect(result.output).toContain("binary");
 	});
 
-	it("returns the tail when offset is beyond EOF", async () => {
-		const file = await setupFile("eof.txt", 30);
+	it("errors when offset is beyond EOF", async () => {
+		const file = await setupFile("eof.txt", 5);
 		const tool = createReadTool();
-		// limit describes a range at the invalid offset; recovery shows the tail.
-		const result = await tool.execute({ path: file, offset: 99, limit: 5 }, noSignal);
+		const result = await tool.execute({ path: file, offset: 99 }, noSignal);
 		expect(result.isError).toBe(true);
 		expect(result.output).toContain("beyond the end");
-		expect(result.output).toContain("line-11");
-		expect(result.output).toContain("line-30");
-		expect(result.output).not.toContain("line-10\n");
-		expect(result.output).toContain("Showing the last 20 lines (file ends at line 30).");
-	});
-
-	it("reports an empty file when offset is beyond EOF", async () => {
-		const dir = await mkTempDirAsync("ink-test-");
-		const file = path.join(dir, "empty.txt");
-		await writeFile(file, "", "utf8");
-		const tool = createReadTool();
-		const result = await tool.execute({ path: file, offset: 2 }, noSignal);
-		expect(result.isError).toBe(true);
-		expect(result.output).toContain("file is empty");
-	});
-
-	it("handles a final blank line and singular tail wording", async () => {
-		const dir = await mkTempDirAsync("ink-test-");
-		const blank = path.join(dir, "blank.txt");
-		const single = path.join(dir, "single.txt");
-		await writeFile(blank, "\n", "utf8");
-		await writeFile(single, "only-line\n", "utf8");
-		const tool = createReadTool();
-		const blankResult = await tool.execute({ path: blank, offset: 2 }, noSignal);
-		expect(blankResult.isError).toBe(true);
-		expect(blankResult.output).toContain("The last line is empty (file ends at line 1).");
-		const singleResult = await tool.execute({ path: single, offset: 2 }, noSignal);
-		expect(singleResult.output).toContain("Showing the last 1 line (file ends at line 1).");
-	});
-
-	it("reports the shown suffix when an earlier tail line hits the byte cap", async () => {
-		const dir = await mkTempDirAsync("ink-test-");
-		const file = path.join(dir, "huge-tail.txt");
-		const lines = Array.from({ length: 25 }, (_, i) => (i === 20 ? "x".repeat(60 * 1024) : `line-${i + 1}`));
-		await writeFile(file, lines.join("\n"), "utf8");
-		const tool = createReadTool();
-		const result = await tool.execute({ path: file, offset: 999 }, noSignal);
-		expect(result.isError).toBe(true);
-		expect(result.output).toContain("Showing lines 22-25");
-		expect(result.output).toContain("the last 4 lines");
-		expect(result.output).toContain("lines 6-21 omitted");
-		expect(result.output).toContain("line-22");
-		expect(result.output).toContain("line-25");
-		expect(result.output).not.toContain("line-21\n");
-		expect(result.output).toContain("Use offset=6");
-	});
-
-	it("names omitted lines when the final line is blank and the tail is byte-capped", async () => {
-		const dir = await mkTempDirAsync("ink-test-");
-		const file = path.join(dir, "huge-before-blank.txt");
-		await writeFile(file, `${"x".repeat(60 * 1024)}\n\n`, "utf8");
-		const tool = createReadTool();
-		const result = await tool.execute({ path: file, offset: 3 }, noSignal);
-		expect(result.isError).toBe(true);
-		expect(result.output).toContain("The last line is empty (file ends at line 2).");
-		expect(result.output).toContain("line 1 omitted");
-		expect(result.output).toContain("Use offset=1 to read it.");
-		expect(result.output).not.toContain("xxxx");
-	});
-
-	it("uses the bash hint when the final line alone exceeds the cap", async () => {
-		const dir = await mkTempDirAsync("ink-test-");
-		const file = path.join(dir, "huge-final.txt");
-		await writeFile(file, `line-1\nline-2\n${"x".repeat(60 * 1024)}`, "utf8");
-		const tool = createReadTool();
-		const result = await tool.execute({ path: file, offset: 9 }, noSignal);
-		expect(result.isError).toBe(true);
-		expect(result.output).toContain("[Line 3 is 60KB, exceeds the 50KB limit.");
-		expect(result.output).toContain(`sed -n '3p' '${file}' | head -c`);
-		expect(result.output).not.toContain("xxxx");
 	});
 });
 
