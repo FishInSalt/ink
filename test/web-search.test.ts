@@ -562,6 +562,16 @@ describe("url_read direct extension contract", () => {
 		expect(await page()).toEqual({ isError: true, output: `url_read HTTP ${status}: page request failed` });
 		expect(cancel).toHaveBeenCalledOnce();
 	});
+	it("suggests chrome for HTTP 403 without retrying", async () => {
+		const cancel = vi.fn();
+		fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({ cancel }), { status: 403 }));
+		const result = await page();
+		expect(result.isError).toBe(true);
+		expect(result.output).toContain("HTTP 403");
+		expect(result.output).toContain("chrome");
+		expect(result.output).not.toContain("retry");
+		expect(cancel).toHaveBeenCalledOnce();
+	});
 	it.each(["image/png", "application/octet-stream", ""])(
 		"rejects unsupported content type %j",
 		async (type) => {
@@ -569,20 +579,92 @@ describe("url_read direct extension contract", () => {
 			fetchMock.mockResolvedValueOnce(
 				new Response(new ReadableStream({ cancel }), { headers: type ? { "content-type": type } : {} }),
 			);
+			const label = type === "" ? "unknown" : type;
 			expect(await page()).toEqual({
 				isError: true,
-				output: "url_read: unsupported content-type — pages and text only",
+				output: `url_read: unsupported content-type "${label}" — pages and text only`,
 			});
 			expect(cancel).toHaveBeenCalledOnce();
 		},
 	);
-	it.each(["text/plain", "application/json", "application/xml", "text/xml"])(
+	it.each(["text/plain", "text/markdown", "text/csv", "application/json", "application/xml", "text/xml"])(
 		"accepts %s text without HTML extraction",
 		async (type) => {
 			fetchMock.mockResolvedValueOnce(new Response("<tag>text</tag>", { headers: { "content-type": type } }));
 			expect((await page()).output).toContain("<tag>text</tag>");
 		},
 	);
+	it("extracts application/xhtml+xml as HTML", async () => {
+		fetchMock.mockResolvedValueOnce(
+			new Response("<p>XHTML</p><script>SECRET</script>", {
+				headers: { "content-type": "application/xhtml+xml" },
+			}),
+		);
+		const { output } = await page();
+		expect(output).toContain("XHTML");
+		expect(output).not.toContain("SECRET");
+	});
+	it.each([
+		["UND_ERR_TOO_MANY_REDIRECTS", "too many redirects", "direct source"],
+		["ENOTFOUND", "DNS lookup failed", "hostname"],
+		["CERT_HAS_EXPIRED", "TLS certificate verification failed", "chrome"],
+		["ECONNRESET", "connection reset", "retry once"],
+	])("names transport cause %s", async (code, expected, hint) => {
+		const cause = Object.assign(new Error(secret), { code });
+		fetchMock.mockRejectedValueOnce(Object.assign(new TypeError(secret), { cause }));
+		const result = await page();
+		expect(result.isError).toBe(true);
+		expect(result.output).toContain(expected);
+		expect(result.output).toContain(hint);
+		expect(result.output).not.toContain(secret);
+		expect(result.output).not.toContain("network or response-read failure");
+	});
+	it("maps a TLS handshake timeout to timed out", async () => {
+		const cause = Object.assign(new Error(secret), { code: "ERR_TLS_HANDSHAKE_TIMEOUT" });
+		fetchMock.mockRejectedValueOnce(Object.assign(new TypeError(secret), { cause }));
+		expect(await page()).toEqual({ isError: true, output: "url_read timed out" });
+	});
+	it("names redirect loops from the real fetch shape without a code", async () => {
+		// Node's fetch reports a redirect loop as TypeError("fetch failed")
+		// with cause.message "redirect count exceeded" and no cause.code.
+		const cause = new Error("redirect count exceeded");
+		fetchMock.mockRejectedValueOnce(Object.assign(new TypeError("fetch failed"), { cause }));
+		const result = await page();
+		expect(result.isError).toBe(true);
+		expect(result.output).toContain("too many redirects");
+		expect(result.output).toContain("direct source");
+		expect(result.output).not.toContain("check connectivity and retry");
+	});
+	it.each(["ERR_SSL_WRONG_VERSION_NUMBER", "EPROTO"])(
+		"distinguishes protocol error %s from a certificate failure",
+		async (code) => {
+			const cause = Object.assign(new Error(secret), { code });
+			fetchMock.mockRejectedValueOnce(Object.assign(new TypeError(secret), { cause }));
+			const result = await page();
+			expect(result.output).toContain("TLS handshake failed");
+			expect(result.output).not.toContain("certificate");
+			expect(result.output).not.toContain(secret);
+		},
+	);
+	it("keeps web_search transport advice neutral", async () => {
+		const cause = Object.assign(new Error(secret), { code: "CERT_HAS_EXPIRED" });
+		fetchMock.mockRejectedValueOnce(Object.assign(new TypeError(secret), { cause }));
+		const result = await search();
+		expect(result.output).toContain("TLS certificate verification failed");
+		expect(result.output).not.toContain("chrome");
+		expect(result.output).not.toContain("URL");
+		expect(result.output).not.toContain(secret);
+	});
+	it("clips an oversized content-type label", async () => {
+		const type = "x".repeat(300);
+		fetchMock.mockResolvedValueOnce(
+			new Response(new ReadableStream(), { headers: { "content-type": type } }),
+		);
+		const result = await page();
+		expect(result.isError).toBe(true);
+		expect(result.output).toContain(`"${"x".repeat(100)}"`);
+		expect(result.output).not.toContain("x".repeat(101));
+	});
 	it("extracts HTML text and entities, excluding scripts, styles, comments and noscript", async () => {
 		fetchMock.mockResolvedValueOnce(
 			new Response(

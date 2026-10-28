@@ -136,7 +136,10 @@ document; the essentials:
   generated answer. Total response ≤ 40,000 characters; 15-second timeout.
 - `url_read`: HTTP(S) URLs ≤ 2048 chars; HTML tags and script/style blocks
   are stripped; 300,000-byte download cap, 20,000-character output cap,
-  20-second timeout. Does not render JavaScript or parse binary formats.
+  20-second timeout. Accepts `text/*` (including Markdown), JSON and XML;
+  other content types are refused with the received type. Does not render
+  JavaScript or parse binary formats. Redirect loops, DNS, TLS and connection
+  failures are reported with an actionable hint.
 - A 10-minute in-memory cache (≤ 64 queries) avoids repeat searches;
   authentication is checked before cache lookup.
 - **Network policy limitation:** page reading can access local/private
