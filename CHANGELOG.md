@@ -14,6 +14,15 @@ their original release identity.
   interactive recovery notes now use "continue" as the example message.
   Model responses, tool output, and upstream error details remain unchanged.
 
+### Security
+
+- Update the development-only Vitest toolchain from `4.1.11` to `4.1.12`
+  (including `@vitest/mocker`) and Vite from `8.3.0` to `8.3.5`. These
+  versions fix eight advisories covering editor command injection, file
+  access restrictions, and development-server script injection. Raise the
+  declared Vitest minimum to `^4.1.12`; production runtime dependencies and
+  the supported Node minimum are unchanged.
+
 ## [0.4.4] - 2026-10-26
 
 ### Fixed
