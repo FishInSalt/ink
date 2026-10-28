@@ -46,7 +46,7 @@ export class StreamInterruptedError extends Error {
 
 	constructor(provider: string, detail: string, options?: ErrorOptions) {
 		const head = `${provider} stream interrupted — `;
-		const tail = '; send "继续" to resume';
+		const tail = '; send "continue" to resume';
 		// Keep the whole message under the run-error event's 160-char cap so
 		// the recovery hint survives; the raw error remains in `cause`.
 		const room = Math.max(0, 160 - head.length - tail.length);

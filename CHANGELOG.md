@@ -8,6 +8,12 @@ their original release identity.
 
 ## [Unreleased]
 
+### Fixed
+
+- **English CLI/TUI recovery hints.** Stream-interruption errors and
+  interactive recovery notes now use "continue" as the example message.
+  Model responses, tool output, and upstream error details remain unchanged.
+
 ## [0.4.4] - 2026-10-26
 
 ### Fixed

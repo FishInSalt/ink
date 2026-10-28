@@ -1094,12 +1094,10 @@ class ReplMachine {
 			return;
 		}
 		this.reportError(err);
-		// Mid-run failures keep every completed tool result in the session — the
-		// next message resumes from the break. Users assume the whole turn was
-		// lost otherwise (dogfood report 2026-09-01: 6 tool results survived,
-		// the user just wasn't told they could type 继续).
+		// Mid-run failures keep completed tool results in the session. Tell the
+		// user they can send another message to resume from the break.
 		this.renderer.note(
-			'completed work from this turn is saved in the session — send another message (e.g. "继续") to resume from the break',
+			'completed work from this turn is saved in the session — send another message (e.g. "continue") to resume from the break',
 		);
 		// A failure ends the run without completing it — same rule as an
 		// abort: the queue is handed back (editor in the TUI, echoed notes in

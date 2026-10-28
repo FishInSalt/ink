@@ -59,6 +59,10 @@ echo "fix the typo" | ink   # piped: one turn, exits at EOF (empty pipe: help + 
 Print/piped runs default to `--max-turns 100`; interactive TTY sessions are
 uncapped (a finite value applies when passed explicitly).
 
+Ink's built-in CLI/TUI messages, including error recovery hints, are in
+English. Model responses, tool output, upstream error details, and content
+supplied by users or extensions are not translated.
+
 ## Options
 
 | Flag | Description |
