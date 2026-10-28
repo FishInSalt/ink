@@ -10,12 +10,24 @@ import type { Tool } from "./types.js";
 
 const MAX_LINES = 2000;
 const MAX_BYTES = 50 * 1024; // 50KB
+/** A stale offset should still teach the model where EOF is; 20 lines is
+ *  enough to orient without turning the error into a full-file read. */
+const EOF_TAIL_LINES = 20;
 /** Inline image size cap (M13 §3), on the BASE64-ENCODED payload (pi
  *  parity — image-resize-core computes ceil(n/3)*4): Anthropic rejects
  *  images over 5 MB encoded; 4.5 MB leaves headroom. Without a resizer
  *  (batch 2), oversized images become a teaching note — never a rejected
  *  request. */
 const MAX_IMAGE_BYTES = 4.5 * 1024 * 1024;
+
+/** The shared oversized-first-line teaching notice (normal P9 and EOF tail). */
+function oversizedLineNotice(lineNumber: number, lineBytes: number, quotedPath: string): string {
+	const size =
+		lineBytes >= 1024 * 1024
+			? `${(lineBytes / (1024 * 1024)).toFixed(1)}MB`
+			: `${Math.ceil(lineBytes / 1024)}KB`;
+	return `[Line ${lineNumber} is ${size}, exceeds the ${MAX_BYTES / 1024}KB limit. Use bash: sed -n '${lineNumber}p' ${quotedPath} | head -c ${MAX_BYTES}]`;
+}
 
 const readSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
@@ -150,8 +162,75 @@ export function createReadTool(options: ReadToolOptions = {}): Tool {
 
 			const startIdx = offset !== undefined ? offset - 1 : 0;
 			if (startIdx >= allLines.length && !(startIdx === 0 && allLines.length === 0)) {
+				if (allLines.length === 0) {
+					return {
+						output: `Error: offset ${offset} is beyond the end of the file (0 lines total). The file is empty.`,
+						isError: true,
+					};
+				}
+				const quotedPath = `'${absolute.replaceAll("'", "'\"'\"'")}'`;
+				// The offset usually comes from a stale line count. Return a whole-line
+				// suffix (still as an error) so the model learns the real end in one
+				// turn instead of re-reading just to find it. Scan from EOF: a prefix
+				// scan would omit the actual tail when an earlier line is oversized.
+				const tailCount = Math.min(allLines.length, EOF_TAIL_LINES);
+				const tailStartLimit = allLines.length - tailCount;
+				let tailStartIdx = allLines.length;
+				let tailBytes = 0;
+				for (let i = allLines.length - 1; i >= tailStartLimit; i--) {
+					const line = allLines[i] ?? "";
+					const next = Buffer.byteLength(line, "utf8") + (tailStartIdx < allLines.length ? 1 : 0);
+					if (tailBytes + next > MAX_BYTES) break;
+					tailBytes += next;
+					tailStartIdx = i;
+				}
+				if (tailStartIdx === allLines.length) {
+					const lastLineBytes = Buffer.byteLength(allLines[allLines.length - 1] ?? "", "utf8");
+					return {
+						output:
+							`Error: offset ${offset} is beyond the end of the file (${totalFileLines} lines total).\n\n` +
+							oversizedLineNotice(totalFileLines, lastLineBytes, quotedPath),
+						isError: true,
+					};
+				}
+				const tailLines = allLines.slice(tailStartIdx);
+				const tailText = tailLines.join("\n");
+				const tailStartDisplay = tailStartIdx + 1;
+				const tailWord = tailLines.length === 1 ? "line" : "lines";
+				let tailNote: string;
+				if (tailText === "") {
+					if (tailStartIdx > tailStartLimit) {
+						const omittedStart = tailStartLimit + 1;
+						const omittedEnd = tailStartIdx;
+						const omittedWord = omittedStart === omittedEnd ? "line" : "lines";
+						const omittedRange =
+							omittedStart === omittedEnd ? `${omittedStart}` : `${omittedStart}-${omittedEnd}`;
+						tailNote =
+							`[The last line is empty (file ends at line ${totalFileLines}). ` +
+							`${omittedWord} ${omittedRange} omitted by the ${MAX_BYTES / 1024}KB tail limit. ` +
+							`Use offset=${omittedStart} to read ${omittedStart === omittedEnd ? "it" : "them"}.]`;
+					} else {
+						tailNote = `[The last line is empty (file ends at line ${totalFileLines}).]`;
+					}
+				} else if (tailStartIdx === tailStartLimit) {
+					tailNote = `[Showing the last ${tailLines.length} ${tailWord} (file ends at line ${totalFileLines}).]`;
+				} else {
+					const omittedStart = tailStartLimit + 1;
+					const omittedEnd = tailStartIdx;
+					const omittedWord = omittedStart === omittedEnd ? "line" : "lines";
+					const omittedRange =
+						omittedStart === omittedEnd ? `${omittedStart}` : `${omittedStart}-${omittedEnd}`;
+					tailNote =
+						`[Showing lines ${tailStartDisplay}-${totalFileLines} (the last ${tailLines.length} ${tailWord}; ` +
+						`${omittedWord} ${omittedRange} omitted by the ${MAX_BYTES / 1024}KB tail limit). ` +
+						`Use offset=${omittedStart} to read ${omittedStart === omittedEnd ? "it" : "them"}.]`;
+				}
+				const payload = tailText === "" ? "" : `${tailText}\n\n`;
 				return {
-					output: `Error: offset ${offset} is beyond the end of the file (${totalFileLines} lines total)`,
+					output:
+						`Error: offset ${offset} is beyond the end of the file (${totalFileLines} lines total).\n\n` +
+						payload +
+						tailNote,
 					isError: true,
 				};
 			}
@@ -171,13 +250,9 @@ export function createReadTool(options: ReadToolOptions = {}): Tool {
 			// model a bash fallback instead.
 			const firstLineBytes = Buffer.byteLength(lines[0] ?? "", "utf8");
 			if (lines.length > 0 && firstLineBytes > MAX_BYTES) {
-				const size =
-					firstLineBytes >= 1024 * 1024
-						? `${(firstLineBytes / (1024 * 1024)).toFixed(1)}MB`
-						: `${Math.ceil(firstLineBytes / 1024)}KB`;
 				const quotedPath = `'${absolute.replaceAll("'", "'\"'\"'")}'`;
 				return {
-					output: `[Line ${startDisplay} is ${size}, exceeds the ${MAX_BYTES / 1024}KB limit. Use bash: sed -n '${startDisplay}p' ${quotedPath} | head -c ${MAX_BYTES}]`,
+					output: oversizedLineNotice(startDisplay, firstLineBytes, quotedPath),
 					isError: false,
 				};
 			}

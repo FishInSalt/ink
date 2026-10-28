@@ -44,8 +44,49 @@ function requestError(tool, failure, caller, timeout) {
 	if (caller.aborted) return error(`${tool} aborted`);
 	if (timeout.aborted) return error(`${tool} timed out`);
 	if (failure?.code === "TOO_LARGE") return error(`${tool} response exceeds the download limit`);
+	// fetch() wraps transport failures in TypeError.cause. Name the causes the
+	// model can act on; keep the generic text for everything else (and never
+	// echo an arbitrary error message — it can contain request details). Node's
+	// redirect failure carries the reason only in cause.message, with no code.
+	const cause = failure?.cause;
+	const rawCode = cause?.code ?? failure?.code;
+	const code = typeof rawCode === "string" ? rawCode.toUpperCase() : "";
+	const causeMessage = typeof cause?.message === "string" ? cause.message : "";
+	const page = tool === "url_read";
+	if (code.includes("REDIRECT") || /redirect (?:count exceeded|loop)/i.test(causeMessage)) {
+		return error(page
+			? `${tool}: too many redirects — the URL may be a redirect loop; use a direct source URL or another source`
+			: `${tool}: too many redirects — check the endpoint configuration`);
+	}
+	if (["ENOTFOUND", "EAI_AGAIN", "EAI_FAIL", "ERR_NAME_NOT_RESOLVED"].includes(code)) {
+		return error(`${tool}: DNS lookup failed — check the hostname or connectivity`);
+	}
+	if (["ETIMEDOUT", "ERR_TLS_HANDSHAKE_TIMEOUT", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"].includes(code)) {
+		return error(`${tool} timed out`);
+	}
+	const certificate = code.startsWith("CERT_") ||
+		["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "ERR_TLS_CERT_ALTNAME_INVALID"].includes(code);
+	if (certificate) {
+		return error(page
+			? `${tool}: TLS certificate verification failed — check the URL or use the chrome tool`
+			: `${tool}: TLS certificate verification failed — check connectivity, proxy or TLS settings`);
+	}
+	if (code.startsWith("ERR_SSL_") || code === "EPROTO" || code.includes("TLS")) {
+		return error(page
+			? `${tool}: TLS handshake failed — the server may not speak TLS or the port is wrong`
+			: `${tool}: TLS handshake failed — check the endpoint, proxy or TLS settings`);
+	}
+	if (["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"].includes(code)) {
+		return error(page
+			? `${tool}: connection reset — retry once; if it persists, use the chrome tool`
+			: `${tool}: connection reset — retry once`);
+	}
+	if (code === "ECONNREFUSED") {
+		return error(`${tool}: connection refused — the host may be down or blocking the request`);
+	}
 	return error(`${tool} network or response-read failure — check connectivity and retry`);
 }
+
 function formatResults(data, options) {
 	if (!data || !Array.isArray(data.results)) return error("web_search got an invalid response structure");
 	let output = `${WARNING}\nQuery: ${options.query}`;
@@ -160,14 +201,23 @@ export default function (api) {
 					signal: AbortSignal.any([signal, timeout]), redirect: "follow",
 					headers: { "user-agent": "ink-url-read/0.2" },
 				});
-				if (!res.ok) { await cancelBody(res); return error(`url_read HTTP ${res.status}: page request failed`); }
-				const type = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
-				if (!["text/html", "text/plain", "application/json", "application/xml", "text/xml"].includes(type)) {
+				if (!res.ok) {
 					await cancelBody(res);
-					return error("url_read: unsupported content-type — pages and text only");
+					if (res.status === 401 || res.status === 403) {
+						return error(`url_read HTTP ${res.status}: access denied — the site may block automated reads; try the chrome tool or another source`);
+					}
+					return error(`url_read HTTP ${res.status}: page request failed`);
+				}
+				const type = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+				const accepted = type === "text/html" || type === "application/xhtml+xml" ||
+					type.startsWith("text/") || ["application/json", "application/xml"].includes(type);
+				if (!accepted) {
+					await cancelBody(res);
+					const label = type === "" ? "unknown" : clip(type, 100);
+					return error(`url_read: unsupported content-type "${label}" — pages and text only`);
 				}
 				const { text: raw, truncated } = await readBounded(res, 300_000, { truncate: true });
-				const text = type === "text/html" ? htmlToText(raw) : raw;
+				const text = type === "text/html" || type === "application/xhtml+xml" ? htmlToText(raw) : raw;
 				const finalUrl = webUrl(res.url);
 				const prefix = `${WARNING}\nSource: ${url}${finalUrl && finalUrl !== url ? `\nFinal URL: ${finalUrl}` : ""}\n\n`;
 				const note = "\n[truncated: download or output limit reached]";
