@@ -1,6 +1,6 @@
 # Search tool alignment: grep and find
 
-Status: approved after four independent adversarial design reviews (final review closed). Implementation still requires tests and independent code review.
+Status: approved after three independent adversarial design reviews and a final confirmation pass. Implementation still requires tests and independent code review.
 
 Worktree: `/Users/z/Z/Agent_demo/ink/.worktrees/ink-search-tools`
 
