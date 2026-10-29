@@ -409,7 +409,7 @@ it.each(fixtures)(
 		for (const bin of ["rg", "fd"])
 			await writeFile(
 				path.join(baseDir, bin),
-				`#!${process.execPath}\nif(process.argv.includes('--version'))process.exit(0);process.stdout.write(${JSON.stringify(bin === "rg" ? "file.txt:1:needle first\n" : "file.txt\n")});`,
+				`#!${process.execPath}\nif(process.argv.includes('--version'))process.exit(0);if(process.argv.includes('--help')){process.stdout.write('--max-results <count>\\n--no-require-git\\n');process.exit(0);}process.stdout.write(${JSON.stringify(bin === "rg" ? "file.txt:1:needle first\n" : "file.txt\n")});`,
 				{ mode: 0o755 },
 			);
 		await withVisualScope(baseDir, async (terminal, track) => {

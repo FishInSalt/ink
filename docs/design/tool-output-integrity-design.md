@@ -2,6 +2,8 @@
 
 Status: approved; independent fresh-context adversarial design review closed after resolving read-path quoting and pre-aborted search handling. Implementation still requires tests and independent code review.
 
+Amendment: `search-tools-alignment-design.md` supersedes the §5 "Keep argv construction, defaults/clamping, ignore behavior, and process launch architecture" sentence for grep/find argv, defaults, ignore behavior, and the fd capability probe. The §5 collection/counting/error rules and §8 presentation rules still apply.
+
 Worktree: `/Users/z/Z/Agent_demo/imp-tool-output`
 
 Branch: `fix/tool-output-integrity`

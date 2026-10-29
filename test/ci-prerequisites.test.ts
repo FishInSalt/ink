@@ -151,7 +151,7 @@ describe("search prerequisite failure versus optional local skips", () => {
 		expect(result.report.success).toBe(true);
 		expect(result.report.numPassedTests).toBe(0);
 		expect(result.report.numFailedTests).toBe(0);
-		expect(result.report.numPendingTests).toBe(9);
+		expect(result.report.numPendingTests).toBe(27);
 		expect(result.output).not.toContain("Required search test binaries missing:");
 	});
 });

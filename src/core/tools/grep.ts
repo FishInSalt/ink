@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { detectBinary } from "./bin-detect.js";
 import { decodePrefix, logicalLines, renderedHead, wholeLinePrefix } from "./output-text.js";
 import { grepPresentation } from "./presentation.js";
+import { escapePathForError, resolveSearchPath, statSearchPath } from "./search-path.js";
 import type { Tool } from "./types.js";
 
 const DEFAULT_LIMIT = 100;
@@ -11,6 +12,9 @@ const MAX_BYTES = 50 * 1024;
 const BUFFER_GUARD_BYTES = 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const KILL_GRACE_MS = 2_000;
+/** Version-control metadata is not working-tree code. Keep it out of hidden
+ * searches; an explicit `path` target inside one is still searched by rg. */
+const VCS_DIRECTORIES_TO_EXCLUDE = [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"] as const;
 
 const grepSchema = Type.Object({
 	pattern: Type.String({ description: "Search pattern (regex, or literal with literal: true)" }),
@@ -40,9 +44,11 @@ export function createGrepTool(options: GrepToolOptions = {}): Tool {
 		// concurrency (see docs/design/readonly-parallel-design.md §2.1).
 		concurrencySafe: true,
 		presentation: grepPresentation,
-		promptSnippet: "find where code is defined or used (respects .gitignore) — prefer over bash grep.",
+		promptSnippet:
+			"find where code is defined or used (respects .gitignore in Git repos; skips VCS dirs) — prefer over bash grep.",
 		description:
-			"Search file contents for a pattern (backed by ripgrep; respects .gitignore, skips binary files). " +
+			"Search file contents for a pattern (backed by ripgrep; respects .gitignore inside Git repositories, " +
+			"includes hidden files except VCS metadata directories, skips binary files). " +
 			"Returns matching lines as 'path:line:text'. Use glob to narrow by file type. " +
 			`Output is truncated to the first ${DEFAULT_LIMIT} lines / 50KB — refine the pattern instead of raising the limit. ` +
 			"This is the right tool for 'where is X defined/used'; prefer it over bash grep.",
@@ -64,12 +70,25 @@ export function createGrepTool(options: GrepToolOptions = {}): Tool {
 			const context = clampInt(args.context, 0, 0, 10);
 			const timeoutMs = clampInt(args.timeout, DEFAULT_TIMEOUT_MS / 1000, 1, 600) * 1000;
 
-			const argv = ["--color", "never", "--no-heading", "--line-number"];
+			const { childPath, resolvedPath } = resolveSearchPath(args.path, cwd);
+			const pathStat = await statSearchPath(resolvedPath, signal);
+			if ("error" in pathStat) return pathStat.error;
+			if (pathStat.kind !== "file" && pathStat.kind !== "directory") {
+				return {
+					output: `Error: path is not a file or directory: ${escapePathForError(resolvedPath)}`,
+					isError: true,
+				};
+			}
+			if (signal.aborted) return { output: "Error: search aborted by user.", isError: true };
+
+			const argv = ["--no-config", "--color", "never", "--no-heading", "--line-number", "--hidden"];
+			for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) argv.push("--glob", `!${dir}`);
+			argv.push("--with-filename");
 			if (args.ignoreCase === true) argv.push("--ignore-case");
 			if (args.literal === true) argv.push("--fixed-strings");
 			if (typeof args.glob === "string" && args.glob !== "") argv.push("--glob", args.glob);
 			if (context > 0) argv.push("--context", String(context));
-			argv.push("--", pattern, typeof args.path === "string" && args.path !== "" ? args.path : ".");
+			argv.push("--", pattern, childPath);
 
 			return runSearch("rg", argv, cwd, { limit, context, timeoutMs, label: pattern, signal });
 		},
@@ -91,9 +110,10 @@ export async function runSearch(
 		timeoutMs: number;
 		label: string;
 		signal: AbortSignal;
+		resultLimit?: number;
 	},
 ): Promise<{ output: string; isError?: boolean }> {
-	const { limit, timeoutMs, label, signal } = options;
+	const { limit, timeoutMs, label, signal, resultLimit } = options;
 
 	if (signal.aborted) return { output: "Error: search aborted by user.", isError: true };
 	return new Promise((resolve) => {
@@ -179,6 +199,12 @@ export async function runSearch(
 				if (preview.byteLimited) reason += ", 50KB limit";
 				text += `\n\n[Truncated: ${reason}. Narrow the search (subdirectory path, glob, or more specific pattern) instead of raising the limit.]`;
 			} else if (observed === 0) text = `No matches for ${label}`;
+			if (resultLimit !== undefined && lines.length >= resultLimit) {
+				const resultWord = resultLimit === 1 ? "Result" : "Results";
+				const resultNoun = resultLimit === 1 ? "result" : "results";
+				const verb = resultLimit === 1 ? "was" : "were";
+				text += `\n\n[${resultWord} limited to ${resultLimit}; at least ${resultLimit} ${resultNoun} ${verb} found. Narrow the pattern or path if you need a complete list.]`;
+			}
 			if (diagnostic !== "") text += `\n\nstderr:\n${diagnostic}`;
 			finish({ output: text });
 		});
