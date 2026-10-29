@@ -84,7 +84,7 @@ const taskSchema = Type.Object({
 		Type.Integer({
 			minimum: 1000,
 			description:
-				"Optional wall-clock budget in ms for the child run. Omit for design reviews, implementation, research, or any work likely to run longer than 2-3 minutes; those tasks routinely exceed short budgets. Set it only for a single quick check you expect to finish well under a minute. REPL default: no limit (Ctrl+C is the backstop); print/headless runs default to 60 min.",
+				"Optional hard wall-clock cap in ms. Omit by default: when it fires, the child is aborted mid-work. Set it only when you deliberately need a hard bound on a known-short task; do not set it from an estimate of how long the task will take. REPL default: no limit (Ctrl+C is the backstop); print/headless default: 60 min.",
 		}),
 	),
 	worktree: Type.Optional(
@@ -357,7 +357,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
 		// block (capped, escaped, budgeted) — a dynamic description defeats
 		// provider tool-schema caching and grows unbounded with agent count.
 		description:
-			"Delegate a self-contained task to a fresh subagent with its own context window. The prompt is all the subagent sees — include every path and detail it needs and what to return. Its final message becomes the tool result. Prefer this for multi-step exploration (searches, file reads, research) that would otherwise bloat this conversation; keep one-shot questions here. For open-ended work, omit `timeoutMs`; a cap of a minute or two usually cuts off useful work. Several task calls in one turn run concurrently — delegate only INDEPENDENT subtasks; jobs that modify the same files must be delegated one at a time. Named agents are listed in the system prompt's <advertised_agents> block.",
+			"Delegate a self-contained task to a fresh subagent with its own context window. The prompt is all the subagent sees — include every path and detail it needs and what to return. Its final message becomes the tool result. Prefer this for multi-step exploration (searches, file reads, research) that would otherwise bloat this conversation; keep one-shot questions here. Several task calls in one turn run concurrently — delegate only INDEPENDENT subtasks; jobs that modify the same files must be delegated one at a time. Named agents are listed in the system prompt's <advertised_agents> block.",
 		parameters: taskSchema,
 
 		async execute(args, signal, context): Promise<ToolExecuteResult> {

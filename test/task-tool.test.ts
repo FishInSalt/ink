@@ -611,7 +611,7 @@ describe("named agents (M5c)", () => {
 		expect(JSON.stringify(task.parameters)).toContain("~300 words max");
 	});
 
-	it("timeoutMs guidance discourages short caps on open-ended work", () => {
+	it("timeoutMs is described as a hard cap, not a duration estimate", () => {
 		const task = createTaskTool({
 			getProvider: () => scriptedProvider([assistant([{ type: "text", text: "x" }])]),
 			getModel: () => "m",
@@ -621,12 +621,15 @@ describe("named agents (M5c)", () => {
 		});
 		const timeout = (task.parameters as { properties?: { timeoutMs?: { description?: string } } }).properties
 			?.timeoutMs?.description;
-		expect(timeout).toContain("wall-clock budget in ms");
-		expect(timeout).toContain("Omit for design reviews");
-		expect(timeout).toContain("2-3 minutes");
-		expect(timeout).toContain("single quick check");
-		expect(task.description).toContain("omit `timeoutMs`");
-		expect(task.description).toContain("a minute or two");
+		expect(timeout).toContain("Optional hard wall-clock cap in ms");
+		expect(timeout).toContain("Omit by default");
+		expect(timeout).toContain("aborted mid-work");
+		expect(timeout).toContain("known-short task");
+		expect(timeout).toContain("do not set it from an estimate");
+		expect(timeout).toContain("REPL default: no limit");
+		expect(timeout).toContain("print/headless default: 60 min");
+		expect(timeout).not.toContain("2-3 minutes");
+		expect(task.description).not.toContain("omit `timeoutMs`");
 	});
 
 	it("the roster lives in the system block, not the description (prompt-audit P8)", () => {
