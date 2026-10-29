@@ -608,9 +608,25 @@ describe("named agents (M5c)", () => {
 			getSession: () => null,
 		});
 		expect(task.description).not.toContain("~300 words"); // teaching lives in the param, not the tool body
-		const params = JSON.stringify(task.parameters);
-		expect(params).toContain("~300 words max");
-		expect(params).toContain("wall-clock budget in ms");
+		expect(JSON.stringify(task.parameters)).toContain("~300 words max");
+	});
+
+	it("timeoutMs guidance discourages short caps on open-ended work", () => {
+		const task = createTaskTool({
+			getProvider: () => scriptedProvider([assistant([{ type: "text", text: "x" }])]),
+			getModel: () => "m",
+			getSystem: () => "",
+			getTools: () => [echo],
+			getSession: () => null,
+		});
+		const timeout = (task.parameters as { properties?: { timeoutMs?: { description?: string } } }).properties
+			?.timeoutMs?.description;
+		expect(timeout).toContain("wall-clock budget in ms");
+		expect(timeout).toContain("Omit for design reviews");
+		expect(timeout).toContain("2-3 minutes");
+		expect(timeout).toContain("single quick check");
+		expect(task.description).toContain("omit `timeoutMs`");
+		expect(task.description).toContain("a minute or two");
 	});
 
 	it("the roster lives in the system block, not the description (prompt-audit P8)", () => {
