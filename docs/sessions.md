@@ -25,6 +25,11 @@ sessions (subagent transcripts whose parent file no longer exists) after an
 interactive confirm. The exit line always shows how to resume:
 `ink -r <id>`.
 
+Codex derives its cache/session fields from the existing session ID: resume
+keeps it and `/new` replaces it. With `--no-session`, one temporary identity
+lasts until `/new`. Children have separate identities, retries keep the
+current identity, and summaries omit it. No session-file fields are added.
+
 The interactive status bar's `↑` (ordinary input), `↓` (output), `R` (cache
 read), and `W` (cache write) counts are cumulative across the whole session,
 including all branches, subagent attempts, and summarization. Zero `R`/`W`

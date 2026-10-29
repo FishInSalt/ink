@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AgentMessage } from "../src/core/messages.js";
@@ -144,6 +145,87 @@ describe("codex-responses provider", () => {
 		expect(headers.originator).toBe("ink");
 		expect(headers["openai-beta"]).toBe("responses=experimental");
 	});
+
+	it("hashes a full Unicode/CRLF session ID; only the three affinity fields change", async () => {
+		script = {
+			status: 200,
+			chunks: [sse("response.completed", { response: { status: "completed" } })],
+		};
+		const req = REQ("gpt-5.5", [{ role: "user", content: "hi" }]);
+		await collect(provider().stream(req));
+		const unkeyed = captured.at(-1)!;
+		const sessionId = " private-session/会話😀e\u0301\r\n\t ";
+		const expected = createHash("sha256").update(`ink-codex-session-v1\0${sessionId}`, "utf8").digest("hex");
+		await collect(provider().stream({ ...req, sessionId }));
+		const keyed = captured.at(-1)!;
+		const { prompt_cache_key: key, ...body } = keyed.body;
+		expect(key).toBe(expected);
+		expect(key).toMatch(/^[a-f0-9]{64}$/);
+		expect(body).toEqual(unkeyed.body);
+		expect(unkeyed.body).toEqual({
+			model: "gpt-5.5",
+			store: false,
+			stream: true,
+			instructions: "sys-instructions",
+			input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
+			parallel_tool_calls: true,
+			reasoning: { effort: "none" },
+		});
+		expect(keyed.headers).toEqual({
+			...unkeyed.headers,
+			"session-id": expected,
+			"x-client-request-id": expected,
+			// The local HTTP transport also adjusts the body's byte length.
+			"content-length": String(Buffer.byteLength(JSON.stringify(keyed.body))),
+		});
+		expect(JSON.stringify(keyed)).not.toContain(JSON.stringify(sessionId).slice(1, -1));
+	});
+
+	it("distinguishes long common-prefix IDs and keeps the same digest across turns", async () => {
+		script = {
+			status: 200,
+			chunks: [sse("response.completed", { response: { status: "completed" } })],
+		};
+		const prefix = "shared-prefix/".repeat(100);
+		const ids = [`${prefix}a`, `${prefix}b`, `${prefix}a`];
+		const p = provider();
+		const keys: unknown[] = [];
+		for (const [turn, sessionId] of ids.entries()) {
+			await collect(p.stream({ ...REQ("gpt-5.5", [{ role: "user", content: `turn ${turn}` }]), sessionId }));
+			const { body, headers } = captured.at(-1)!;
+			const expected = createHash("sha256")
+				.update(`ink-codex-session-v1\0${sessionId}`, "utf8")
+				.digest("hex");
+			expect([body.prompt_cache_key, headers["session-id"], headers["x-client-request-id"]]).toEqual([
+				expected,
+				expected,
+				expected,
+			]);
+			keys.push(body.prompt_cache_key);
+		}
+		expect(keys[0]).not.toBe(keys[1]);
+		expect(keys[2]).toBe(keys[0]);
+	});
+
+	it.each([undefined, "", null, 42, false, {}, []])(
+		"omits all affinity fields for a missing, empty or non-string session ID (%j)",
+		async (sessionId) => {
+			script = {
+				status: 200,
+				chunks: [sse("response.completed", { response: { status: "completed" } })],
+			};
+			await collect(
+				provider().stream({
+					...REQ("gpt-5.5", [{ role: "user", content: "hi" }]),
+					sessionId: sessionId as string,
+				}),
+			);
+			const { body, headers } = captured.at(-1)!;
+			expect(body).not.toHaveProperty("prompt_cache_key");
+			expect(headers).not.toHaveProperty("session-id");
+			expect(headers).not.toHaveProperty("x-client-request-id");
+		},
+	);
 
 	it("function_call items: flat tools, call_id keying, fragmented args, stopReason tool_use", async () => {
 		script = {

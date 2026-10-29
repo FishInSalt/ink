@@ -67,6 +67,11 @@ MiniMax 等）都可以通过 `OPENAI_BASE_URL` 配合该端点提供的模型 i
 会保留在会话中：用 `ink -r <id>` 恢复，并发送“继续”即可接着做。若传输错误
 发生在 `response.completed` 或 `response.incomplete` 之后，Ink 会忽略它，按本轮已完成处理。
 
+Codex 将稳定的对话 ID 哈希后用于 `prompt_cache_key`、`session-id` 和
+`x-client-request-id`，不发送原始会话 ID，使继续请求关联同一段对话。
+这不保证后端缓存命中率，其他提供商及会话文件格式不变。
+恢复、`/new` 和子会话行为见[会话](sessions.md)。
+
 ### DeepSeek
 
 ```bash

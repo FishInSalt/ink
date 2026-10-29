@@ -18,6 +18,8 @@ export type LLMEvent =
 
 export interface LLMRequest {
 	system: string;
+	/** Conversation identity, interpreted only by Codex. Never sent verbatim. */
+	sessionId?: string;
 	messages: AgentMessage[];
 	tools: Tool[];
 	model: string;
