@@ -1,6 +1,6 @@
 # Search tool alignment: grep and find
 
-Status: approved after three independent adversarial design reviews and a final confirmation pass. Implementation still requires tests and independent code review.
+Status: approved after design review, including a delta review of the VCS-exclusion change to D1. Implementation still requires tests and independent code review.
 
 Worktree: `/Users/z/Z/Agent_demo/ink/.worktrees/ink-search-tools`
 
@@ -27,14 +27,16 @@ The first review returned "approve with changes"; the second review also returne
 - the third review's execution-order requirement and old-fd test gating;
 - the docs-gate header/order, self-docs literal, description-assertion, and singular-notice documentation details.
 
+The user later changed D1 after reviewing Claude Code 2.1.88: `grep --hidden` now excludes VCS metadata directories, so this revision replaces the earlier exact-pi decision. The delta was independently reviewed and approved; the rest of the design remains as reviewed.
+
 ## 1. Scope
 
-Align `grep` and `find` path handling and search flags with the behavior we want from `read`-style path resolution and from pi, while keeping `read` unchanged.
+Align `grep` and `find` path handling and search flags with the behavior we want from `read`-style path resolution and from pi/Claude Code, while keeping `read` unchanged.
 
 In scope:
 
 - Normalize and validate the `path` argument for `grep` and `find` before spawning `rg` or `fd`.
-- `grep`: add `--no-config`, `--hidden`, and `--with-filename`.
+- `grep`: add `--no-config`, `--hidden`, `--with-filename`, and the six VCS `--glob !dir` exclusions from D1.
 - `find`: change the default result limit to 1000, add `--max-results`, support path-containing globs, and add `--no-require-git` outside Git repositories when fd supports it.
 - Add a result-limit notice to the shared `runSearch` output for `find`, and integrate it with the existing presentation layer.
 - Add a bounded, abort-aware fd capability probe before find starts its search.
@@ -43,7 +45,7 @@ In scope:
 Explicit non-goals:
 
 - No changes to `src/core/tools/read.ts`, its strict EOF error, logical-line counting, positive-integer validation, or P9 path quoting. The current read behavior is intentional.
-- No `.git` exclusion for `grep --hidden`. This is a user decision recorded in section 3.
+- No change to `find`'s VCS-directory behavior. This batch adds VCS exclusions only to `grep`; `find` still uses its existing hidden-file behavior and Git-ancestor handling.
 - No non-Git `.gitignore` handling for `grep`. ripgrep does not have fd's `--no-require-git`; this is a shared limitation with pi and needs separate ignore-file handling.
 - No changes to grep's output-line limit semantics, context handling, timeout, 1 MiB collection guard, stderr retention, or cancellation/timeout wording.
 - No changes to find's path output style, hidden-file behavior (already enabled), type filter, timeout, or collection guard.
@@ -62,7 +64,8 @@ These were checked against the current source and local binaries.
 | `src/core/tools/grep.ts` | A single-file search emits `2:match line` because `rg` omits the filename by default. | Output violates the documented `path:line:text` contract. |
 | `src/core/tools/grep.ts` | No `--no-config`. A test with `RIPGREP_CONFIG_PATH` set to a config containing `--fixed-strings` changed regex behavior. | Search results depend on ambient user configuration. |
 | `src/core/tools/grep.ts` | No `--hidden`; hidden files and directories are skipped. | `.github`, `.ink`, and other hidden code/config paths are silently omitted. |
-| `pi` grep argv | `--no-config --json --line-number --color=never --hidden`, with no `.git` exclusion. In the ink repository, `rg --hidden --files` lists 4,202 files under `.git`. | Exact pi parity means `.git` is searched. The user explicitly accepted this cost. |
+| `pi` grep argv | `--no-config --json --line-number --color=never --hidden`, with no `.git` exclusion. In the ink repository, `rg --hidden --files` lists 4,202 files under `.git`. | This was the initial policy, but the user changed it after reviewing Claude Code. |
+| Claude Code 2.1.88 GrepTool | `--hidden`, then `--glob !.git`, `!.svn`, `!.hg`, `!.bzr`, `!.jj`, `!.sl`; also `--max-columns 500`. No `hidden` input parameter. | The selected policy: search hidden working-tree files, exclude VCS metadata directories. |
 | `src/core/tools/find.ts` | `--glob` matches the basename unless `--full-path` is used; `sub/*.ts` returns no matches. | Silent false negative for path-containing globs. |
 | `src/core/tools/find.ts` | No `--no-require-git`; in a non-Git directory with `.gitignore`, fd lists the ignored file. | Silent false positive; the tool description says it respects `.gitignore`. |
 | `src/core/tools/find.ts` | `DEFAULT_LIMIT` is 200; no `--max-results`; fd may traverse much more than the eventual 200-line preview. | Default differs from pi's 1000 and the traversal does unnecessary work. |
@@ -73,15 +76,22 @@ These were checked against the current source and local binaries.
 
 ## 3. Decisions
 
-### D1: `grep --hidden` is exact pi parity, with no `.git` exclusion
+### D1: `grep --hidden` excludes VCS metadata directories
 
-`grep` will pass `--hidden` and will not add a `.git` exclusion or a `.git` glob. This is the user's explicit choice. Known consequences:
+`grep` will pass `--hidden` and then exclude the VCS metadata directories used by Claude Code 2.1.88:
 
-- `.git` and nested `.git` directories are searched.
-- Hidden files that are not ignored by `.gitignore` (for example `.env`) can appear in results.
-- Git internals, refs, logs, and commit-message text can create noise and extra work.
+```ts
+const VCS_DIRECTORIES_TO_EXCLUDE = [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"] as const;
+for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) argv.push("--glob", `!${dir}`);
+```
 
-No later change in this batch may silently add a `.git` exclusion. If product policy changes, it must update this decision, the tool description, the user docs, and the regression test together.
+Hidden working-tree files and directories such as `.github`, `.ink`, and `.gitignore` remain searchable. VCS internals (commit messages, reflogs, hooks, config, refs) are not searched when the tool recursively searches a parent directory. If the caller explicitly sets `path` to `.git` or to a file/directory inside it, rg's explicit target is searched; this is the escape hatch for repository internals and must be documented. This supersedes the earlier exact-pi decision at the user's request, after comparing Claude Code 2.1.88.
+
+Known consequences:
+
+- Hidden files that are not ignored by `.gitignore` (for example `.env`) can still appear in results; VCS exclusion is not a complete secret boundary.
+- A directory literally named `.git` that is not VCS metadata is also excluded from recursive searches; this is accepted for parity with Claude Code. An explicit `path` target still searches it.
+- A later policy change must update this decision, the tool description, the user docs, and the regression tests together.
 
 ### D2: `find` default limit is 1000, with `--max-results`
 
@@ -219,6 +229,13 @@ The base argv becomes:
 	"--no-heading",
 	"--line-number",
 	"--hidden",
+	// one --glob per VCS directory
+	"--glob", "!.git",
+	"--glob", "!.svn",
+	"--glob", "!.hg",
+	"--glob", "!.bzr",
+	"--glob", "!.jj",
+	"--glob", "!.sl",
 	"--with-filename",
 ]
 ```
@@ -234,11 +251,12 @@ Then, in the existing order:
 Notes:
 
 - `--no-config` is first so `RIPGREP_CONFIG_PATH` cannot change the tool contract.
-- `--hidden` is unconditional. No `.git` exclusion is added. This is D1.
+- `--hidden` is unconditional. The six VCS metadata directories are excluded immediately after it. This is D1.
+- The VCS `--glob` exclusions prune recursive searches. If `path` explicitly names `.git` or a file/directory inside it, rg searches that explicit target; docs and tests pin this escape hatch.
 - `--with-filename` is unconditional. Directory searches already include filenames; single-file searches now match the `path:line:text` contract.
 - `--with-filename` with context keeps rg's normal match/context separator behavior.
-- The tool description is updated to say that hidden files are included and that `.gitignore` is respected **inside Git repositories** (D8).
-- The prompt snippet gets the same "inside Git repositories" qualifier.
+- The tool description is updated to say that hidden files are included, VCS metadata directories are excluded, and `.gitignore` is respected **inside Git repositories** (D8).
+- The prompt snippet gets the same qualifiers.
 - `grep` still returns raw rg text; no JSON formatting is introduced.
 
 ## 7. `find` argv and behavior
@@ -347,7 +365,7 @@ Add and register:
 The search page must state, at minimum:
 
 - `path` accepts `~`, `@`, and typed Unicode-space variants; relative result paths stay relative and `~` results are absolute.
-- `grep` returns `path:line:text`, includes hidden files (including `.git`), and respects `.gitignore` only inside Git repositories.
+- `grep` returns `path:line:text`, includes hidden working-tree files, excludes VCS metadata directories such as `.git` from recursive searches, and respects `.gitignore` only inside Git repositories. An explicit `path` into `.git` still searches that target.
 - `find` includes hidden files, defaults to 1000 results (also the maximum), supports path-containing globs with the `**/` widening (including the search-root component case), and reports the result-limit notice.
 - Non-Git `.gitignore` for `find` requires fd 8.7.0+; older fd silently omits `--no-require-git`. A missing `--max-results` produces a clean upgrade error.
 - Windows is unsupported; path-glob coverage is macOS/Linux.
@@ -377,7 +395,11 @@ Add tests to `test/search-tools.test.ts` (real `rg`/`fd`; existing skip behavior
 - With `RIPGREP_CONFIG_PATH` pointing at a config containing `--fixed-strings`, a regex search still matches regex text; restore the environment variable in `finally`.
 - A hidden file such as `.hidden.ts` is found.
 - A hidden file ignored by `.gitignore` is not found.
-- A probe file under `.git` is found, pinning D1. Isolate it with a controlled `HOME` and `GIT_CONFIG_GLOBAL=/dev/null`, use a unique marker, and locate the git dir with `git rev-parse --git-dir` rather than assuming `dir/.git`.
+- A file under `.github` is found, proving hidden working-tree directories remain searchable.
+- A probe file under `.git` is **not** found when searching the repository root, pinning D1. Isolate it with a controlled `HOME` and `GIT_CONFIG_GLOBAL=/dev/null`, use a unique marker, and locate the git dir with `git rev-parse --git-dir` rather than assuming `dir/.git`.
+- The same probe **is** found when `path` explicitly points at `.git` or the probe file, documenting the explicit-target escape hatch.
+- A probe file under a nested `.git` directory is not found from the repository root.
+- A probe file under `.svn` (or another listed VCS directory) is not found from the repository root, covering the list beyond `.git`.
 
 ### `find` behavior
 
@@ -398,6 +420,7 @@ All real-fd `find` tests run only when `fdCapabilities(fd).maxResults` is true (
 
 ### Argv and capability tests
 
+- Extract or expose a pure `buildGrepArgv` helper and assert the exact base argv includes `--no-config`, `--hidden`, followed by all six `--glob !…` VCS exclusions, and `--with-filename`.
 - Extract or expose a pure `buildFindArgv` helper and assert exact flags: `--max-results 1000`, `--no-require-git` presence/absence, `--full-path`, `effectivePattern`, and `-- <pattern> <childPath>` ordering.
 - Add a fake-fd argv-capture test proving `--max-results` is present even if the preview would otherwise hide the difference.
 - Test `parseFdCapabilities` with help text containing both flags, only `--max-results`, only `--no-require-git`, neither, empty, and malformed output.
@@ -409,7 +432,7 @@ All real-fd `find` tests run only when `fdCapabilities(fd).maxResults` is true (
 - `test/tool-presentation.test.ts`: the result-limit notice is promoted from hidden body text and appears in metadata for both singular and plural forms.
 - `test/output-integrity.test.ts`: add both singular and plural result-limit notices to the exact promoted-notice matrix in live and replay modes.
 - `findPresentation` fallback is `1000`; the label remains "Line limit" (documented rationale). Because omitted non-path fallbacks are not displayed, test the schema/tool description for the 1000 default rather than claiming a visible fallback.
-- Assert the grep and find tool descriptions and prompt snippets contain the "inside Git repositories" qualifier and not the old unconditional `.gitignore` claim.
+- Assert the grep and find tool descriptions and prompt snippets contain the "inside Git repositories" qualifier and not the old unconditional `.gitignore` claim; assert the grep description mentions VCS metadata exclusion.
 - `npm run lint` runs `scripts/check-docs.mjs`; the new `docs/search.md` page is parity-checked, its zh mirror exists, and the topic is reachable from `docs/index.md`.
 - `npm run docs:site` builds the new page in both languages.
 - `test/self-docs.test.ts` length budget still passes with the new topic.
@@ -425,7 +448,7 @@ Verification: `npm run build && npm test`, `npm run typecheck`, `npm run lint`, 
 
 Risks:
 
-- `.git` scanning is intentional and accepted by the user. It can add latency and noise, and hidden non-ignored files such as `.env` can enter model context. This is recorded in D1 so it is not mistaken for an implementation bug.
+- Hidden-file search is intentional: `.github`, `.ink`, and similar working-tree paths are visible, while `.git`, `.svn`, `.hg`, `.bzr`, `.jj`, and `.sl` are excluded. Hidden non-ignored files such as `.env` can still enter model context; VCS exclusion is not a complete secret boundary. This is recorded in D1 so it is not mistaken for an implementation bug.
 - Raising the find default to 1000 can produce much more output before the 50 KiB preview cap; the existing truncation envelope still applies. The result-limit notice is separate and must not claim a total.
 - Normalizing paths changes `~` results from errors to absolute paths; relative-path output should remain unchanged.
 - `--no-config` intentionally ignores user ripgrep configuration, including globs and hidden settings.
@@ -440,9 +463,8 @@ Risks:
 Review questions:
 
 1. Is a separate result-limit notice acceptable, or should it extend the existing `[Truncated: ...]` reason grammar?
-2. Should the `.git` probe test pin D1, or is a fake-fd argv test less brittle?
-3. Should the `grep` description explicitly say "including `.git`", or only "includes hidden files"?
-4. Should `grep` reject only special files, or allow all `stat`-able paths and let rg decide?
-5. Is "at least N results were found" the right wording, or should it copy pi's `Use limit=N*2` text and update the tool description?
-6. Is the fd capability probe (`--help`) plus a clean error for missing `--max-results` acceptable, or should the design require a minimum fd version up front?
-7. Is it acceptable to make `--max-results` a hard requirement for find on old fd, or should find degrade to preview-only behavior instead?
+2. Confirm the VCS exclusion list stays `.git`, `.svn`, `.hg`, `.bzr`, `.jj`, `.sl` (the user selected the Claude Code list).
+3. Should `grep` reject only special files, or allow all `stat`-able paths and let rg decide?
+4. Is "at least N results were found" the right wording, or should it copy pi's `Use limit=N*2` text and update the tool description?
+5. Is the fd capability probe (`--help`) plus a clean error for missing `--max-results` acceptable, or should the design require a minimum fd version up front?
+6. Is it acceptable to make `--max-results` a hard requirement for find on old fd, or should find degrade to preview-only behavior instead?
