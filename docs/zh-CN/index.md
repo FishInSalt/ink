@@ -13,6 +13,7 @@ Ink 是一个开源的终端 AI 助手与 agent 运行框架。代码仓库是
 
 - 快速上手、登录、选择模型 → [providers.md](providers.md)
 - 运行 Ink、打印模式、管道、附加文件、全部参数 → [cli.md](cli.md)
+- 搜索文件内容与文件名（grep/find） → [search.md](search.md)
 - 理解会话、恢复、分叉、消息树、压缩 → [sessions.md](sessions.md)
 - 配置默认值（启动模型、队列模式、图片、MCP） → [settings.md](settings.md)
 - 编写扩展（工具、命令、事件、门控） → [extensions.md](extensions.md)

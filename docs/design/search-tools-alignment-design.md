@@ -1,6 +1,6 @@
 # Search tool alignment: grep and find
 
-Status: approved after design review, including a delta review of the VCS-exclusion change to D1. Implementation still requires tests and independent code review.
+Status: design approved (including the D1 delta); implementation complete on `fix/search-tools-alignment`. Full tests, typecheck, lint, and docs-site build pass; independent code review approved. Merge pending.
 
 Worktree: `/Users/z/Z/Agent_demo/ink/.worktrees/ink-search-tools`
 

@@ -79,12 +79,12 @@ describe("docs site build", () => {
 		expect(zhHome).toContain(`<link rel="alternate" hreflang="x-default" href="${SITE_URL}/">`);
 	});
 
-	it("sitemap lists all eleven zh URLs", async () => {
+	it("sitemap lists all twelve zh URLs", async () => {
 		const sitemap = await page("sitemap.xml");
 		const zhUrls = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)]
 			.map((match) => match[1] ?? "")
 			.filter((url) => url.startsWith(`${SITE_URL}/zh`));
-		expect(zhUrls).toHaveLength(11);
+		expect(zhUrls).toHaveLength(12);
 		expect(zhUrls).toContain(`${SITE_URL}/zh/`);
 		expect(zhUrls).toContain(`${SITE_URL}/zh/docs/cli.html`);
 	});
@@ -95,7 +95,7 @@ describe("docs site build", () => {
 		expect(token).not.toBe("");
 		const sitemap = await page("sitemap.xml");
 		const urls = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => match[1] ?? "");
-		expect(urls).toHaveLength(22);
+		expect(urls).toHaveLength(24);
 		for (const url of urls) {
 			const path = url.slice(`${SITE_URL}/`.length);
 			const html = await page(path === "" || path.endsWith("/") ? `${path}index.html` : path);

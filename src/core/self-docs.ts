@@ -34,6 +34,7 @@ export const SELF_DOCS_TOPICS: ReadonlyArray<{ match: string; doc: string }> = [
 	{ match: "settings and SYSTEM.md", doc: "docs/settings.md" },
 	{ match: "providers and models", doc: "docs/providers.md" },
 	{ match: "images", doc: "docs/images.md" },
+	{ match: "grep/find search tools", doc: "docs/search.md" },
 	{ match: "CLI and env vars", doc: "docs/cli.md" },
 ];
 

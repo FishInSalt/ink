@@ -229,6 +229,14 @@ describe("semantic tool presentation", () => {
 			"grep",
 			"[Truncated: 50KB limit. Narrow the search (subdirectory path, glob, or more specific pattern) instead of raising the limit.]",
 		],
+		[
+			"find",
+			"[Results limited to 1000; at least 1000 results were found. Narrow the pattern or path if you need a complete list.]",
+		],
+		[
+			"find",
+			"[Result limited to 1; at least 1 result was found. Narrow the pattern or path if you need a complete list.]",
+		],
 		["ls", "[500 entries limit reached. Use limit=1000 for more. 50KB limit reached]"],
 		[
 			"task",
@@ -237,6 +245,17 @@ describe("semantic tool presentation", () => {
 		["server_tool", "[truncated — kept the last 50KB]"],
 	])("preserves %s truncation contract", (name, note) => {
 		expect(outputBlock(result("x\n".repeat(1001) + note, name)).metadata).toEqual([note]);
+	});
+	it("keeps result-limit notices visible in collapsed and expanded folds", () => {
+		const note =
+			"[Results limited to 1000; at least 1000 results were found. Narrow the pattern or path if you need a complete list.]";
+		const fold = new ToolBlockFold(outputBlock(result("body\n".repeat(1001) + note, "find")));
+		for (const expanded of [false, true]) {
+			fold.setExpanded(expanded);
+			const rendered = plain(fold, 100).replaceAll("\n", "");
+			expect(rendered).toContain("Results limited to 1000");
+			expect(rendered).toContain("complete list");
+		}
 	});
 	it("shows failure, empty output, images, replay diff honesty and actual diff only", () => {
 		expect(outputBlock(result("", "read")).lines).toEqual(["(no output)"]);

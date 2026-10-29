@@ -201,7 +201,7 @@ describe("actual builtin presentation integration", () => {
 		for (const name of ["rg", "fd"])
 			await writeFile(
 				path.join(cwd, name),
-				`#!${process.execPath}\nif(process.argv.includes('--version'))process.exit(0);process.stdout.write(require('fs').readFileSync(${JSON.stringify(path.join(cwd, "stdout"))}));process.stderr.write('diagnostic');`,
+				`#!${process.execPath}\nif(process.argv.includes('--version'))process.exit(0);if(process.argv.includes('--help')){process.stdout.write('--max-results <count>\\n--no-require-git\\n');process.exit(0);}process.stdout.write(require('fs').readFileSync(${JSON.stringify(path.join(cwd, "stdout"))}));process.stderr.write('diagnostic');`,
 				{ mode: 0o755 },
 			);
 		vi.stubEnv("PATH", cwd);

@@ -5,7 +5,7 @@
  * `npm run lint:scripts`.
  *
  * Checks:
- *  (a) the ten user-facing docs exist at docs/ top level, plus the full
+ *  (a) the eleven user-facing docs exist at docs/ top level, plus the full
  *      zh-CN mirror under docs/zh-CN/ (full-mirror policy);
  *  (b) SELF_DOCS_TOPICS in src/core/self-docs.ts names only existing docs
  *      (regex extraction — one `doc: "..."` literal per line, pinned by
@@ -14,7 +14,7 @@
  *  (d) every top-level doc's, both READMEs', and every zh doc's relative
  *      links resolve in their actual locations (missing targets make the
  *      model's routing land on 404s);
- *  (e) structural parity per en↔zh pair (README pair + ten docs): identical
+ *  (e) structural parity per en↔zh pair (README pair + eleven docs): identical
  *      heading level sequences, byte-identical fenced code blocks including
  *      info strings, equal link-target multisets. The README pair allows
  *      exactly two documented differences — the language-switch lines and
@@ -44,6 +44,7 @@ function join(...parts) {
 const REQUIRED_DOCS = [
 	"index.md",
 	"cli.md",
+	"search.md",
 	"providers.md",
 	"sessions.md",
 	"settings.md",

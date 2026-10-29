@@ -46,6 +46,7 @@ const OG_IMAGE =
 const DOC_FILES = [
 	"index.md",
 	"cli.md",
+	"search.md",
 	"providers.md",
 	"sessions.md",
 	"settings.md",
@@ -78,6 +79,7 @@ const LANGUAGES = {
 		labels: {
 			"index.md": "Overview",
 			"cli.md": "CLI reference",
+			"search.md": "Search tools",
 			"providers.md": "Providers & models",
 			"sessions.md": "Sessions",
 			"settings.md": "Settings",
@@ -97,6 +99,11 @@ const LANGUAGES = {
 				title: "Installation and CLI reference — Ink",
 				description:
 					"Install the ink-agent npm package and run Ink from your terminal. Learn command-line flags, print mode, piping, attachments, and session options.",
+			},
+			"search.md": {
+				title: "Search tools: grep and find — Ink",
+				description:
+					"Search file contents with grep and file names with find. Learn hidden-file behavior, VCS exclusions, path handling, result limits, and ripgrep/fd requirements.",
 			},
 			"providers.md": {
 				title: "Model providers, login, and model selection — Ink",
@@ -160,6 +167,7 @@ const LANGUAGES = {
 		labels: {
 			"index.md": "总览",
 			"cli.md": "CLI 参考",
+			"search.md": "搜索工具",
 			"providers.md": "提供商与模型",
 			"sessions.md": "会话",
 			"settings.md": "设置",
@@ -179,6 +187,11 @@ const LANGUAGES = {
 				title: "安装与 CLI 命令行参考 — Ink 文档",
 				description:
 					"安装 npm 包 ink-agent，在终端运行 Ink。查看命令行参数、打印模式、管道、附件与会话选项，以及安装验证和卸载方法。",
+			},
+			"search.md": {
+				title: "搜索工具：grep 与 find — Ink 文档",
+				description:
+					"使用 grep 搜索文件内容，使用 find 搜索文件名。了解隐藏文件、VCS 排除、路径处理、结果限制以及 ripgrep/fd 版本要求。",
 			},
 			"providers.md": {
 				title: "模型提供商、登录与模型切换 — Ink 文档",
