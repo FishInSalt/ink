@@ -1,6 +1,6 @@
 # Search tool alignment: grep and find
 
-Status: design approved (including the D1 delta); implementation complete on `fix/search-tools-alignment`. Full tests, typecheck, lint, and docs-site build pass; independent code review approved. Merge pending.
+Status: design approved (including the D1 delta); implementation complete on `fix/search-tools-alignment`. Full tests, typecheck, lint, and docs-site build pass; independent code review approved.
 
 Worktree: `/Users/z/Z/Agent_demo/ink/.worktrees/ink-search-tools`
 
