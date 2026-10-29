@@ -31,3 +31,6 @@ coverage/
 
 # Ink runtime artifacts (sessions, debug logs — decide later whether to version)
 # .ink/
+
+# Local Codex experiment reports and generated source snapshots
+.ink/codex-cache-experiment-*/

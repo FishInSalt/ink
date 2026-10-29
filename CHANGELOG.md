@@ -10,6 +10,11 @@ their original release identity.
 
 ### Fixed
 
+- **Codex conversation affinity.** Forward a stable, hashed conversation ID
+  to the Codex cache key and session headers. Resume and retries retain it;
+  `/new` and child conversations remain separate. Session files, history
+  conversion and usage accounting are unchanged; cache hits are not guaranteed.
+
 - **English CLI/TUI recovery hints.** Stream-interruption errors and
   interactive recovery notes now use "continue" as the example message.
   Model responses, tool output, and upstream error details remain unchanged.

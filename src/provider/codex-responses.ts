@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentMessage, AssistantBlock, ContentBlock, StopReason, Usage } from "../core/messages.js";
 import { getCodexAccessToken } from "./codex-auth.js";
 import {
@@ -39,6 +40,12 @@ import { modelSupportsVision } from "./vision.js";
  */
 
 const DEFAULT_BASE_URL = "https://chatgpt.com/backend-api";
+
+/** Hash the complete conversation ID into a bounded, header-safe identity. */
+function sessionKey(sessionId: unknown): string | undefined {
+	if (typeof sessionId !== "string" || sessionId === "") return undefined;
+	return createHash("sha256").update("ink-codex-session-v1\0").update(sessionId).digest("hex");
+}
 
 export interface CodexResponsesProviderOptions {
 	baseUrl?: string;
@@ -383,8 +390,10 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 			const credential = await auth();
 			if (request.signal?.aborted) return;
 
+			const key = sessionKey(request.sessionId);
 			const body: Record<string, unknown> = {
 				model: request.model,
+				...(key === undefined ? {} : { prompt_cache_key: key }),
 				store: false,
 				stream: true,
 				instructions: request.system,
@@ -434,6 +443,7 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 					"chatgpt-account-id": credential.accountId,
 					originator: "ink",
 					"OpenAI-Beta": "responses=experimental",
+					...(key === undefined ? {} : { "session-id": key, "x-client-request-id": key }),
 				},
 				JSON.stringify(body),
 				request.signal,

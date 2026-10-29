@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { type AgentRegistry, formatAgentsForPrompt, loadAgentDefinitions } from "./core/agents/registry.js";
@@ -382,6 +383,18 @@ export async function createRunner(options: RunnerOptions): Promise<Runner> {
 	return new RunnerImpl(options, logger, provider, initialModel, parseModelRef(options.model).provider);
 }
 
+/** Run-entry bindings, reused unchanged across overflow recovery. Readonly
+ *  is shallow: session/provider objects keep their existing mutable behavior. */
+type RunContext = Readonly<{
+	model: string;
+	provider: LLMProvider;
+	settings: CompactionSettings;
+	session: SessionStore | null;
+	sessionId: string;
+	/** SA-05: the fully qualified pricing identity from the same snapshot. */
+	modelReference: string;
+}>;
+
 class RunnerImpl implements Runner {
 	readonly history: AgentMessage[] = [];
 	model: string;
@@ -442,6 +455,8 @@ class RunnerImpl implements Runner {
 	/** #thinking-levels: the live level (pi's AgentState.thinkingLevel). */
 	private level: ThinkingLevel = "off";
 	private sessionStore: SessionStore | null = null;
+	/** In-memory conversation identity when sessions are disabled; /new replaces it. */
+	private ephemeralSessionId = randomUUID();
 	/** SA-05: the whole-session usage aggregate — one tracker per store instance
 	 *  (a swap on resume/new rebuilds from that store's entries). */
 	private usageTracker: UsageTotalsTracker | null = null;
@@ -872,6 +887,7 @@ class RunnerImpl implements Runner {
 					: `▪ new session ${id8}`,
 			);
 		} else {
+			this.ephemeralSessionId = randomUUID();
 			this.options.renderer.note("▪ new conversation (sessions disabled)");
 		}
 		this.history.length = 0;
@@ -1284,21 +1300,24 @@ class RunnerImpl implements Runner {
 	}
 
 	runTurn(options: RunTurnOptions): Promise<RunAgentLoopResult> {
-		const model = this.model; // captured at call entry: /model mid-run affects only later turns
-		// Provider and settings snapshot for the same reason (review P1-2):
-		// /model is allowedDuringRun — a mid-run family switch must not leak a
-		// new provider (or window) into an in-flight turn's compaction seam,
-		// where it would pair with the captured model id of the OLD family.
-		const provider = this.provider;
-		const settings = this.settings;
-		// SA-05 round 2 (delta review F1): the pricing identity must come from
-		// the SAME snapshot pair — live this.providerName + captured model id
-		// would fabricate an identity no endpoint served (a mid-run family
-		// switch would bill the old family's compaction at the new family's
-		// rates).
-		const modelReference = qualifiedReference(this.providerName, model);
-		this.lastRunModel = model;
+		// Capture before run_start: /model mid-run affects only later runs.
+		// Provider and settings belong to the same snapshot (review P1-2): a
+		// family switch must not pair a new provider/window with the old model
+		// in this run's compaction seam or overflow retry.
+		const model = this.model;
 		const session = this.sessionStore;
+		const context: RunContext = {
+			model,
+			provider: this.provider,
+			settings: this.settings,
+			session,
+			// /new or /resume affects only the next run's identity.
+			sessionId: session?.header.id ?? this.ephemeralSessionId,
+			// SA-05 round 2 (delta review F1): pricing must use the SAME pair,
+			// never a live provider family with a captured old model id.
+			modelReference: qualifiedReference(this.providerName, model),
+		};
+		this.lastRunModel = model;
 		// run_start fires HERE, not in runTurnInner: entry-level is the one site
 		// both shells reach exactly once per run — the overflow retry below
 		// re-enters runTurnInner, never runTurn (task-timer design §4.1). Its
@@ -1316,15 +1335,7 @@ class RunnerImpl implements Runner {
 			: undefined;
 		// runTurn is sync-returning: cleanup rides the promise's settle (the
 		// same timing class as runTurnInner's own finally).
-		return this.runTurnOrRecoverFromOverflow(
-			options,
-			model,
-			provider,
-			settings,
-			session,
-			modelReference,
-			health,
-		)
+		return this.runTurnOrRecoverFromOverflow(context, options, health)
 			.then(
 				(result) => result,
 				// #run-error (design §4.2): the crash-side mirror of run_start — one
@@ -1360,16 +1371,13 @@ class RunnerImpl implements Runner {
 	 *  the prompt suppressed so it is not duplicated. Any second failure
 	 *  surfaces the guidance instead of a raw provider 400. */
 	private async runTurnOrRecoverFromOverflow(
+		context: RunContext,
 		options: RunTurnOptions,
-		model: string,
-		provider: LLMProvider,
-		settings: CompactionSettings,
-		session: SessionStore | null,
-		modelReference: string,
 		health: LoopHealthMonitor | undefined,
 	): Promise<RunAgentLoopResult> {
+		const { model, provider, settings, modelReference } = context;
 		try {
-			return await this.runTurnInner(model, provider, settings, session, modelReference, options, health);
+			return await this.runTurnInner(context, options, health);
 		} catch (err) {
 			if (!isContextOverflowError(err)) throw err;
 			const cause = err instanceof Error ? err.message : String(err);
@@ -1393,11 +1401,7 @@ class RunnerImpl implements Runner {
 			// raw provider 400 (one attempt, like pi's _overflowRecoveryAttempted).
 			try {
 				return await this.runTurnInner(
-					model,
-					provider,
-					settings,
-					session,
-					modelReference,
+					context,
 					{
 						...options,
 						userMessage: undefined,
@@ -1427,17 +1431,13 @@ class RunnerImpl implements Runner {
 	private turnEventTap: RunTurnOptions["onEvent"] | null = null;
 
 	private async runTurnInner(
-		model: string,
-		provider: LLMProvider,
-		settings: CompactionSettings,
-		session: SessionStore | null,
-		/** SA-05 round 2: the run snapshot's fully qualified pricing identity. */
-		modelReference: string,
+		context: RunContext,
 		options: RunTurnOptions,
 		/** #loop-health: the run's monitor (hoisted in runTurn so it spans the
 		 *  overflow retry); undefined when INK_HEALTH=0. */
 		health: LoopHealthMonitor | undefined,
 	): Promise<RunAgentLoopResult> {
+		const { model, provider, settings, session, sessionId, modelReference } = context;
 		// The task tool is built once at construction; its child-event relay
 		// reaches the CURRENT turn's tap through this holder (task children run
 		// strictly inside the turn, so one slot is enough; cleared in finally).
@@ -1457,6 +1457,7 @@ class RunnerImpl implements Runner {
 				// SA-05 round 2: the persisted pricing identity — the run
 				// snapshot's reference (delta review F1), never a live pair.
 				modelReference,
+				sessionId,
 				system: this.system,
 				tools: this.tools,
 				history: this.history,

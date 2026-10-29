@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { formatTokens } from "../format.js";
 import { modelMaxTokensFor } from "../provider/catalog.js";
 import { compactionSettingsFor } from "../provider/compaction-settings.js";
@@ -170,6 +171,9 @@ export function childModelMetadata(options: Pick<SubagentOptions, "model" | "mod
 }
 
 export async function runSubagent(options: SubagentOptions): Promise<SubagentOutcome> {
+	// Use only the child's own identity; no-store invocations get a fresh UUID.
+	// Capture before launching so overflow retries keep the same affinity.
+	const sessionId = options.session?.header.id ?? randomUUID();
 	// #subagent-softlanding rev 4: no implicit clock. `undefined` (the REPL
 	// default) means unlimited — see defaultChildTimeoutMs. The caller resolves
 	// the precedence chain (args.timeoutMs > agent frontmatter > mode default);
@@ -349,6 +353,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 			provider: options.provider,
 			model: options.model,
 			...(childReference !== undefined && { modelReference: childReference }),
+			sessionId,
 			system:
 				options.system +
 				CHILD_SUFFIX +

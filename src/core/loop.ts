@@ -45,6 +45,8 @@ export interface RunAgentLoopOptions {
 	 *  pricing identity stamped onto assistant messages as `modelReference`
 	 *  (distinct from `model`, the wire id). Omitted → no stamp → unpriced. */
 	modelReference?: string;
+	/** Conversation identity, captured once and forwarded on every turn. */
+	sessionId?: string;
 	system: string;
 	tools: Tool[];
 	/** Conversation history. Appended in place with new messages from this run. */
@@ -146,6 +148,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
 		provider,
 		model,
 		modelReference,
+		sessionId,
 		system,
 		tools,
 		history,
@@ -217,7 +220,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
 
 		const assistant = await streamAssistant({
 			provider,
-			request: { system, messages: history, tools, model, maxTokens, thinking, signal },
+			request: { system, sessionId, messages: history, tools, model, maxTokens, thinking, signal },
 			onEvent,
 			usage,
 			ledger: usageLedger,

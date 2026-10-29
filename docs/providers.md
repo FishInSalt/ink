@@ -82,6 +82,13 @@ message, not a special command. A transport error that arrives after
 `response.completed` or `response.incomplete` is ignored — the turn is
 treated as complete.
 
+Codex uses a stable, hashed conversation ID for `prompt_cache_key`,
+`session-id` and `x-client-request-id`. The raw session ID is not sent.
+This keeps continuing requests associated with the same conversation;
+it does not guarantee backend cache hits. Other providers and the
+session-file format are unchanged. See [sessions.md](sessions.md) for
+resume, `/new` and child-session behavior.
+
 ### DeepSeek
 
 ```bash
