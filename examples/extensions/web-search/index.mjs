@@ -68,7 +68,7 @@ function requestError(tool, failure, caller, timeout) {
 		["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "ERR_TLS_CERT_ALTNAME_INVALID"].includes(code);
 	if (certificate) {
 		return error(page
-			? `${tool}: TLS certificate verification failed — check the URL or use the chrome tool`
+			? `${tool}: TLS certificate verification failed — check the URL, proxy or TLS settings`
 			: `${tool}: TLS certificate verification failed — check connectivity, proxy or TLS settings`);
 	}
 	if (code.startsWith("ERR_SSL_") || code === "EPROTO" || code.includes("TLS")) {
@@ -78,7 +78,7 @@ function requestError(tool, failure, caller, timeout) {
 	}
 	if (["ECONNRESET", "EPIPE", "UND_ERR_SOCKET"].includes(code)) {
 		return error(page
-			? `${tool}: connection reset — retry once; if it persists, use the chrome tool`
+			? `${tool}: connection reset — retry once; if it persists, use another source`
 			: `${tool}: connection reset — retry once`);
 	}
 	if (code === "ECONNREFUSED") {
@@ -204,7 +204,7 @@ export default function (api) {
 				if (!res.ok) {
 					await cancelBody(res);
 					if (res.status === 401 || res.status === 403) {
-						return error(`url_read HTTP ${res.status}: access denied — the site may block automated reads; try the chrome tool or another source`);
+						return error(`url_read HTTP ${res.status}: access denied — the site may block automated reads; use another source or check access permissions`);
 					}
 					return error(`url_read HTTP ${res.status}: page request failed`);
 				}

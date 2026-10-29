@@ -353,6 +353,9 @@ function notice(name: string, line: string): boolean {
 	if (name === "grep" || name === "find")
 		return (
 			line === "[stderr truncated: showing first 2000 bytes or fewer.]" ||
+			/^\[(?:Results limited to \d+; at least \d+ results were found|Result limited to 1; at least 1 result was found)\. Narrow the pattern or path if you need a complete list\.\]$/.test(
+				line,
+			) ||
 			/^\[Truncated: (?:showing first \d+ lines; at least \d+ complete lines observed; total unknown; 1048576-byte collection limit(?:, 50KB limit)?|showing first \d+ of \d+\+? lines(?:, 50KB limit)?|50KB limit|)\. Narrow the search \(subdirectory path, glob, or more specific pattern\) instead of raising the limit\.\]$/.test(
 				line,
 			)

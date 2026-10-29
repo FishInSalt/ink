@@ -84,7 +84,7 @@ const taskSchema = Type.Object({
 		Type.Integer({
 			minimum: 1000,
 			description:
-				"Optional wall-clock budget in ms for the child run. REPL default: no limit (Ctrl+C is the backstop); print/headless runs default to 60 min. Set only for tasks expected to be cheap.",
+				"Optional hard wall-clock cap in ms. Omit by default: when it fires, the child is aborted mid-work. Set it only when you deliberately need a hard bound on a known-short task; do not set it from an estimate of how long the task will take. REPL default: no limit (Ctrl+C is the backstop); print/headless default: 60 min.",
 		}),
 	),
 	worktree: Type.Optional(

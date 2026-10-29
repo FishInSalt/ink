@@ -175,7 +175,7 @@ export const findPresentation = presentation(
 		{ key: "pattern", label: "Pattern", accept: string },
 		path,
 		{ key: "type", label: "Type", accept: (v) => v === "file" || v === "directory", fallback: "both" },
-		numeric("limit", "Line limit", "200", 1, 1000),
+		numeric("limit", "Line limit", "1000", 1, 1000),
 		timeout,
 	],
 	(a) => `${excerpt(a.pattern as string)}${a.type ? ` · type ${a.type}` : ""}`,

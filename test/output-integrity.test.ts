@@ -106,6 +106,14 @@ it.each([
 		"[Truncated: showing first 0 lines; at least 0 complete lines observed; total unknown; 1048576-byte collection limit. Narrow the search (subdirectory path, glob, or more specific pattern) instead of raising the limit.]",
 	],
 	["find", "[stderr truncated: showing first 2000 bytes or fewer.]"],
+	[
+		"find",
+		"[Results limited to 1000; at least 1000 results were found. Narrow the pattern or path if you need a complete list.]",
+	],
+	[
+		"find",
+		"[Result limited to 1; at least 1 result was found. Narrow the pattern or path if you need a complete list.]",
+	],
 	["ls", "[Directory type unavailable for 2 displayed entries; names shown without a directory suffix.]"],
 	["bash", "[stdout preview starts within a line.]"],
 	[

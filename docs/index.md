@@ -14,6 +14,7 @@ series [Coding Agent 原理与实践](https://zheteng-garden.pages.dev/ink/).
 
 - Get started, sign in, pick a model → [providers.md](providers.md)
 - Run Ink, print mode, piping, attach files, every flag → [cli.md](cli.md)
+- Search file contents and names with grep/find → [search.md](search.md)
 - Understand sessions, resuming, forking, the tree, compaction →
   [sessions.md](sessions.md)
 - Configure defaults (startup model, queue modes, images, MCP) →

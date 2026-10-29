@@ -608,9 +608,28 @@ describe("named agents (M5c)", () => {
 			getSession: () => null,
 		});
 		expect(task.description).not.toContain("~300 words"); // teaching lives in the param, not the tool body
-		const params = JSON.stringify(task.parameters);
-		expect(params).toContain("~300 words max");
-		expect(params).toContain("wall-clock budget in ms");
+		expect(JSON.stringify(task.parameters)).toContain("~300 words max");
+	});
+
+	it("timeoutMs is described as a hard cap, not a duration estimate", () => {
+		const task = createTaskTool({
+			getProvider: () => scriptedProvider([assistant([{ type: "text", text: "x" }])]),
+			getModel: () => "m",
+			getSystem: () => "",
+			getTools: () => [echo],
+			getSession: () => null,
+		});
+		const timeout = (task.parameters as { properties?: { timeoutMs?: { description?: string } } }).properties
+			?.timeoutMs?.description;
+		expect(timeout).toContain("Optional hard wall-clock cap in ms");
+		expect(timeout).toContain("Omit by default");
+		expect(timeout).toContain("aborted mid-work");
+		expect(timeout).toContain("known-short task");
+		expect(timeout).toContain("do not set it from an estimate");
+		expect(timeout).toContain("REPL default: no limit");
+		expect(timeout).toContain("print/headless default: 60 min");
+		expect(timeout).not.toContain("2-3 minutes");
+		expect(task.description).not.toContain("omit `timeoutMs`");
 	});
 
 	it("the roster lives in the system block, not the description (prompt-audit P8)", () => {
