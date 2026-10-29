@@ -109,9 +109,13 @@ describe.skipIf(!hasRg)("grep tool (requires rg)", () => {
 
 		await mkdir(path.join(dir, "nested", ".git"), { recursive: true });
 		await writeFile(path.join(dir, "nested", ".git", "probe.txt"), "nested-vcs-probe\n");
-		const vcs = await tool.execute({ pattern: "vcs-" }, signal);
-		expect(vcs.output).not.toContain(".git/");
-		expect(vcs.output).not.toContain(".svn/");
+		for (const glob of ["*", "**/*"]) {
+			const broad = await tool.execute({ pattern: "vcs-", glob }, signal);
+			expect(broad.output, glob).not.toContain(".git/");
+			expect(broad.output, glob).not.toContain(".svn/");
+			const broadHidden = await tool.execute({ pattern: "hidden-github-probe", glob }, signal);
+			expect(broadHidden.output, glob).toContain(".github/ci.yml");
+		}
 		const nested = await tool.execute({ pattern: "nested-vcs-probe" }, signal);
 		expect(nested.output).toContain("No matches");
 

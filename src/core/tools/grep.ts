@@ -82,11 +82,14 @@ export function createGrepTool(options: GrepToolOptions = {}): Tool {
 			if (signal.aborted) return { output: "Error: search aborted by user.", isError: true };
 
 			const argv = ["--no-config", "--color", "never", "--no-heading", "--line-number", "--hidden"];
+			// ripgrep glob rules are last-match-wins. Apply the caller's filter
+			// first, then the VCS exclusions, so a broad filter such as "*" cannot
+			// re-include .git/.svn metadata.
+			if (typeof args.glob === "string" && args.glob !== "") argv.push("--glob", args.glob);
 			for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) argv.push("--glob", `!${dir}`);
 			argv.push("--with-filename");
 			if (args.ignoreCase === true) argv.push("--ignore-case");
 			if (args.literal === true) argv.push("--fixed-strings");
-			if (typeof args.glob === "string" && args.glob !== "") argv.push("--glob", args.glob);
 			if (context > 0) argv.push("--context", String(context));
 			argv.push("--", pattern, childPath);
 
