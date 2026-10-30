@@ -3,9 +3,12 @@
 Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/design/ink-rename-design.md)
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
-The selected package/version is **`ink-agent@0.4.4`**, with the sole `ink`
-executable. This release is published; the dated CHANGELOG section records
-its release notes.
+The selected package/version is **`ink-agent@0.5.0`**, with the sole `ink`
+executable. This version is prepared locally; publication is pending.
+The dated `0.5.0` CHANGELOG section contains candidate notes, not evidence of
+publication; its date must be checked when publishing. The preparation record is
+[`docs/design/release-0.5.0-preparation.md`](docs/design/release-0.5.0-preparation.md).
+The latest recorded published version remains `0.4.4`.
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -180,8 +183,10 @@ Historical refs do not inherit this truth table.
 ## Offline local gates
 
 Start a dedicated branch/worktree before edits. Bump `package.json`, both
-lockfile versions, and `src/format.ts` together for future releases. Move
-Unreleased notes into a dated version section only for the actual release.
+lockfile versions, and `src/format.ts` together for future releases. Candidate
+notes may be prepared in a dated version section while publication is explicitly
+pending; retain an Unreleased heading for later changes and correct the candidate
+date if publication moves.
 
 ```bash
 npm run typecheck
@@ -212,8 +217,8 @@ and absence of old launcher, runtime roots, dotenv, credentials, source,
 tests, design docs, or unexpected artifacts. Top-level English and zh-CN
 user documentation is intentionally shipped. It installs locally in a private
 temporary prefix with temporary HOME/cache, no credentials, no install
-scripts, and no network. It executes help and exact `Ink 0.4.4` version
-(for this release), then checks npm-exec's single-bin inference against the
+scripts, and no network. It executes help and exact `Ink 0.5.0` version
+(for this candidate), then checks npm-exec's single-bin inference against the
 **local tarball from a neutral cwd**. It never invokes `npx ink` or modifies
 shared dependencies. The optional cache source is read-only; missing cached
 dependencies fail instead of fetching. Scratch paths are printed for
