@@ -106,7 +106,7 @@ describe("thinking model metadata (#thinking-levels, pi catalog parity)", () => 
 			"xhigh",
 			"max",
 		]);
-		// Direct subscriptions use OpenAI metadata, not legacy Codex ladders.
+		// Without a catalog, subscriptions share the frozen OpenAI thinking rules.
 		expect(supportedThinkingLevels(thinkingMetaFor("openai-codex", "gpt-5.5"))).toEqual([
 			"off",
 			"low",

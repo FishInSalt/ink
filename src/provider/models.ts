@@ -121,7 +121,7 @@ const MODEL_COSTS: Partial<Record<ProviderName, Record<string, ModelCost>>> = {
 	// KIMI_COSTS). An EXPLICIT alias section keeps provider-scoped lookups
 	// honest — authored data, not a runtime cross-provider fallback.
 	"moonshotai-cn": KIMI_COSTS,
-	// Direct subscription rates are metadata from pi.dev/openai only.
+	// Direct subscription rates are metadata from pi.dev/openai-codex only.
 	// The legacy Codex floor is intentionally not a billing estimate.
 };
 

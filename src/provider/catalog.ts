@@ -42,9 +42,9 @@ export const CATALOG_FAMILIES: readonly ProviderName[] = [
 	"moonshotai-cn",
 ];
 
-/** Schema/source boundary: old openai-codex metadata is not reusable for
- *  direct subscription access, even when an id happens to match. */
-export const CODEX_METADATA_SOURCE = "openai:chatgpt-direct-v1";
+/** Source boundary: refetch subscription metadata from its own catalog;
+ *  never reuse the previous ordinary-OpenAI body or its validators. */
+export const CODEX_METADATA_SOURCE = "openai-codex:chatgpt-direct-v2";
 
 /** pi's REMOTE_CATALOG_REFRESH_INTERVAL_MS — how long a check stays fresh. */
 export const CATALOG_FRESH_WINDOW_MS = 4 * 60 * 60 * 1000;
@@ -82,7 +82,7 @@ export interface CatalogEntry {
 
 /** Disk-cache state per family (pi's ModelsStoreEntry shape). */
 interface ProviderCache {
-	/** Subscription metadata moved from legacy Codex to public OpenAI. */
+	/** Identifies the subscription catalog source across cache changes. */
 	source?: string;
 	models: Record<string, CatalogEntry>;
 	checkedAt: number;
@@ -317,10 +317,9 @@ async function refreshFamily(
 		// Revalidate ONLY when a cached body backs the validator — a 304 must
 		// never empty the overlay (pi parity).
 		const validator = cached !== undefined && Object.keys(cached.models).length > 0 ? cached.etag : undefined;
-		// Ink retains its subscription provider identity while using ordinary
-		// OpenAI metadata. Never fetch pi's legacy openai-codex catalog.
-		const sourceFamily = family === "openai-codex" ? "openai" : family;
-		const url = `${catalogBase()}/api/models/providers/${encodeURIComponent(sourceFamily)}`;
+		// Each family uses its own metadata catalog. Catalog transport fields
+		// are ignored; subscription inference still uses public Responses.
+		const url = `${catalogBase()}/api/models/providers/${encodeURIComponent(family)}`;
 		// One quiet retry on throttling/transient 5xx (discover.ts precedent,
 		// adapted from pi's fetchWithRetry — review P2-2): a single 503 must
 		// not freeze a family for the whole 4h window.

@@ -199,17 +199,29 @@ logging in to another provider; Ink shows a manual `/model` suggestion instead.
 Configured and resumed model choices remain unchanged, including when their
 credential is missing.
 
-For `openai-codex`, metadata now comes from the public catalog's `openai`
-entries, under the unchanged Ink provider identity. Old legacy-Codex metadata
-is ignored. The status bar's context window and `/status` usage percentage query
-the catalog using the selected provider and model together. The same model id
-can have different windows under `openai` and `openai-codex`; loading a
-cached catalog is enough to use that provider's window without first
-opening `/model`. `INK_CONTEXT_WINDOW` overrides the lookup. If the catalog
-has no window, API-key families try runtime discovery metadata, then the
-bundled static table and the 131,072-token default. The direct subscription
-family deliberately skips legacy discovery/static windows and uses 131,072
-without catalog metadata, unless overridden.
+For `openai-codex`, all consumed metadata comes from that family's own public
+catalog at `https://pi.dev/api/models/providers/openai-codex`: context windows,
+output limits, estimated costs, thinking maps and vision. Ordinary `openai`
+continues to use its separate catalog. For example, GPT-6.1 Sol currently has
+a 500,000-token subscription window; the ordinary OpenAI catalog's 272,000-token
+value is a default intended to avoid API long-context pricing. This metadata
+choice does not change authentication, account-scoped availability or the
+`https://api.openai.com/v1/responses` inference endpoint.
+
+Subscription cache entries previously derived from the ordinary OpenAI catalog,
+including their ETags, are ignored. The next startup or `/model` refresh fetches
+the subscription catalog even if that old entry was less than four hours old.
+A successfully cached new-source entry remains usable offline; before the first
+successful fetch, the conservative missing-metadata fallback still applies.
+
+The status bar's context window and `/status` usage percentage query the catalog
+using the selected provider and model together. Loading a valid cached catalog
+is enough to display that provider's window without first opening `/model`.
+`INK_CONTEXT_WINDOW` overrides the lookup. If the catalog has no window, API-key
+families try runtime discovery metadata, then the bundled static table and the
+131,072-token default. The direct subscription family deliberately skips legacy
+discovery/static windows and uses 131,072 without catalog metadata, unless
+overridden.
 
 ```bash
 INK_CATALOG_BASE_URL=https://mirror.example   # redirect the catalog source
