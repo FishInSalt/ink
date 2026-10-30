@@ -1,11 +1,12 @@
 import { stat } from "node:fs/promises";
-import { normalizePath, resolveToCwd } from "./path-resolve.js";
+import { homedir } from "node:os";
+import { isAbsolute, sep } from "node:path";
+import { normalizePath } from "./path-resolve.js";
 import type { ToolExecuteResult } from "./types.js";
 
-/** Normalize a search path once, then resolve it without normalizing again.
- * The double-normalization guard matters for `@@foo`-style paths: the child
- * process receives `childPath`, and the stat/error path must resolve exactly
- * the same spelling. */
+/** Normalize once for both stat and the child, including `@@foo`-style paths.
+ * Keep symlink/.. components and trailing separators intact so preflight
+ * traverses the same filesystem target as the child. */
 export interface SearchPath {
 	childPath: string;
 	resolvedPath: string;
@@ -16,13 +17,16 @@ export function resolveSearchPath(rawPath: unknown, cwd: string): SearchPath {
 	const normalized = normalizePath(raw, {
 		normalizeUnicodeSpaces: true,
 		stripAtPrefix: true,
-	});
-	const childPath = normalized === "" ? "." : normalized;
-	const resolvedPath = resolveToCwd(childPath, cwd, {
-		normalizeUnicodeSpaces: false,
-		stripAtPrefix: false,
 		expandTilde: false,
 	});
+	// Shared tilde expansion uses path.join, which would collapse symlink/.. components.
+	const expanded =
+		normalized === "~" || normalized.startsWith("~/") ? homedir() + normalized.slice(1) : normalized;
+	const childPath = expanded === "" ? "." : expanded;
+	const base = isAbsolute(cwd) ? cwd : `${process.cwd()}${sep}${cwd}`;
+	const resolvedPath = isAbsolute(childPath)
+		? childPath
+		: `${base}${base.endsWith(sep) ? "" : sep}${childPath}`;
 	return { childPath, resolvedPath };
 }
 

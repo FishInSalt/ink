@@ -73,7 +73,9 @@ The loopback callback listens only on `127.0.0.1`, normally port 1455 and an
 available port if occupied. The CLI's interactive terminal and TUI can accept
 a pasted callback URL without echoing it. Authorization expires after 10
 minutes and Ctrl+C cancels. Ink verifies the returned identity and granted
-permission before making the connection usable.
+permission before making the connection usable. Cancelling before the credential
+file's atomic replacement is submitted preserves the previous credentials.
+Once submitted, replacement completes; cancellation does not undo a saved login.
 
 **Existing device-code logins must run `ink login` once again.** There is no
 old-token conversion, legacy backend, or automatic fallback to API-key billing.

@@ -9,6 +9,9 @@ over running `grep`, `rg`, or `find` through the bash tool.
 The `path` argument accepts relative paths, `~` home paths, `@` prefixes, and
 the Unicode space variants commonly produced by terminals and rich-text paste.
 Relative paths keep relative result paths; `~` paths produce absolute paths.
+A path containing `link/..` follows the symbolic link before selecting its
+parent directory. This also applies to `~/` paths; a trailing slash requires
+a directory.
 
 A missing path returns a one-line error with the resolved absolute path.
 `grep` accepts a file or a directory; `find` requires a directory.

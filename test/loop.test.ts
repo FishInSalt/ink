@@ -85,6 +85,42 @@ describe("agent loop", () => {
 		expect(result.usage).toMatchObject({ inputTokens: 20, outputTokens: 10 });
 	});
 
+	it("records a successful tool result for a large edit deletion", async () => {
+		const dir = await mkTempDirAsync("ink-edit-");
+		const file = path.join(dir, "many.txt");
+		const oldText = "old\n".repeat(150_000);
+		const newText = "new\n";
+		await writeFile(file, oldText);
+		const provider = scriptedProvider([
+			assistant(
+				[
+					{
+						type: "toolCall",
+						id: "large-edit",
+						name: "edit",
+						arguments: { path: "many.txt", edits: [{ oldText, newText }] },
+					},
+				],
+				"tool_use",
+			),
+			assistant([{ type: "text", text: "done" }]),
+		]);
+		const history: AgentMessage[] = [];
+		const result = await runAgentLoop({
+			provider,
+			model: "mock",
+			system: "",
+			tools: [createEditTool({ cwd: dir })],
+			history,
+			userMessage: "edit",
+		});
+		expect(result.stopReason).toBe("completed");
+		expect(await readFile(file, "utf8")).toBe(newText);
+		const receipt = (history[2] as ToolResultMessage).results[0]!;
+		expect(receipt.isError).toBe(false);
+		expect(contentText(receipt.content)).toBe("Edited many.txt: 1 edit applied.");
+	});
+
 	it("feeds unknown-tool errors back to the model instead of crashing", async () => {
 		const provider = scriptedProvider([
 			assistant([{ type: "toolCall", id: "t1", name: "nonexistent", arguments: {} }], "tool_use"),
