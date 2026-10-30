@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
 	compactHistory,
 	compactSession,
@@ -12,6 +13,7 @@ import {
 	serializeForSummary,
 	summarizeBranchSegment,
 } from "../src/core/compaction.js";
+import type { AgentEvent } from "../src/core/loop.js";
 import type { AgentMessage, AssistantMessage } from "../src/core/messages.js";
 import { createChildSession, createSession } from "../src/core/session/manager.js";
 import { SessionStore, summaryToMessage } from "../src/core/session/store.js";
@@ -21,13 +23,18 @@ import { CodexResponseError, createCodexResponsesProvider } from "../src/provide
 import { createOpenAICompletionsProvider } from "../src/provider/openai-completions.js";
 import { toResponsesInput } from "../src/provider/responses-history.js";
 import type { LLMEvent, LLMRequest } from "../src/provider/types.js";
-import { assistant, scriptedProvider, user } from "./helpers/fakes.js";
+import { createRunner } from "../src/runner.js";
+import { assistant, makeRenderer, scriptedProvider, user } from "./helpers/fakes.js";
 import { mkTempDir } from "./helpers/mktemp.js";
 
 type Fields = Record<string, unknown>;
 const MODEL = "gpt-5.5";
 const TARGET = `openai-codex/${MODEL}`;
 const identity = { version: 1 as const, provider: "openai-codex" as const };
+const terminalOutputs = [
+	{ aggregate: "omitted", output: undefined },
+	{ aggregate: "empty", output: [] },
+];
 const request = (fields: Partial<LLMRequest> = {}): LLMRequest => ({
 	system: "system",
 	model: MODEL,
@@ -155,6 +162,7 @@ function encryptedMessage(itemId: string, inputTokens = 90000, outputTokens = 20
 afterEach(() => {
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
 });
 
 describe("Responses final snapshots", () => {
@@ -239,9 +247,13 @@ describe("Responses final snapshots", () => {
 		expect(JSON.stringify(result.message)).not.toContain("PROVISIONAL_SECRET");
 		expect(result.message.blocks.some((b) => b.type === "thinking" && b.signature !== undefined)).toBe(false);
 	});
-	it.each([undefined, "completed"])(
-		"preserves finalized items and ciphertext when terminal output is empty (status %s)",
-		async (status) => {
+	it.each(
+		terminalOutputs.flatMap((terminal) =>
+			[undefined, "completed"].map((status) => ({ ...terminal, status })),
+		),
+	)(
+		"preserves finalized items and ciphertext with $aggregate terminal output (status $status)",
+		async ({ output, status }) => {
 			const reasoning = {
 				type: "reasoning",
 				id: "rs",
@@ -255,7 +267,10 @@ describe("Responses final snapshots", () => {
 				status,
 				role: "assistant",
 				phase: "commentary",
-				content: [{ type: "output_text", text: "final text" }],
+				content: [
+					{ type: "output_text", text: "final text" },
+					{ type: "refusal", refusal: "final refusal" },
+				],
 			};
 			const call = {
 				type: "function_call",
@@ -272,7 +287,7 @@ describe("Responses final snapshots", () => {
 				done(0, reasoning),
 				done(1, text),
 				done(2, call),
-				completed({ output: [] }),
+				completed({ output }),
 			]);
 			expect(message.stopReason).toBe("tool_use");
 			expect(toResponsesInput([message], MODEL)).toEqual([
@@ -283,7 +298,10 @@ describe("Responses final snapshots", () => {
 					role: "assistant",
 					status: "completed",
 					phase: "commentary",
-					content: [{ type: "output_text", text: "final text", annotations: [] }],
+					content: [
+						{ type: "output_text", text: "final text", annotations: [] },
+						{ type: "refusal", refusal: "final refusal" },
+					],
 				},
 				{ type: "function_call", id: "fc", call_id: "call", name: "read", arguments: call.arguments },
 			]);
@@ -341,6 +359,7 @@ describe("Responses final snapshots", () => {
 	it("never retains provisional reasoning ciphertext when no final ciphertext arrives", async () => {
 		const { message } = await turn([
 			added(0, { type: "reasoning", id: "rs", encrypted_content: "never-save" }),
+			done(0, { type: "reasoning", id: "rs", status: "completed", summary: [] }),
 			completed(),
 		]);
 		expect(JSON.stringify(message)).not.toContain("never-save");
@@ -417,11 +436,6 @@ describe("Responses final snapshots", () => {
 			[added(0, { type: "message", id: "same" }), added(1, { type: "reasoning", id: "same" }), completed()],
 			[
 				added(0, { type: "message" }),
-				event("response.output_text.delta", { output_index: 0, content_index: 1, delta: "gap" }),
-				completed(),
-			],
-			[
-				added(0, { type: "message" }),
 				event("response.output_text.delta", { output_index: 0, content_index: null, delta: "bad" }),
 				completed(),
 			],
@@ -437,9 +451,20 @@ describe("Responses final snapshots", () => {
 				}),
 			],
 			[added(0, { type: "message", id: "a" }), completed({ output: [] })],
+			...[null, {}, false, 1].map((output) => [completed({ output })]),
 		].map((events) => ({ events })),
 	)("rejects malformed output rather than emitting message_end (%#)", async ({ events }) => {
 		await expect(turn(events)).rejects.toBeInstanceOf(CodexResponseError);
+	});
+	it("rejects noncontiguous content even after item finalization", async () => {
+		await expect(
+			turn([
+				added(0, { type: "message" }),
+				event("response.output_text.delta", { output_index: 0, content_index: 1, delta: "gap" }),
+				done(0, { type: "message" }),
+				completed(),
+			]),
+		).rejects.toThrow("noncontiguous content indices");
 	});
 	it("terminal function snapshots verify closed calls but cannot change arguments", async () => {
 		const call = {
@@ -470,7 +495,7 @@ describe("Responses final snapshots", () => {
 				status,
 			};
 			await expect(
-				turn([added(0, { ...call, status: "in_progress" }), done(0, call), completed()]),
+				turn([added(0, { ...call, status: "in_progress" }), done(0, call), completed({ output: [call] })]),
 			).rejects.toThrow("did not finish normally");
 		},
 	);
@@ -1101,6 +1126,167 @@ describe("Responses target-aware estimation", () => {
 });
 
 describe("Responses persistence and compaction", () => {
+	it.each(
+		terminalOutputs.flatMap((terminal) =>
+			["text", "refusal", "reasoning"].map((kind) => ({ ...terminal, kind })),
+		),
+	)(
+		"runner rejects partial $kind with $aggregate output before JSONL admission and native resume",
+		async ({ kind, output }) => {
+			vi.stubEnv("INK_LOG", "0");
+			vi.stubEnv("INK_AUTOCOMPACT", "0");
+			const root = mkTempDir("ink-runner-");
+			const reasoning = {
+				type: "reasoning",
+				id: "accepted_reasoning",
+				summary: [{ type: "summary_text", text: "ACCEPTED_SUMMARY" }],
+				encrypted_content: "ACCEPTED_CIPHER",
+			};
+			const text = {
+				type: "message",
+				id: "accepted_message",
+				role: "assistant",
+				status: "completed",
+				phase: "final_answer",
+				content: [
+					{ type: "output_text", text: "ACCEPTED_TEXT" },
+					{ type: "refusal", refusal: "ACCEPTED_REFUSAL" },
+				],
+			};
+			const call = {
+				type: "function_call",
+				id: "rejected_tool",
+				call_id: "rejected_call",
+				name: "probe",
+				arguments: "{}",
+				status: "completed",
+			};
+			const partial =
+				kind === "reasoning" ? "REJECTED_SUMMARY" : kind === "refusal" ? "REJECTED_REFUSAL" : "REJECTED_TEXT";
+			const scripts: Fields[][] = [
+				[
+					added(0, { type: "reasoning", id: reasoning.id }),
+					done(0, reasoning),
+					added(1, { type: "message", id: text.id }),
+					done(1, text),
+					completed({ output }),
+				],
+				[
+					added(0, { type: kind === "reasoning" ? "reasoning" : "message", id: "rejected_peer" }),
+					event(
+						`response.${kind === "reasoning" ? "reasoning_summary_text" : kind === "refusal" ? "refusal" : "output_text"}.delta`,
+						{ output_index: 0, delta: partial },
+					),
+					// A done reasoning item with noncompleted status must not save its final ciphertext either.
+					...(kind === "reasoning"
+						? [
+								done(0, {
+									type: "reasoning",
+									id: "rejected_peer",
+									status: "incomplete",
+									summary: [{ type: "summary_text", text: partial }],
+									encrypted_content: "REJECTED_CIPHER",
+								}),
+							]
+						: []),
+					added(1, call),
+					done(1, call),
+					completed({ output }),
+				],
+			];
+			const captured: string[] = [];
+			const provider = () =>
+				createCodexResponsesProvider({
+					baseUrl: "http://127.0.0.1:1",
+					auth: async () => ({ accessToken: "fake-runner" }),
+					fetch: async (_url, init) => {
+						captured.push(String(init?.body));
+						return response(scripts.shift() ?? [completed()]);
+					},
+				});
+			const execute = vi.fn(async () => ({ output: "inert result" }));
+			const options = {
+				cwd: root,
+				argv: [],
+				model: TARGET,
+				modelExplicit: true,
+				maxTokens: 32,
+				maxTurns: 3,
+				noContextFiles: true,
+				noSession: false,
+				sessionBaseDir: join(root, "sessions"),
+				settingsPath: join(root, "settings.json"),
+				agentsHomeDir: root,
+				agentsProjectAllowed: false,
+				systemPromptHomeDir: root,
+				renderer: makeRenderer().renderer,
+				tools: [
+					{
+						name: "probe",
+						description: "Inert admission regression probe",
+						parameters: Type.Object({}),
+						execute,
+					},
+				],
+			};
+			const live = await createRunner({ ...options, provider: provider() });
+			onTestFinished(() => live.close());
+			await expect(live.runTurn({ userMessage: "accept" })).resolves.toMatchObject({
+				turns: 1,
+				stopReason: "completed",
+			});
+			const accepted = live.history[1]!;
+			expect(accepted).toMatchObject({ role: "assistant", provenance: { ...identity, model: MODEL } });
+			const observed: AgentEvent[] = [];
+			// Soft assertions deliberately continue through reopening/resume on the unfixed adapter.
+			await expect
+				.soft(live.runTurn({ userMessage: "reject", onEvent: (value) => observed.push(value) }))
+				.rejects.toBeInstanceOf(CodexResponseError);
+			expect(observed).toContainEqual({
+				type: kind === "reasoning" ? "thinking_delta" : "text_delta",
+				text: partial,
+			});
+			expect
+				.soft(observed.filter((value) => ["message_end", "tool_start", "tool_running"].includes(value.type)))
+				.toEqual([]);
+			expect.soft(execute).not.toHaveBeenCalled();
+			expect.soft(live.history).toEqual([user("accept"), accepted, user("reject")]);
+			expect.soft(captured).toHaveLength(2);
+			const filePath = live.session!.filePath;
+			live.close();
+			const reopened = SessionStore.open(filePath);
+			expect(reopened.header.version).toBe(1);
+			expect.soft(reopened.buildContext().messages).toEqual([user("accept"), accepted, user("reject")]);
+			expect.soft(readFileSync(filePath, "utf8")).not.toMatch(/REJECTED_|rejected_/);
+
+			const beforeResume = captured.length;
+			const resumed = await createRunner({ ...options, resume: reopened.header.id, provider: provider() });
+			onTestFinished(() => resumed.close());
+			expect(resumed.session!.filePath).toBe(filePath);
+			expect(resumed.providerName).toBe("openai-codex");
+			expect(resumed.modelReference()).toBe(TARGET);
+			await resumed.runTurn({ userMessage: "resume" });
+			expect(captured).toHaveLength(beforeResume + 1);
+			const serialized = captured.at(-1)!;
+			const body = JSON.parse(serialized) as { model: string; input: Fields[] };
+			expect(body.model).toBe(MODEL);
+			const nativeText = {
+				...text,
+				content: [{ type: "output_text", text: "ACCEPTED_TEXT", annotations: [] }, text.content[1]],
+			};
+			expect(body.input).toEqual(expect.arrayContaining([reasoning, nativeText]));
+			expect
+				.soft(body.input.filter((item) => item.type !== "additional_tools"))
+				.toEqual([
+					{ role: "user", content: [{ type: "input_text", text: "accept" }] },
+					reasoning,
+					nativeText,
+					{ role: "user", content: [{ type: "input_text", text: "reject" }] },
+					{ role: "user", content: [{ type: "input_text", text: "resume" }] },
+				]);
+			expect.soft(serialized).not.toMatch(/REJECTED_|rejected_/);
+		},
+	);
 	it("round-trips version-1 session/resume/child/compaction native fields without a format bump", async () => {
 		const root = mkTempDir("ink-session-");
 		const message = replayMessage();

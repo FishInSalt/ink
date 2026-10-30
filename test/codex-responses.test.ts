@@ -293,6 +293,10 @@ describe("codex-responses provider", () => {
 			chunks: [
 				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
 				sse("response.output_text.delta", { output_index: 0, delta: "ok" }),
+				sse("response.output_item.done", {
+					output_index: 0,
+					item: { type: "message", status: "completed", content: [{ type: "output_text", text: "ok" }] },
+				}),
 				sse("response.completed", {
 					response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } },
 				}),
@@ -398,6 +402,10 @@ describe("codex-responses provider", () => {
 			chunks: [
 				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
 				sse("response.output_text.delta", { output_index: 0, delta: "done" }),
+				sse("response.output_item.done", {
+					output_index: 0,
+					item: { type: "message", status: "completed", content: [{ type: "output_text", text: "done" }] },
+				}),
 				sse("response.completed", {
 					response: { status: "completed", usage: { input_tokens: 2, output_tokens: 1 } },
 				}),
@@ -626,6 +634,10 @@ describe("codex-responses provider", () => {
 			chunks: [
 				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
 				sse("response.output_text.delta", { output_index: 0, delta: "hi" }),
+				sse("response.output_item.done", {
+					output_index: 0,
+					item: { type: "message", status: "completed", content: [{ type: "output_text", text: "hi" }] },
+				}),
 				sse("response.completed", { response: { status: "completed" } }),
 			],
 		};
@@ -641,6 +653,10 @@ describe("codex-responses provider", () => {
 			chunks: [
 				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
 				sse("response.output_text.delta", { output_index: 0, delta: "hi" }),
+				sse("response.output_item.done", {
+					output_index: 0,
+					item: { type: "message", status: "completed", content: [{ type: "output_text", text: "hi" }] },
+				}),
 				sse("response.completed", {
 					response: { status: "completed", usage: { input_tokens: 31, output_tokens: 7 } },
 				}),

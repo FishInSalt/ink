@@ -49,11 +49,11 @@ change. Do not claim read EOF tail recovery (reverted) or guaranteed cache hits.
 ## Residual review findings
 
 The user selected only the three small regression fixes, now merged. This
-preparation does not fix or declare resolved the remaining extension-hook
-rejection/getter containment, omitted terminal-output native replay boundary,
-legacy flat-token logout cleanup, or relative-PATH fd capability identity.
-These conditional/low-priority findings remain recorded for an explicit
-publication decision; preparing the candidate is not blanket risk acceptance.
+initial preparation did not fix the remaining extension-hook rejection/getter
+containment, omitted terminal-output native replay boundary, legacy flat-token
+logout cleanup, or relative-PATH fd capability identity. The later owner-approved
+completion-check fix is tracked below; the other three findings remain deferred.
+Preparing the candidate is not blanket risk acceptance.
 
 ## Verification and completion
 
@@ -86,3 +86,49 @@ approval; supported-Node CI and a separate publication approval gate the tag.
   Integrity: `sha512-7XcCKzO1btbToHgXW5Tt6VurO/vBewZxUIO1l+2dbG3Z8hAsbXwIUbjsRqd3VXahgmx5pr4G3MX/WVWszC95Fg==`.
 - Logs: `/tmp/ink-release-0.5.0.dvdHUi/`. Linux Node 22.19.0/24 CI remains pending;
   no external release action or live model request has been performed.
+
+## Terminal-output completion follow-up
+
+The owner subsequently requested the minimal missing-output completion fix and
+then publication of 0.5.0. The implementation design is
+[responses-terminal-output-completion.md](responses-terminal-output-completion.md),
+independently reviewed by `6d142385` (PASS before implementation). External
+push/publication operations will still be surfaced for explicit confirmation.
+
+Missing terminal output now follows the existing empty-aggregate check. Normal
+responses with unfinished text/refusal/reasoning cannot enter assistant history
+or execute a valid peer tool. Finalized omitted/empty aggregates, authoritative
+nonempty snapshots and explicit token-limit truncation remain supported. Existing
+session files and replay metadata formats are unchanged; old records are not
+rewritten. The extension-hook, legacy-token and relative-PATH findings are not
+part of this fix.
+
+The regression tests were first run against unchanged production code: six
+related files / 618 tests yielded 606 passes and 12 expected failures, with no
+unrelated failure or nonlocal network attempt. The failures cover nine omitted
+noncompleted-peer cases and three runner persistence/resume cases.
+
+Integrated local results (macOS arm64 / Node 25.5.0):
+- Focused tests: 6 files / 618 passed; full suite: 157 files / 4,105 passed;
+  package regressions: 3 files / 211 passed. Typecheck, lint, build, identity,
+  npm 11.8.0, docs-site (24 pages) and diff checks passed. No nonlocal test
+  requests or live model calls occurred.
+- The first full run had 4,103 passes and two failures: a fifth simplified
+  successful fixture in `test/images.test.ts` was completed with item-done;
+  the unrelated FIFO child-parity test timed out under the default threadpool.
+  Unchanged `cb4f610` reproduced the same FIFO result (29 passes / 1 timeout).
+  With `UV_THREADPOOL_SIZE=16`, all 30 tests in that file and the full suite
+  passed. Only the local test environment changed; no concurrency code,
+  assertions or repository/CI configuration was altered for this limitation.
+- Independent source/artifact review `95659395`: APPROVE, including byte
+  comparison of every packed file and 30 installed-assembler checks. The
+  noncontiguous-content negative test retains its specific validation coverage.
+- Offline smoke: 427 allowed files; isolated install, Ink 0.5.0/help and local
+  npm-exec passed. Artifact size: 815,393 bytes.
+- Artifact: `/private/tmp/ink-responses-release.kaKnDx/tmp/ink-package-smoke-0os1Vo/artifacts/ink-agent-0.5.0.tgz`.
+  Integrity: `sha512-2eSxTfPtKHuNIi0CktDR4fOQtueZs3dVlCoTw4oYZAHkzoLPMcraxgo+uVmdN+9oLqLRbC0sS4/HKPDbEwrSMw==`.
+- Logs: `/tmp/ink-responses-release.kaKnDx/`; pre-fix regressions:
+  `/tmp/ink-responses-terminal-tests.QDy1cH/`. The missing-output finding is
+  closed for new response admission, not retroactive cleanup. The other three
+  residual findings remain deferred. New supported-Node CI, tag and publication
+  await the external-action confirmation; version 0.5.0 remains unpublished.

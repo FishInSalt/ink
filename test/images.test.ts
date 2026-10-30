@@ -446,6 +446,15 @@ function codexChunks(): string {
 	return (
 		sse("response.output_item.added", { output_index: 0, item: { type: "message", id: "msg_image" } }) +
 		sse("response.output_text.delta", { output_index: 0, delta: "ok" }) +
+		sse("response.output_item.done", {
+			output_index: 0,
+			item: {
+				type: "message",
+				id: "msg_image",
+				status: "completed",
+				content: [{ type: "output_text", text: "ok" }],
+			},
+		}) +
 		sse("response.completed", {
 			type: "response.completed",
 			response: { id: "r1", usage: { input_tokens: 1, output_tokens: 1 } },
