@@ -73,7 +73,9 @@ function completed(fields: Fields = {}): WireEvent {
 	return wire("response.completed", { response: { status: "completed", usage: USAGE, ...fields } });
 }
 function incomplete(event = "response.incomplete", status = "incomplete"): WireEvent {
-	return wire(event, { response: { status, usage: USAGE } });
+	return wire(event, {
+		response: { status, incomplete_details: { reason: "max_output_tokens" }, usage: USAGE },
+	});
 }
 function textAdded(index: number): WireEvent {
 	return itemEvent("added", index, { type: "message", id: `message_${index}` });
@@ -119,7 +121,7 @@ function message(events: LLMEvent[]): AssistantMessage {
 	expect(endings).toHaveLength(1);
 	const end = endings[0];
 	if (end?.type !== "message_end") throw new Error("Missing final message in local fixture");
-	return end.message;
+	return { ...end.message, blocks: end.message.blocks.map(({ responses: _replay, ...block }) => block) };
 }
 function toolBlock(index: number, args: unknown, name = "read") {
 	return { type: "toolCall", id: `call_${index}`, name, arguments: args };
@@ -572,7 +574,7 @@ describe("Codex tool arguments", () => {
 	function provider() {
 		return createCodexResponsesProvider({
 			baseUrl,
-			auth: async () => ({ accessToken: "fake-offline-access", accountId: "fake-offline-account" }),
+			auth: async () => ({ accessToken: "fake-offline-access" }),
 		});
 	}
 	async function run(events: WireEvent[], terminal = completed()): Promise<LLMEvent[]> {
@@ -656,6 +658,7 @@ describe("Codex tool arguments", () => {
 				itemEvent("done", 0, { type: "reasoning", id: "reasoning_0" }),
 			]);
 			expect(message(events).blocks).toEqual([
+				{ type: "thinking", thinking: "ignored reasoning" },
 				{ type: "text", text: "checking 日本語…" },
 				toolBlock(4, a),
 				toolBlock(9, b),
@@ -679,7 +682,9 @@ describe("Codex tool arguments", () => {
 			expect(events.filter((event) => event.type === "text_delta")).toEqual([
 				{ type: "text_delta", text: "checking 日本語…" },
 			]);
-			expect(events.filter((event) => event.type === "thinking_delta")).toEqual([]);
+			expect(events.filter((event) => event.type === "thinking_delta")).toEqual([
+				{ type: "thinking_delta", text: "ignored reasoning" },
+			]);
 		});
 
 		it("sorts done-only discoveries and text by output index, not discovery or completion order", async () => {
@@ -835,11 +840,18 @@ describe("Codex tool arguments", () => {
 				completed({ output: [identity(INDEX, { arguments: RAW })] }),
 			);
 		});
-		it("a terminal output array alone does not create executable tool calls", async () => {
-			const events = await run([], completed({ output: [identity(INDEX, { arguments: RAW })] }));
-			expect(message(events).blocks).toEqual([{ type: "text", text: "(empty)" }]);
-			expect(events.some((event) => event.type === "tool_call_start")).toBe(false);
+		it("a terminal output array alone cannot create executable tool calls", async () => {
+			await protocolFailure([], completed({ output: [identity(INDEX, { arguments: RAW })] }));
 		});
+		it.each(["", " \t\n"])(
+			"an explicit blank terminal argument snapshot %j rejects a closed call",
+			async (argumentsValue) => {
+				await protocolFailure(
+					fromSource("delta", RAW, 0),
+					completed({ output: [identity(0, { arguments: argumentsValue })] }),
+				);
+			},
+		);
 		it("closed calls still require a terminal response event", async () => {
 			await protocolFailure(fromSource("delta", RAW), null);
 		});
@@ -857,7 +869,7 @@ describe("Codex tool arguments", () => {
 				expect(message(events)).toMatchObject({
 					stopReason: "max_tokens",
 					usage: NORMALIZED_USAGE,
-					blocks: [toolBlock(INDEX, { _parseError: expect.any(String), raw: PREFIX })],
+					blocks: [toolBlock(INDEX, { _parseError: expect.any(String) })],
 				});
 			},
 		);
@@ -932,7 +944,7 @@ describe("Codex tool arguments", () => {
 				baseUrl,
 				auth: async () => {
 					authCalls++;
-					return { accessToken: "fake", accountId: "fake" };
+					return { accessToken: "fake" };
 				},
 			});
 			const controller = new AbortController();
@@ -944,6 +956,101 @@ describe("Codex tool arguments", () => {
 	});
 
 	describe("real agent-loop integration", () => {
+		it.each([
+			{ name: "unfinalized tool", invalid: [added(1), delta(RAW, 1)] },
+			{ name: "arguments.done only", invalid: [added(1), argsDone(RAW, 1)] },
+			{ name: "missing arguments", invalid: [added(1), done(1)] },
+			{ name: "malformed arguments", invalid: [added(1), delta("PRIVATE_ARG_SECRET:not-json", 1), done(1)] },
+			{ name: "in_progress tool", invalid: [added(1), delta(RAW, 1), done(1, { status: "in_progress" })] },
+			{ name: "incomplete tool", invalid: [added(1), delta(RAW, 1), done(1, { status: "incomplete" })] },
+			...(["message", "reasoning"] as const).flatMap((type) => [
+				{ name: `unfinalized ${type}`, invalid: [itemEvent("added", 1, { type, id: "peer" })] },
+				...(["in_progress", "incomplete"] as const).map((status) => ({
+					name: `${status} ${type}`,
+					invalid: [
+						itemEvent("added", 1, { type, id: "peer" }),
+						itemEvent("done", 1, { type, id: "peer", status }),
+					],
+				})),
+			]),
+		])("empty terminal output with $name refuses even an earlier valid call", async ({ invalid }) => {
+			const seen: Executed[] = [];
+			const events: AgentEvent[] = [];
+			const history: AgentMessage[] = [];
+			enqueue([...fromSource("delta", RAW, 0), ...invalid, completed({ output: [] })]);
+			await expect(
+				runAgentLoop(
+					loopOptions(
+						[recordingTool("read", Type.Object({ path: Type.Optional(Type.String()) }), seen)],
+						history,
+						events,
+					),
+				),
+			).rejects.toThrow();
+			expect(seen).toEqual([]);
+			expect(events.filter((event) => event.type === "message_end" || event.type === "tool_start")).toEqual(
+				[],
+			);
+			expect(history.map((entry) => entry.role)).toEqual(["user"]);
+			expect(captured).toHaveLength(1);
+		});
+
+		it("empty output in a nonempty aggregate still cannot omit a finalized peer", async () => {
+			const seen: Executed[] = [];
+			const events: AgentEvent[] = [];
+			enqueue([
+				...fromSource("delta", RAW, 0),
+				...fromSource("delta", RAW, 1),
+				completed({ output: [identity(0, { arguments: RAW })] }),
+			]);
+			await expect(
+				runAgentLoop(
+					loopOptions([recordingTool("read", Type.Object({ path: Type.String() }), seen)], [], events),
+				),
+			).rejects.toThrow("final output omitted a streamed item");
+			expect(seen).toEqual([]);
+			expect(events.some((event) => event.type === "message_end")).toBe(false);
+			expect(captured).toHaveLength(1);
+		});
+
+		it.each(["response.incomplete", "response.completed"])(
+			"empty output on %s with max_output_tokens refuses the entire tool batch",
+			async (type) => {
+				const seen: Executed[] = [];
+				const events: AgentEvent[] = [];
+				const history: AgentMessage[] = [];
+				enqueue([
+					...fromSource("delta", RAW, 0),
+					added(1),
+					delta(PREFIX, 1),
+					wire(type, {
+						response: {
+							status: "incomplete",
+							incomplete_details: { reason: "max_output_tokens" },
+							output: [],
+						},
+					}),
+				]);
+				enqueue(textTurn());
+				await expect(
+					runAgentLoop(
+						loopOptions([recordingTool("read", Type.Object({ path: Type.String() }), seen)], history, events),
+					),
+				).resolves.toMatchObject({ stopReason: "completed", turns: 2 });
+				expect(seen).toEqual([]);
+				expect(history[1]).toMatchObject({ role: "assistant", stopReason: "max_tokens" });
+				expect(history[2]).toMatchObject({
+					role: "toolResult",
+					results: [
+						{ toolCallId: "call_0", isError: true },
+						{ toolCallId: "call_1", isError: true },
+					],
+				});
+				expect(events.some((event) => event.type === "tool_running")).toBe(false);
+				expect(captured).toHaveLength(2);
+			},
+		);
+
 		it.each(["initial", "delta", "arguments-done", "final-item", "done-only"] as const)(
 			"%s arguments satisfy required path/pattern schemas, execute and replay intact",
 			async (source) => {
@@ -984,10 +1091,16 @@ describe("Codex tool arguments", () => {
 					],
 				});
 				expect(captured).toHaveLength(2);
-				expect(
-					((captured[0]?.tools ?? []) as Fields[]).map((tool) => (tool.parameters as Fields).required),
-				).toEqual([["path"], ["pattern", "path"]]);
-				expect(captured[1]?.input).toEqual([
+				const declaration = (captured[0]!.input as Fields[])[0]!;
+				expect(declaration).toMatchObject({ type: "additional_tools", role: "developer" });
+				expect((declaration.tools as Fields[]).map((tool) => (tool.parameters as Fields).required)).toEqual([
+					["path"],
+					["pattern", "path"],
+				]);
+				const replay = (captured[1]!.input as Fields[])
+					.filter((item) => item.type !== "additional_tools")
+					.map(({ id: _id, ...item }) => item);
+				expect(replay).toEqual([
 					{ role: "user", content: [{ type: "input_text", text: "inspect the files" }] },
 					{ type: "function_call", call_id: "call_3", name: "read", arguments: RAW },
 					{ type: "function_call", call_id: "call_9", name: "grep", arguments: JSON.stringify(search) },
@@ -1064,6 +1177,42 @@ describe("Codex tool arguments", () => {
 			},
 		);
 
+		it.each(["", " \t\n"])(
+			"an explicit blank terminal argument snapshot %j prevents execution of the entire batch",
+			async (argumentsValue) => {
+				const seen: Executed[] = [];
+				const history: AgentMessage[] = [];
+				const events: AgentEvent[] = [];
+				const gates: unknown[] = [];
+				enqueue([
+					...fromSource("delta", RAW, 0),
+					...fromSource("delta", RAW, 1),
+					completed({
+						output: [identity(0, { arguments: RAW }), identity(1, { arguments: argumentsValue })],
+					}),
+				]);
+				enqueue(textTurn());
+				await expect(
+					runAgentLoop(
+						loopOptions(
+							[recordingTool("read", Type.Object({ path: Type.String() }), seen)],
+							history,
+							events,
+							{
+								onToolCall: (call: unknown) => {
+									gates.push(call);
+								},
+							},
+						),
+					),
+				).rejects.toThrow("invalid final function arguments");
+				expect(seen).toEqual([]);
+				expect(gates).toEqual([]);
+				expect(events.filter((event) => event.type === "message_end")).toEqual([]);
+				expect(history.map((entry) => entry.role)).toEqual(["user"]);
+				expect(captured).toHaveLength(1);
+			},
+		);
 		it.each(["response.incomplete", "response.completed"])(
 			"%s/incomplete refuses the entire mixed closed/unclosed batch and replays errors",
 			async (terminalEvent) => {

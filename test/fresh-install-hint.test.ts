@@ -72,7 +72,7 @@ describe("#fresh-install-hint availability seam", () => {
 		delete process.env.ANTHROPIC_AUTH_TOKEN;
 		// stored only (via /login) — saveApiKey honors INK_AUTH_PATH
 		const { saveApiKey } = await import("../src/provider/auth-store.js");
-		saveApiKey("deepseek", "stored-key");
+		await saveApiKey("deepseek", "stored-key");
 		expect(modelAvailability("deepseek")).toEqual({ usable: true, configuredFamilies: ["deepseek"] });
 	});
 
@@ -101,7 +101,7 @@ describe("#fresh-install-hint availability seam", () => {
 
 	it("test 3 (targeted): another family configured → targeted note, not the generic one", async () => {
 		const { saveApiKey } = await import("../src/provider/auth-store.js");
-		saveApiKey("zai", "stored-key");
+		await saveApiKey("zai", "stored-key");
 		const root = await mkTempDirAsync("ink-fresh-");
 		const { renderer, output } = makeRenderer();
 		await createRunner({

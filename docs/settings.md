@@ -39,8 +39,9 @@ gating variables (`INK_AUTOCOMPACT=0` etc.) beat their settings keys.
 
 | Path | Purpose |
 |---|---|
-| `~/.ink/auth.json` | Credentials from `/login` (0600); stored keys beat env vars |
-| `~/.ink/models-catalog.json` | Model catalog disk cache (4h refresh window) |
+| `~/.ink/auth.json` | Credentials, subscription registration and random installation ID (0600); stored keys beat env vars |
+| `~/.ink/models-catalog.json` | Model metadata disk cache (4h refresh window) |
+| `~/.ink/chatgpt-models.json` | Account-scoped subscription model availability (5-minute fresh window) |
 | `~/.ink/commands/` | Markdown quick commands (`/<filename>`) |
 | `~/.ink/extensions/` | Global extensions |
 | `~/.ink/agents/` | Global named agents |

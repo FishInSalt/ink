@@ -2,10 +2,11 @@ import path from "node:path";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import type { CompactionSettings } from "../src/core/compaction.js";
+import * as compaction from "../src/core/compaction.js";
 import { compactHistory } from "../src/core/compaction.js";
-import type { AgentMessage } from "../src/core/messages.js";
+import type { AgentMessage, AssistantMessage } from "../src/core/messages.js";
 import { createSession, sessionsDirFor } from "../src/core/session/manager.js";
-import { SessionStore, SUMMARY_MARK } from "../src/core/session/store.js";
+import { SessionStore, SUMMARY_MARK, summaryToMessage } from "../src/core/session/store.js";
 import { runSubagent } from "../src/core/subagent.js";
 import { createTaskTool } from "../src/core/tools/task.js";
 import type { Tool } from "../src/core/tools/types.js";
@@ -93,6 +94,30 @@ function routingProvider(steps: ScriptStep[], summary: string, failSummaryAttemp
 }
 
 const messageCounts = (requests: LLMRequest[]): number[] => requests.map((r) => r.messages.length);
+
+function nativeReasoning(): AssistantMessage {
+	return {
+		...assistant(
+			[
+				{
+					type: "thinking",
+					thinking: "",
+					responses: {
+						version: 1,
+						provider: "openai-codex",
+						itemId: "rs_child",
+						summary: [],
+						encryptedContent: "fixture-ciphertext",
+					},
+				},
+			],
+			"end_turn",
+			{ inputTokens: 80_000, outputTokens: 3_000 },
+		),
+		provenance: { version: 1, provider: "openai-codex", model: "affinity-model" },
+		modelReference: "openai-codex/affinity-model",
+	};
+}
 
 describe("compactHistory (pure computation)", () => {
 	const summarizer: LLMProvider = {
@@ -347,6 +372,122 @@ describe("runSubagent between-turn compaction (session store wired)", () => {
 		expect(outcome.status).toBe("completed");
 		expect(routed.summaryRequests).toHaveLength(1);
 		expect(routed.summaryRequests[0]?.thinking).toBe("high");
+	});
+});
+
+describe("resumed child native reasoning estimates", () => {
+	it.each([
+		{ persisted: true, target: "openai-codex/affinity-model", compacts: true },
+		{ persisted: false, target: "openai-codex/affinity-model", compacts: true },
+		{ persisted: true, target: "openai/affinity-model", compacts: false },
+		{ persisted: false, target: "openai/affinity-model", compacts: false },
+	])(
+		"uses the target and initialFloor; persisted=$persisted target=$target",
+		async ({ persisted, target, compacts }) => {
+			const native = nativeReasoning();
+			const tail = [
+				assistant([{ type: "text", text: "kept work" }], "end_turn", {
+					inputTokens: 90_000,
+					outputTokens: 1,
+				}),
+				native,
+			];
+			let session: SessionStore | undefined;
+			if (persisted) {
+				const dir = await mkTempDirAsync("ink-child-compact-");
+				const seed = SessionStore.create(path.join(dir, "child.jsonl"), dir);
+				seed.appendMessage({ role: "user", content: "original work" });
+				seed.appendCompaction("checkpoint", tail, 90_000);
+				session = SessionStore.open(seed.filePath);
+			}
+			const initialHistory = session?.buildContext().messages ?? [summaryToMessage("checkpoint"), ...tail];
+			const initialFloor = session?.buildContext().compactionBoundary ?? initialHistory.length;
+			const routed = routingProvider([assistant([{ type: "text", text: "done" }])], "NATIVE-SUMMARY");
+			// Delegate to real compaction, including the no-store result's otherwise private estimates.
+			const compact = persisted
+				? vi.spyOn(compaction, "compactSession")
+				: vi.spyOn(compaction, "compactHistory");
+			try {
+				const outcome = await runSubagent({
+					provider: routed.provider, // Its fake name must not replace the declared target.
+					model: "affinity-model",
+					modelReference: target,
+					system: "PARENT",
+					tools: [bigEcho],
+					prompt: "go",
+					autoCompact: true,
+					settings: TINY_SETTINGS,
+					initialHistory,
+					initialFloor,
+					session,
+					onMessage: (message) => session?.appendMessage(message),
+				});
+				expect(outcome).toMatchObject({ status: "completed", text: "done", turns: 1 });
+				expect(routed.summaryRequests).toHaveLength(compacts ? 1 : 0);
+				expect(compact).toHaveBeenCalledTimes(compacts ? 1 : 0);
+				expect(messageCounts(routed.loopRequests)).toEqual([compacts ? 3 : 4]);
+				expect(routed.loopRequests[0]?.messages).toContainEqual(native);
+				if (compacts) {
+					const result = await compact.mock.results[0]!.value;
+					// The 80k/90k stale inputs cannot anchor; retained ciphertext still costs 3k.
+					expect(result?.tokensBefore).toBeGreaterThan(3_000);
+					expect(result?.tokensBefore).toBeLessThan(3_100);
+					expect(result?.tokensAfter).toBe(3_005);
+					if (!persisted) {
+						expect(compact).toHaveBeenCalledWith(
+							expect.objectContaining({ modelReference: target, minAnchorIndex: initialFloor }),
+						);
+					}
+				}
+				if (session) {
+					const reopened = SessionStore.open(session.filePath);
+					expect(reopened.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(
+						compacts ? 2 : 1,
+					);
+					expect(reopened.buildContext()).toEqual(session.buildContext());
+					expect(reopened.buildContext().messages).toContainEqual(native);
+				}
+			} finally {
+				compact.mockRestore();
+			}
+		},
+	);
+
+	it.each([
+		{ target: "openai-codex/affinity-model", tokens: "3.0k" },
+		{ target: "openai/affinity-model", tokens: "41" },
+	])("overflow guidance honors target + boundary for $target", async ({ target, tokens }) => {
+		const initialHistory = [
+			summaryToMessage("checkpoint"),
+			assistant([{ type: "text", text: "kept work" }], "end_turn", { inputTokens: 90_000, outputTokens: 1 }),
+			nativeReasoning(),
+		];
+		const routed = routingProvider(
+			[
+				() => {
+					throw new Error("context window exceeded");
+				},
+			],
+			"UNUSED",
+		);
+		const outcome = await runSubagent({
+			provider: routed.provider,
+			model: "affinity-model",
+			modelReference: target,
+			system: "PARENT",
+			tools: [bigEcho],
+			prompt: "go",
+			initialHistory,
+			initialFloor: initialHistory.length,
+			autoCompact: false,
+			settings: { ...TINY_SETTINGS, keepRecentTokens: 100_000 },
+		});
+		expect(outcome.status).toBe("crash");
+		expect(outcome.reason).toContain(`context ~${tokens} exceeds the current model's window (2.5k);`);
+		expect(outcome.reason).toContain("nothing safe to compact");
+		expect(outcome.reason).toContain("/compact");
+		expect(routed.summaryRequests).toHaveLength(0);
+		expect(messageCounts(routed.loopRequests)).toEqual([4]);
 	});
 });
 

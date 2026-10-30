@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import * as compaction from "../src/core/compaction.js";
 import { type RunAgentLoopOptions, runAgentLoop } from "../src/core/loop.js";
-import type { AgentMessage } from "../src/core/messages.js";
+import type { AgentMessage, AssistantMessage } from "../src/core/messages.js";
 import { createChildSession, createSession } from "../src/core/session/manager.js";
 import { SessionStore } from "../src/core/session/store.js";
 import { runSubagent } from "../src/core/subagent.js";
@@ -91,6 +91,33 @@ function saved(large = false) {
 	store.appendMessage(user(content));
 	store.appendMessage(text(content));
 	store.appendMessage(user(content));
+	return store;
+}
+
+function savedNative() {
+	const store = saved();
+	const native: AssistantMessage = {
+		...assistant(
+			[
+				{
+					type: "thinking",
+					thinking: "",
+					responses: {
+						version: 1,
+						provider: "openai-codex",
+						itemId: "rs_runner",
+						summary: [],
+						encryptedContent: "fixture-ciphertext",
+					},
+				},
+			],
+			"end_turn",
+			{ inputTokens: 80_000, outputTokens: 30_000 },
+		),
+		provenance: { version: 1, provider: "openai-codex", model: "affinity-model" },
+		modelReference: "openai-codex/affinity-model",
+	};
+	store.appendCompaction("checkpoint", [text("kept work"), native], 110_000);
 	return store;
 }
 
@@ -328,6 +355,85 @@ describe("runner conversation affinity", () => {
 						: [],
 				),
 			).toEqual(["anthropic/affinity-model", "anthropic/affinity-model"]);
+		},
+	);
+
+	it.each(["run_start", "tool_end"] as const)(
+		"keeps native compaction + overflow estimates on captured A, not live B switched at %s",
+		async (switchAt) => {
+			vi.stubEnv("INK_AUTOCOMPACT", "1");
+			vi.stubEnv("INK_CONTEXT_WINDOW", "25000");
+			const store = savedNative();
+			const requests: LLMRequest[] = [];
+			const replacementRequests: LLMRequest[] = [];
+			const extensions = new ExtensionRegistry();
+			const switchModel = () => live.setModel("openai/affinity-model");
+			extensions.beginExtension("native-snapshot-probe", "cli");
+			if (switchAt === "run_start") extensions.subscribe("run_start", switchModel);
+			extensions.commitExtension();
+			const tool = echoCall("switch");
+			// An unreported continuation cannot replace the retained native estimate with an anchor.
+			tool.usage = { inputTokens: 0, outputTokens: 0 };
+			tool.usageMissing = true;
+			const live = await runner(
+				scriptedProvider([text("snapshot summary"), tool, overflow], requests, "injected-not-codex"),
+				{
+					model: "openai-codex/affinity-model",
+					modelExplicit: true,
+					resume: store.header.id,
+					extensions,
+					thinking: "off",
+				},
+			);
+			const session = live.session!;
+			const native = live.history[2]!;
+			expect(live.contextEstimateFloor).toBe(3);
+			const compact = vi.spyOn(compaction, "compactSession"); // real checkpoint + splice
+			const factory = vi
+				.spyOn(providerResolution, "createProviderFor")
+				.mockReturnValue(scriptedProvider([text("replacement")], replacementRequests));
+
+			await expect(
+				live.runTurn({
+					userMessage: "go",
+					onEvent: (event) => {
+						if (switchAt === "tool_end" && event.type === "tool_end") switchModel();
+					},
+				}),
+			).rejects.toThrow(
+				"context ~30k exceeds the current model's window (25k); compaction failed: nothing safe to compact",
+			);
+
+			expect(live.modelReference()).toBe("openai/affinity-model");
+			expect(factory).toHaveBeenCalledExactlyOnceWith("openai");
+			expect(replacementRequests).toHaveLength(0);
+			expect(requests.map((request) => request.model)).toEqual(Array(3).fill("affinity-model"));
+			expect(requests.map((request) => request.sessionId)).toEqual([
+				undefined,
+				store.header.id,
+				store.header.id,
+			]);
+			expectNoKey(requests[0]);
+			expect(requests.slice(1).map((request) => request.messages.length)).toEqual([3, 5]);
+			for (const request of requests.slice(1)) expect(request.messages).toContainEqual(native);
+			// Initial compaction succeeds; the next boundary and overflow attempt have no safe cut.
+			expect(compact).toHaveBeenCalledTimes(3);
+			for (const [args] of compact.mock.calls) {
+				expect(args).toMatchObject({
+					session,
+					model: "affinity-model",
+					modelReference: "openai-codex/affinity-model",
+				});
+			}
+			const first = await compact.mock.results[0]!.value;
+			expect(first?.tokensBefore).toBeGreaterThan(30_000);
+			expect(first?.tokensBefore).toBeLessThan(30_100);
+			expect(first?.tokensAfter).toBe(30_005);
+			expect(live.contextEstimateFloor).toBe(3);
+			const reopened = SessionStore.open(session.filePath);
+			expect(reopened.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(2);
+			expect(reopened.buildContext()).toEqual(session.buildContext());
+			expect(reopened.buildContext().messages).toContainEqual(native);
 		},
 	);
 

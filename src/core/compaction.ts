@@ -1,4 +1,5 @@
 import { formatTokens } from "../format.js";
+import { selectResponsesReplay } from "../provider/responses-history.js";
 import {
 	clampThinkingLevel,
 	THINKING_LEVELS,
@@ -98,6 +99,51 @@ function assistantUsage(message: AgentMessage): Usage | undefined {
 	return undefined;
 }
 
+type ResponsesEstimate = { anchor: boolean; encrypted: boolean } | undefined;
+
+/** Responses-only estimate eligibility. Undefined means ordinary history:
+ * preserve its existing usage anchors and canonical character estimates. */
+function responsesEstimate(
+	message: AssistantMessage,
+	target?: string,
+	seen?: Set<string>,
+): ResponsesEstimate {
+	const hasMetadata = message.blocks.some((block) => block.responses !== undefined);
+	const hasProvenance = message.provenance !== undefined;
+	const subscriptionProducer =
+		typeof message.modelReference === "string" && message.modelReference.startsWith("openai-codex/");
+	if (!hasMetadata && !hasProvenance && !subscriptionProducer) return undefined;
+	const canonical = { anchor: false, encrypted: false };
+	const model = target?.startsWith("openai-codex/") ? target.slice("openai-codex/".length) : undefined;
+	if (!model) return canonical;
+	// Legacy producer stamps can support a measured anchor, not native replay.
+	if (!hasMetadata && !hasProvenance)
+		return { anchor: message.modelReference === target && message.usageMissing !== true, encrypted: false };
+	try {
+		const metadata = selectResponsesReplay(message, model, seen);
+		if (metadata === undefined) return canonical;
+		return {
+			anchor: message.usageMissing !== true,
+			// Presence, not usage, decides whether a later ordinary anchor missed
+			// native context when switching away and back to this exact model.
+			encrypted: metadata.some((meta) => meta !== undefined && "encryptedContent" in meta),
+		};
+	} catch {
+		// Status/estimation is nonthrowing; strict conversion still rejects
+		// recognized malformed metadata before authentication or a request.
+		return canonical;
+	}
+}
+
+/** Validate in wire order with one native-ID set for the effective history.
+ * The same eligibility must drive both anchors and per-message floors. */
+function historyResponsesEstimates(messages: AgentMessage[], target?: string): ResponsesEstimate[] {
+	const seen = new Set<string>();
+	return messages.map((message) =>
+		message.role === "assistant" ? responsesEstimate(message, target, seen) : undefined,
+	);
+}
+
 /** pi parity (compaction.ts:242 ESTIMATED_IMAGE_CHARS): a base64 image
  *  block costs roughly 4800 chars in the request — never its data length. */
 const ESTIMATED_IMAGE_CHARS = 4800;
@@ -112,7 +158,16 @@ function estimateContentChars(content: string | ContentBlock[]): number {
 	return chars;
 }
 
-export function estimateTokens(message: AgentMessage): number {
+/** Canonical chars/4, with an output floor only for native encrypted reasoning
+ * replayable to the optional qualified provider/model target. */
+export function estimateTokens(message: AgentMessage, target?: string): number {
+	return estimateMessageTokens(
+		message,
+		message.role === "assistant" ? responsesEstimate(message, target) : undefined,
+	);
+}
+
+function estimateMessageTokens(message: AgentMessage, responses: ResponsesEstimate): number {
 	let chars = 0;
 	switch (message.role) {
 		case "user":
@@ -130,8 +185,12 @@ export function estimateTokens(message: AgentMessage): number {
 			for (const result of message.results) chars += estimateContentChars(result.content);
 			break;
 	}
-	// chars/4 heuristic; conservative (overestimates).
-	return Math.ceil(chars / 4);
+	// Never measure ciphertext bytes or add reasoning to the output total.
+	const floor =
+		message.role === "assistant" && message.usageMissing !== true && responses?.encrypted === true
+			? message.usage.outputTokens
+			: 0;
+	return Math.max(Math.ceil(chars / 4), Number.isFinite(floor) && floor > 0 ? floor : 0);
 }
 
 export interface ContextEstimate {
@@ -152,15 +211,29 @@ export interface ContextEstimate {
  * estimate would read ~window-sized for one turn — stale footer AND a false
  * auto-compact trigger. Callers that own a spliced/rebuilt history pass the
  * compaction boundary (see SessionStore.buildContext); with no anchor above
- * the boundary the estimate degrades to a pure char estimate of the new
+ * the boundary the estimate uses per-message estimates of the new
  * shape (measured: false), which is far closer to truth than the stale
  * anchor. The first post-compaction assistant restores a real anchor.
+ *
+ * Responses anchors must match the optional qualified target and native
+ * eligibility (or an exact metadata-free legacy producer stamp). Ordinary
+ * anchors after replayable ciphertext cannot describe a switch back: those
+ * calls omitted the ciphertext. Inspect the whole effective history, including
+ * retained messages below minAnchorIndex, without any sticky switch state.
  */
-export function estimateContextTokens(messages: AgentMessage[], minAnchorIndex = 0): ContextEstimate {
-	// Find the last assistant message with real usage.
+export function estimateContextTokens(
+	messages: AgentMessage[],
+	minAnchorIndex = 0,
+	target?: string,
+): ContextEstimate {
+	const responses = historyResponsesEstimates(messages, target);
+	const firstEncrypted = responses.findIndex((estimate) => estimate?.encrypted === true);
+	// Find the last eligible assistant message with real usage.
 	let usageIndex = -1;
 	let usageTokens = 0;
 	for (let i = messages.length - 1; i >= minAnchorIndex; i--) {
+		if (responses[i]?.anchor === false) continue;
+		if (responses[i] === undefined && firstEncrypted !== -1 && i > firstEncrypted) continue;
 		const usage = assistantUsage(messages[i] as AgentMessage);
 		if (usage) {
 			usageIndex = i;
@@ -171,7 +244,7 @@ export function estimateContextTokens(messages: AgentMessage[], minAnchorIndex =
 	}
 	let trailing = 0;
 	for (let i = usageIndex + 1; i < messages.length; i++) {
-		trailing += estimateTokens(messages[i] as AgentMessage);
+		trailing += estimateMessageTokens(messages[i] as AgentMessage, responses[i]);
 	}
 	if (usageIndex === -1) {
 		return { tokens: trailing, measured: false };
@@ -195,6 +268,13 @@ const CONTEXT_OVERFLOW_RE =
 
 export function isContextOverflowError(err: unknown): boolean {
 	if (!(err instanceof Error)) return false;
+	const fields = err as Error & { code?: unknown; reason?: unknown };
+	if (
+		[fields.code, fields.reason].some(
+			(value) => value === "context_length_exceeded" || value === "context_window_exceeded",
+		)
+	)
+		return true;
 	return CONTEXT_OVERFLOW_RE.test(err.message);
 }
 
@@ -215,10 +295,11 @@ export function overflowGuidance(contextTokens: number, settings: CompactionSett
 // (a toolResult without its assistant message is not a valid start).
 // ============================================================================
 
-export function findCutIndex(messages: AgentMessage[], keepRecentTokens: number): number {
+export function findCutIndex(messages: AgentMessage[], keepRecentTokens: number, target?: string): number {
+	const responses = historyResponsesEstimates(messages, target);
 	let kept = 0;
 	for (let i = messages.length - 1; i >= 0; i--) {
-		kept += estimateTokens(messages[i] as AgentMessage);
+		kept += estimateMessageTokens(messages[i] as AgentMessage, responses[i]);
 		if (kept >= keepRecentTokens) {
 			// Threshold met inside message i: retain from the START of the unit
 			// containing i. Valid tail heads are user and assistant messages — an
@@ -565,8 +646,10 @@ export async function summarizeBranchSegment(args: {
 		tokenCapMessage: "branch summary: hit the token cap — incomplete, rejected",
 		abortedMessage: "branch summary: summarizer aborted — incomplete, rejected",
 	});
-	if (run.summary.trim() === "") throw new Error("branch summary: summarizer returned nothing");
-	return { summary: run.summary.trim(), usage: run.usage, usageMissing: run.usageMissing };
+	// The assembled final text may correct streamed deltas (Responses snapshots).
+	const summary = run.finalText ?? run.summary;
+	if (summary.trim() === "") throw new Error("branch summary: summarizer returned nothing");
+	return { summary: summary.trim(), usage: run.usage, usageMissing: run.usageMissing };
 }
 
 // ============================================================================
@@ -578,7 +661,7 @@ export interface CompactResult {
 	retainedCount: number;
 	/** Estimated context right before compaction. */
 	tokensBefore: number;
-	/** Estimated context right after (summary + retained tail, char-based). */
+	/** Per-message estimate after compaction (summary + tail, no usage anchor). */
 	tokensAfter: number;
 	usage: Usage;
 	/** SA-05: a summarizer stream ran without delivering a usage report. */
@@ -592,7 +675,7 @@ export interface CompactHistoryResult {
 	retainedTail: AgentMessage[];
 	/** Estimated context right before compaction. */
 	tokensBefore: number;
-	/** Estimated context right after (summary + retained tail, char-based). */
+	/** Per-message estimate after compaction (summary + tail, no usage anchor). */
 	tokensAfter: number;
 	usage: Usage;
 	/** SA-05: a summarizer stream ran without delivering a usage report. */
@@ -611,6 +694,11 @@ export async function compactHistory(args: {
 	messages: AgentMessage[];
 	provider: LLMProvider;
 	model: string;
+	/** Qualified active target; absent derives an estimation-only reference
+	 * from this concrete provider/model, never a persisted pricing identity. */
+	modelReference?: string;
+	/** Existing compaction boundary: excludes stale anchors, not content. */
+	minAnchorIndex?: number;
 	signal?: AbortSignal;
 	settings?: CompactionSettings;
 	/** #derived-budget: the model-side cap source (see
@@ -622,9 +710,10 @@ export async function compactHistory(args: {
 	usageLedger?: AttemptUsage;
 }): Promise<CompactHistoryResult | null> {
 	const settings = args.settings ?? DEFAULT_COMPACTION_SETTINGS;
-	const tokensBefore = estimateContextTokens(args.messages).tokens;
+	const target = args.modelReference ?? `${args.provider.name}/${args.model}`;
+	const tokensBefore = estimateContextTokens(args.messages, args.minAnchorIndex ?? 0, target).tokens;
 
-	const cut = findCutIndex(args.messages, settings.keepRecentTokens);
+	const cut = findCutIndex(args.messages, settings.keepRecentTokens, target);
 	if (cut <= 0) return null; // nothing older than the retained tail to summarize
 
 	// prompt-audit P3: when the head is a previous compaction's framed summary,
@@ -671,16 +760,21 @@ export async function compactHistory(args: {
 		tokenCapMessage: "compaction: summary hit the token cap — incomplete, rejected",
 		abortedMessage: "compaction: summarizer aborted — incomplete, rejected",
 	});
-	let summary = run.summary;
-	if (summary.trim() === "" && run.finalText !== undefined) summary = run.finalText;
+	const summary = run.finalText ?? run.summary;
 	if (summary.trim() === "") throw new Error("compaction: summarizer returned an empty summary");
 
 	const summaryMessage: AgentMessage = {
 		role: "user",
 		content: `${summary}`,
 	};
-	const tokensAfter =
-		estimateTokens(summaryMessage) + retainedTail.reduce((sum, m) => sum + estimateTokens(m), 0);
+	// The rebuilt history has its own native-ID order: removed prefix items
+	// cannot invalidate retained items, but duplicates within the tail still do.
+	const after = [summaryMessage, ...retainedTail];
+	const responsesAfter = historyResponsesEstimates(after, target);
+	const tokensAfter = after.reduce(
+		(sum, message, index) => sum + estimateMessageTokens(message, responsesAfter[index]),
+		0,
+	);
 	return {
 		summary,
 		retainedTail,
@@ -716,11 +810,13 @@ export async function compactSession(args: {
 	 *  call); absent → no stamp → the entry prices as unknown. */
 	modelReference?: string;
 }): Promise<CompactResult | null> {
-	const { messages } = args.session.buildContext();
+	const { messages, compactionBoundary } = args.session.buildContext();
 	const result = await compactHistory({
 		messages,
 		provider: args.provider,
 		model: args.model,
+		modelReference: args.modelReference,
+		minAnchorIndex: compactionBoundary,
 		signal: args.signal,
 		settings: args.settings,
 		modelMaxTokens: args.modelMaxTokens,

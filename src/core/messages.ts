@@ -40,15 +40,47 @@ export interface UserMessage {
 	content: string | ContentBlock[];
 }
 
+/** Responses-only replay data. Canonical blocks remain the display/execution
+ * representation; adapters must construct wire fields, never spread metadata.
+ * Older sessions omit these fields. The provider validates persisted data. */
+interface ResponsesReplayIdentity {
+	version: 1;
+	provider: "openai-codex";
+	itemId?: string;
+}
+
+export interface ResponsesTextReplay extends ResponsesReplayIdentity {
+	contentIndex: number;
+	kind: "output_text" | "refusal";
+	phase?: "commentary" | "final_answer" | null;
+}
+
+export interface ResponsesToolReplay extends ResponsesReplayIdentity {
+	namespace?: string;
+}
+
+export interface ResponsesReasoningReplay extends ResponsesReplayIdentity {
+	summary: Array<{ type: "summary_text"; text: string }>;
+	content?: Array<{ type: "reasoning_text"; text: string }>;
+	encryptedContent?: string;
+}
+
+export interface AssistantProvenance {
+	version: 1;
+	provider: "openai-codex";
+	model: string;
+}
+
 export type AssistantBlock =
-	| { type: "text"; text: string }
-	| { type: "toolCall"; id: string; name: string; arguments: unknown }
+	| { type: "text"; text: string; responses?: ResponsesTextReplay }
+	| { type: "toolCall"; id: string; name: string; arguments: unknown; responses?: ResponsesToolReplay }
 	/** The model's reasoning trace (#thinking-levels). Stored with its
 	 *  provider signature when the protocol produces one (Anthropic: the
 	 *  thinking blocks MUST be passed back on tool-result continuations —
-	 *  anthropic.ts replays them; OpenAI-style reasoning_content is
-	 *  display-only and never replayed). Rendered dim in both shells. */
-	| { type: "thinking"; thinking: string; signature?: string };
+	 *  anthropic.ts replays them). Responses uses its own `responses` replay
+	 *  data, never `signature`; compatible reasoning_content is provider-
+	 *  specific. Rendered dim in both shells. */
+	| { type: "thinking"; thinking: string; signature?: string; responses?: ResponsesReasoningReplay };
 
 /** Why the model stopped: "end_turn", "tool_use", "max_tokens", "stop_sequence", or null if unknown. */
 export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | null;
@@ -58,6 +90,8 @@ export interface AssistantMessage {
 	blocks: AssistantBlock[];
 	usage: Usage;
 	stopReason: StopReason;
+	/** Native replay is valid only for this exact producing provider/model. */
+	provenance?: AssistantProvenance;
 	/** Model that produced this message (stamped by the loop). Cost
 	 *  attribution reads it so a session that switched models prices each
 	 *  response at its own rates; entries from older imp versions lack it. */

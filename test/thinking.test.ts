@@ -106,10 +106,9 @@ describe("thinking model metadata (#thinking-levels, pi catalog parity)", () => 
 			"xhigh",
 			"max",
 		]);
-		// codex pi.dev pattern: minimal→low, xhigh native
+		// Direct subscriptions use OpenAI metadata, not legacy Codex ladders.
 		expect(supportedThinkingLevels(thinkingMetaFor("openai-codex", "gpt-5.5"))).toEqual([
 			"off",
-			"minimal",
 			"low",
 			"medium",
 			"high",
@@ -136,6 +135,17 @@ describe("thinking model metadata (#thinking-levels, pi catalog parity)", () => 
 		expect(supportedThinkingLevels(thinkingMetaFor("openai", "o1"))).toEqual(["low", "medium", "high"]);
 	});
 
+	it("direct subscription offline rules mirror OpenAI without legacy Codex assumptions", () => {
+		for (const model of ["gpt-5", "gpt-5.2", "gpt-5.5", "gpt-5.6", "gpt-6-astra", "o3"]) {
+			const subscription = thinkingMetaFor("openai-codex", model);
+			const openai = thinkingMetaFor("openai", model);
+			expect(subscription?.style).toBe("codex-effort");
+			expect(subscription?.levelMap).toEqual(openai?.levelMap);
+			expect(supportedThinkingLevels(subscription)).toEqual(supportedThinkingLevels(openai));
+		}
+		expect(clampThinkingLevel(thinkingMetaFor("openai-codex", "gpt-5.5"), "minimal")).toBe("low");
+	});
+
 	it("clamp: nearest level, upward first (pi's clampThinkingLevel)", () => {
 		expect(clampThinkingLevel(thinkingMetaFor("anthropic", "glm-5.3"), "medium")).toBe("high"); // up to the only on-state
 		expect(clampThinkingLevel(thinkingMetaFor("openai", "gpt-5.2"), "max")).toBe("xhigh"); // 5.2 has xhigh, not max
@@ -158,7 +168,7 @@ describe("thinking model metadata (#thinking-levels, pi catalog parity)", () => 
 		expect(anthropicThinkingBudget("high")).toBe(16384);
 		// effortFor = map[level] ?? level
 		expect(effortFor(thinkingMetaFor("openai", "gpt-5.4"), "medium")).toBe("medium");
-		expect(effortFor(thinkingMetaFor("openai-codex", "gpt-5.5"), "minimal")).toBe("low"); // pi.dev map
+		expect(effortFor(thinkingMetaFor("openai-codex", "gpt-5.5"), "off")).toBe("none");
 		expect(effortFor(thinkingMetaFor("openai", "glm-5.3"), "low")).toBe("low"); // pi.dev native
 		expect(effortFor(thinkingMetaFor("openai", "glm-5.2"), "max")).toBe("max");
 		expect(effortFor(thinkingMetaFor("openai", "gpt-6-astra"), "minimal")).toBe("low");
@@ -172,6 +182,6 @@ describe("thinking model metadata (#thinking-levels, pi catalog parity)", () => 
 	it('off wire values come from the map (pi\'s off ?? "none")', () => {
 		expect(thinkingMetaFor("openai", "gpt-5.1")?.levelMap?.off).toBe("none");
 		expect(thinkingMetaFor("openai", "gpt-5")?.levelMap?.off).toBeNull(); // cannot disable
-		expect(thinkingMetaFor("openai-codex", "gpt-5.5")?.levelMap?.off).toBeUndefined(); // → "none" default
+		expect(thinkingMetaFor("openai-codex", "gpt-5.5")?.levelMap?.off).toBe("none");
 	});
 });

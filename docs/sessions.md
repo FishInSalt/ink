@@ -25,10 +25,19 @@ sessions (subagent transcripts whose parent file no longer exists) after an
 interactive confirm. The exit line always shows how to resume:
 `ink -r <id>`.
 
-Codex derives its cache/session fields from the existing session ID: resume
-keeps it and `/new` replaces it. With `--no-session`, one temporary identity
-lasts until `/new`. Children have separate identities, retries keep the
-current identity, and summaries omit it. No session-file fields are added.
+ChatGPT subscription requests derive their cache/session fields from a hash
+of the existing session ID: resume keeps it and `/new` replaces it. With
+`--no-session`, one temporary identity lasts until `/new`. Children have
+separate identities, retries keep the current identity, and summaries omit it.
+
+Responses messages can include optional provider/model provenance and replay
+metadata for finalized reasoning ciphertext, item IDs, text parts and phases.
+The JSONL organization and version are unchanged; old sessions need no rewrite.
+Only matching-provider, exact-model requests replay native metadata. Other
+providers and summaries use canonical text/tool content, never ciphertext.
+Compaction preserves metadata on retained messages and discards it from summary
+prompts. Resuming a selected subscription model without a usable credential
+requests login; it never silently switches the session to API-key billing.
 
 The interactive status bar's `↑` (ordinary input), `↓` (output), `R` (cache
 read), and `W` (cache write) counts are cumulative across the whole session,
@@ -76,6 +85,14 @@ history stays on disk. `/compact` triggers it manually (optionally with
 custom instructions). `--no-session` also disables auto-compaction;
 `INK_AUTOCOMPACT=0` or `"autoCompact": false` in settings turns it off.
 `INK_CONTEXT_WINDOW` overrides the window estimate (default 131072).
+
+Hidden Responses reasoning contributes to the context estimate only when its
+native metadata can replay to the active provider and exact model. Switching
+away excludes that hidden content and incompatible usage measurements; switching
+back accounts for it again if still retained. Footer, `/status`, automatic
+compaction and retained-tail selection use the same target-aware estimates.
+Ciphertext length is never treated as a token count; cumulative recorded usage
+is unchanged by model switches.
 
 Branch summaries (from `/tree` jumps) are separate: they record an abandoned
 branch in one entry. Both preserve the original entries — the tree is never

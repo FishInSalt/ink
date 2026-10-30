@@ -36,8 +36,9 @@ runs: ink refuses `.ink/` project configuration in an untrusted directory
 
 Sign in with `/login` — the provider picker stores an API key in
 `~/.ink/auth.json` (0600), where it beats the environment variable; the
-ChatGPT plan signs in via OAuth device code. Or set an environment
-variable before launching:
+ChatGPT plan signs in through browser OAuth. Existing device-code users must
+run `ink login` once to authorize the new connection; no logout is required.
+Or set an environment variable before launching:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -88,8 +89,8 @@ supplied by users or extensions are not translated.
 | Command | Description |
 |---|---|
 | `ink sessions` | List saved sessions for this directory |
-| `ink login` | OpenAI (ChatGPT plan) device-code OAuth |
-| `ink logout` | Remove the stored ChatGPT-plan credential (keys saved by `/login` stay) |
+| `ink login` | Authorize ChatGPT subscription access in the browser; interactive callback input is hidden |
+| `ink logout` | Revoke/clear ChatGPT-plan tokens; report unconfirmed revocation (other keys stay) |
 
 ## Environment variables
 
@@ -98,6 +99,7 @@ supplied by users or extensions are not translated.
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | Anthropic key / Bearer token |
 | `ANTHROPIC_BASE_URL` | Endpoint override for Anthropic-compatible services |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI key / endpoint override (any OpenAI-compatible service) |
+| `OPENAI_CODEX_BASE_URL` | ChatGPT subscription API base override (default `https://api.openai.com/v1`, HTTPS only) |
 | `ZAI_API_KEY` | Z.ai key (GLM Coding Plan) |
 | `DEEPSEEK_API_KEY` | DeepSeek key |
 | `MOONSHOT_API_KEY` | Moonshot/Kimi key (both families) |

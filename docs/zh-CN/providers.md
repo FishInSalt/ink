@@ -16,8 +16,9 @@ key 优先于环境变量。
 ```
 
 每一行显示对应提供商的状态（`signed in — stored key`、`env: ZAI_API_KEY`、
-`not signed in`）。ChatGPT 套餐所在的行会在 REPL 中走设备码 OAuth 流程：
-Ink 打印验证 URL 和验证码，在后台轮询，Ctrl+C 可以取消而不会强制退出。
+`not signed in`）。ChatGPT 套餐所在的行通过浏览器 OAuth 授权：Ink 显示授权
+URL 并尝试打开浏览器。TUI 还支持粘贴完整回调 URL，输入不回显。Esc/Ctrl+C
+可取消而不会强制退出。readline REPL 仅使用浏览器回调，不创建第二个输入读取器。
 
 ## 家族
 
@@ -57,20 +58,53 @@ export INK_MODEL=<id the endpoint serves>
 
 ### OpenAI
 
-API key：`export OPENAI_API_KEY=...`，或者 `/login openai`。ChatGPT 套餐：
-`ink login`（CLI）或 `/login` → OpenAI (ChatGPT plan)——设备码 OAuth。
-`ink logout` 只删除 ChatGPT 套餐的凭据。任何 OpenAI 兼容服务（OpenRouter、
-MiniMax 等）都可以通过 `OPENAI_BASE_URL` 配合该端点提供的模型 id 来使用。
+API key：`export OPENAI_API_KEY=...`，或者 `/login openai`。此方式仍使用
+Chat Completions。任何 OpenAI 兼容服务（OpenRouter、MiniMax 等）都可以通过
+`OPENAI_BASE_URL` 配合该端点提供的模型 id 来使用。
 
-如果 ChatGPT 后端在回答中途关闭响应流（代理或网络重置），Ink 会显示
-`Codex stream interrupted — ...`，而不是裸的 `terminated`。已完成的工具结果
-会保留在会话中：用 `ink -r <id>` 恢复，并发送“继续”即可接着做。若传输错误
-发生在 `response.completed` 或 `response.incomplete` 之后，Ink 会忽略它，按本轮已完成处理。
+ChatGPT 套餐：`ink login`（CLI）或 `/login` → OpenAI (ChatGPT plan) 在浏览器中
+打开 Sign in with ChatGPT，授权 Ink 一次。浏览器已有有效登录时可能无需再次输入
+密码，但 OpenAI 仍可要求身份验证。回调仅监听 `127.0.0.1`，优先使用 1455 端口，
+占用时改用可用端口。CLI 交互终端和 TUI 可接受粘贴的完整回调 URL，不回显内容。
+授权等待 10 分钟后超时，Ctrl+C 可取消。身份和实际授予的订阅权限校验通过后，
+连接才可使用。
 
-Codex 将稳定的对话 ID 哈希后用于 `prompt_cache_key`、`session-id` 和
-`x-client-request-id`，不发送原始会话 ID，使继续请求关联同一段对话。
-这不保证后端缓存命中率，其他提供商及会话文件格式不变。
-恢复、`/new` 和子会话行为见[会话](sessions.md)。
+**旧设备码登录用户必须运行一次 `ink login`。** 无需先退出登录；没有旧 token
+转换、旧后端回退或自动 API key 计费回退。其他提供商的 key 会保留。
+provider ID 和模型前缀仍为 `openai-codex`，请求改发至
+`https://api.openai.com/v1/responses`。`OPENAI_CODEX_BASE_URL` 可覆盖订阅 API
+基址（仅 HTTPS）；`OPENAI_BASE_URL` 和 `OPENAI_API_KEY` 不影响此连接。
+
+`ink logout` / `/logout` 尝试远端撤销并清除本地订阅 token，保留注册供之后授权。
+远端撤销无法确认时会提示，可在 ChatGPT 设置中断开应用。刷新通过跨进程锁协调，
+轮换后的凭据以原子方式保存，文件权限仅允许所有者读取。
+
+工具参数支持流式片段、完整快照和并行调用。已完成响应中缺少最终结束事件、
+参数数据，或存在非法 JSON、调用身份冲突时，会产生 `Codex protocol error`，
+该响应的工具均不执行。显式 `{}` 仍需通过工具必填字段校验。输出达到 token 上限
+而截断时，整批工具调用不执行，由模型重新发出完整调用。
+
+推理摘要以 thinking 内容显示；最终推理密文、item ID、文本分段和 phase 存为可选
+回放元数据，只发送给同一提供商的同一模型。切换模型、其他提供商和摘要提示均不
+接收密文。旧会话没有这些字段也可继续使用。
+
+终止响应的 `output` 数组为空时，保留已由 `output_item.done` 标记正常完成的
+输出项；未完成的输出项仍会报错，非空最终列表仍须完整且一致。
+
+响应流中断时，Ink 提示中断原因，不自动重放半轮请求。已完成工具结果仍保留，
+可用 `ink -r <id>` 恢复后发送“继续”。收到终止事件后立即停止读取。
+只有明确的输出 token 上限对应截断处理；内容过滤及其他 incomplete 原因会报错。
+响应缺少 `Content-Type` 或标注不准确时，不会拒绝有效的 SSE 内容；Ink 校验实际
+流内容并要求响应终止事件，不将 JSON/HTML 响应体视为成功的流式回答。
+
+稳定的对话 ID 哈希用于 `prompt_cache_key` 及 HTTP headers `session_id`、
+`x-client-request-id`，不发送原始 ID。HTTP 每次发送完整历史，使用 `store:false`
+和 `stream:true`，没有 WebSocket 或 `previous_response_id` 增量续传，不保证缓存命中。
+订阅路径不接受 `--max-tokens` 输出限制、temperature 或显式缓存保留控制。
+
+订阅及应用用量达到上限时会链接到 ChatGPT 用量设置，不按普通限流重试。
+新连接不增加额度，也不提供所有 API key 端点的权限。费用显示为目录估算，不是
+订阅实际扣费。恢复、`/new` 和子会话行为见[会话](sessions.md)。
 
 ### DeepSeek
 
@@ -98,9 +132,12 @@ low/high/max；启动档位 `medium` 映射为 `high`）。
 ## 模型解析与 /model
 
 - 没有任何凭据时，Ink 会如实说明（`no model available — run /login to
-  connect one`），而不是假装可用；不可用的模型绝不会被写入会话文件。
-- 只配置了一个提供商时，新会话以该家族的推荐模型启动，并给出一行说明；
-  `/model` 可以更改；`/settings defaultModel <id>` 固定启动默认值。优先
+  connect one`），而不是假装可用。未选择的内置占位模型不持久化；用户明确选择
+  的订阅模型即使缺少凭据也会保留，避免恢复时悄悄改变计费方式。
+- 只配置了一个提供商且尚未选择模型时，新会话以该家族的推荐模型启动。
+  ChatGPT 使用账户新鲜列表中的首个模型，不使用固定旧推荐值。列表为空、过期或
+  不可用时保持未解决状态。`/model` 可以更改；`/settings defaultModel <id>` 固定
+  启动默认值。优先
   级：`-m` > `INK_MODEL` > 设置中的 `defaultModel` > 会话保存值 >
   单提供商推荐值 > 内置默认值。
 - `/model [id]` 从下一轮起生效；Ctrl+L 打开选择器。切换模型或思考档位会
@@ -119,6 +156,19 @@ low/high/max；启动档位 `medium` 映射为 `high`）。
 非阻塞方式刷新；打开 `/model` 会重新检查同一时间窗口。没有周期性轮询。
 抓取成功时，目录总是优先于内置表，因此新模型和价格变动无需发布新版 Ink
 即可生效。
+
+ChatGPT 订阅的**可用模型**来自使用同一 OAuth 凭据访问的 `/v1/models`，仅展示
+`visibility:list` 的 slug，保持服务端顺序。成功的空列表不会用种子模型补充。
+账户列表单独缓存 5 分钟；离线选择器可显示明确标注为过期、未经确认的账户快照。
+元数据不代表账户权限。登录只在当前模型不可用、且没有明确选择时自动选模型。
+当前已可用的内置或自动选择模型不会因登录其他提供商而被替换，只提示可手动使用
+`/model` 切换。已有配置和恢复的模型选择不变，即使凭据缺失。
+
+`openai-codex` 元数据现在读取 pi.dev 的 `openai` 条目，内部身份不变；旧 Codex
+元数据缓存被忽略。状态栏和 `/status` 按提供商与模型共同查询上下文窗口。
+`INK_CONTEXT_WINDOW` 优先；API key 家族没有目录数据时尝试运行期数据、静态表
+及 131,072 默认值。新的订阅家族不使用旧 Codex 的发现数据或静态窗口，缺少目录
+元数据时使用 131,072，除非显式覆盖。
 
 ```bash
 INK_CATALOG_BASE_URL=https://mirror.example   # redirect the catalog source

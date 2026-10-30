@@ -444,6 +444,7 @@ function openaiChunks(): string {
 function codexChunks(): string {
 	const sse = (event: string, obj: unknown): string => `event: ${event}\ndata: ${JSON.stringify(obj)}\n\n`;
 	return (
+		sse("response.output_item.added", { output_index: 0, item: { type: "message", id: "msg_image" } }) +
 		sse("response.output_text.delta", { output_index: 0, delta: "ok" }) +
 		sse("response.completed", {
 			type: "response.completed",
@@ -691,7 +692,7 @@ describe("M13 codex-responses wire", () => {
 		script = { status: 200, chunks: codexChunks() };
 		const provider = createCodexResponsesProvider({
 			baseUrl,
-			auth: async () => ({ accessToken: "t", accountId: "a" }),
+			auth: async () => ({ accessToken: "t" }),
 		});
 		await drive(provider, {
 			system: "s",

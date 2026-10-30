@@ -8,7 +8,38 @@ their original release identity.
 
 ## [Unreleased]
 
+### Changed
+
+- **Direct ChatGPT subscription access.** Replace the Codex device-code/backend
+  connection with browser Sign in with ChatGPT and the public Responses API.
+  Existing users must run `ink login` once; no prior logout, token conversion,
+  migration framework or API-key billing fallback is used. Commands, the
+  `openai-codex` provider identity and existing sessions remain supported.
+- **Complete Responses history.** Stream reasoning summaries and retain finalized
+  encrypted reasoning, item IDs, content parts and phases for exact-model replay.
+  Preserve strict tool identity/argument finalization, reject incomplete protocol
+  responses and keep native data out of other providers and summarizer prompts.
+- **Account-scoped subscription models.** Discover selectable models with the
+  authorized account. Empty listings remain empty; offline snapshots are labeled
+  stale/unverified. Deliberate subscription selections survive missing credentials
+  and resume without silently switching to another billing provider.
+
 ### Fixed
+
+- **Login preserves usable models.** Signing in to another provider no longer
+  replaces a working builtin or automatically selected model. Automatic login
+  selection requires both an unusable current model and no deliberate choice.
+- **Target-aware Responses context estimates.** Count encrypted reasoning only
+  when it can replay to the active provider/model. Model switches, restored
+  compaction boundaries, retained tails and in-flight child/runner estimates
+  no longer reuse incompatible hidden-content usage measurements.
+
+- **ChatGPT stream media type.** Accept valid Responses SSE content when the
+  service omits or mislabels Content-Type. Still require valid framing, a
+  terminal event and complete tool-call finalization; JSON/HTML is not a
+  successful response stream. Preserve normally finalized items when the
+  terminal response's aggregate output array is empty, without accepting
+  unfinished calls or incomplete nonempty snapshots.
 
 - **Codex conversation affinity.** Forward a stable, hashed conversation ID
   to the Codex cache key and session headers. Resume and retries retain it;
@@ -20,6 +51,11 @@ their original release identity.
   Model responses, tool output, and upstream error details remain unchanged.
 
 ### Security
+
+- Verify ChatGPT ID-token signatures and OAuth state/nonce/permissions. Coordinate
+  rotating token refreshes, logout and API-key writes with a shared process lock
+  and atomic 0600 storage. Reject redirects on credential-bearing requests and
+  prevent cancelled login prompts from saving credentials later.
 
 - Update the development-only Vitest toolchain from `4.1.11` to `4.1.12`
   (including `@vitest/mocker`) and Vite from `8.3.0` to `8.3.5`. These

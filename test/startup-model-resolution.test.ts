@@ -1,15 +1,24 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { SessionStore } from "../src/core/session/store.js";
 import { VERSION } from "../src/format.js";
-import { createRunner } from "../src/runner.js";
+import { loadApiKey } from "../src/provider/auth-store.js";
+import { loadCodexCredential } from "../src/provider/codex-auth.js";
+import { modelAvailability } from "../src/provider/model-availability.js";
+import { parseModelRef } from "../src/provider/resolve.js";
+import { decideStartupModel } from "../src/provider/startup-model.js";
+import { type CommandContext, dispatchCommand } from "../src/repl/commands.js";
+import type { LoginDialogOptions } from "../src/repl/login-dialog.js";
+import { createRunner, type RunnerOptions } from "../src/runner.js";
 import {
 	type CliFixture,
 	collectCliOutput,
 	createCliFixture,
 	startRejectingProvider,
 } from "./helpers/cli-fixture.js";
+import { FakeCodexOidc } from "./helpers/codex-auth-fake.js";
 import { assistant, makeRenderer, scriptedProvider } from "./helpers/fakes.js";
 import { mkTempDirAsync, tempFilePath } from "./helpers/mktemp.js";
 
@@ -79,10 +88,10 @@ describe("#startup-model-resolution", () => {
 		);
 		const { saveApiKey } = await import("../src/provider/auth-store.js");
 		process.env.MOONSHOT_API_KEY = "env-key";
-		saveApiKey("moonshotai", "stored");
+		await saveApiKey("moonshotai", "stored");
 		expect(credentialSourceFamilies()).toEqual(["moonshotai"]);
 		expect(resolveStartupModelFallback()).toEqual({ reference: "moonshotai/kimi-k3", family: "moonshotai" });
-		saveApiKey("moonshotai-cn", "stored-cn");
+		await saveApiKey("moonshotai-cn", "stored-cn");
 		expect(credentialSourceFamilies()).toEqual([]); // both stored → ambiguous
 	});
 
@@ -142,6 +151,11 @@ describe("#startup-model-resolution", () => {
 				isUsable: () => true,
 			}),
 		).toEqual({ kind: "keep" });
+	});
+
+	it("subscription targets never recommend a hardcoded legacy model", async () => {
+		const { LOGIN_TARGETS } = await import("../src/provider/login-targets.js");
+		expect(LOGIN_TARGETS.find((target) => target.family === "openai-codex")?.switchHint).toBeUndefined();
 	});
 
 	it("D2 decision: builtin + unusable resolves only for a unique family", async () => {
@@ -341,6 +355,218 @@ describe("#startup-model-resolution", () => {
 
 	// ---- D4: login-time selection ----
 
+	/** Real providers preserve the live credential probe; only the UI and
+	 *  loopback OAuth service are fixtures. No inference is performed. */
+	async function loginEnvironment(
+		ui: "fallback" | "dialog",
+		family: "openai" | "openai-codex",
+		selection: Pick<RunnerOptions, "model" | "modelSource" | "modelExplicit">,
+	) {
+		const root = await mkTempDirAsync("ink-smr-");
+		const cwd = path.join(root, "proj");
+		await mkdir(cwd);
+		const { renderer, output } = makeRenderer();
+		const runnerOptions: RunnerOptions = {
+			cwd,
+			argv: [],
+			...selection,
+			maxTokens: 1024,
+			maxTurns: 3,
+			noContextFiles: true,
+			noSession: false,
+			sessionBaseDir: path.join(root, "sessions"),
+			settingsPath: path.join(root, "settings.json"),
+			renderer,
+		};
+		const runner = await createRunner(runnerOptions);
+		const ctx: CommandContext = {
+			runner,
+			renderer,
+			isActive: () => false,
+			requestExit: () => {},
+			abortActive: () => false,
+			replay: () => 0,
+			submitPrompt: () => {},
+			authStorePath: process.env.INK_AUTH_PATH,
+			secret: vi.fn(async () => "fixture-api-key"),
+			refreshFooter: vi.fn(),
+		};
+		if (ui === "dialog") {
+			ctx.openLoginDialog = vi.fn(async ({ run }: LoginDialogOptions) => {
+				const controller = new AbortController();
+				try {
+					await run({
+						signal: controller.signal,
+						prompt: async (_message, _placeholder, options) => {
+							if (options?.signal === undefined) return "fixture-api-key";
+							// The HTTP callback wins; its cancellation closes the hidden
+							// manual-entry prompt, just as the dialog shell does.
+							const { signal } = options;
+							return new Promise<string>((_resolve, reject) => {
+								const cancel = () => reject(new Error("Login cancelled"));
+								if (signal.aborted) cancel();
+								else signal.addEventListener("abort", cancel, { once: true });
+							});
+						},
+						auth: () => {},
+						waiting: () => {},
+						message: () => {},
+					});
+					return "done" as const;
+				} finally {
+					controller.abort();
+				}
+			});
+		}
+		if (family === "openai-codex") {
+			const fake = new FakeCodexOidc();
+			onTestFinished(() => fake.close());
+			await fake.start();
+			ctx.codexLogin = {
+				authBaseUrl: fake.baseUrl,
+				callbackPort: 0,
+				openBrowser: async (url) => {
+					const response = await fetch(fake.callback(url));
+					await response.text();
+				},
+				discoverModels: vi.fn(async () => ["listed-z", "listed-a"]),
+			};
+		}
+		const suggestion = family === "openai" ? "openai/gpt-5.2" : "openai-codex/listed-z";
+		return {
+			runner,
+			runnerOptions,
+			output,
+			suggestion,
+			login: async () => {
+				await dispatchCommand(`/login ${family}`, ctx);
+				expect(ctx.refreshFooter).toHaveBeenCalledTimes(1);
+				expect(ctx.secret).toHaveBeenCalledTimes(ui === "fallback" && family === "openai" ? 1 : 0);
+				if (ui === "dialog") expect(ctx.openLoginDialog).toHaveBeenCalledTimes(1);
+				if (family === "openai") {
+					expect(loadApiKey("openai")).toBe("fixture-api-key");
+					expect(output()).toContain("Saved API key for OpenAI");
+				} else {
+					expect(loadCodexCredential()).not.toBeNull();
+					expect(ctx.codexLogin?.discoverModels).toHaveBeenCalledWith({
+						force: true,
+						signal: expect.any(AbortSignal),
+					});
+					expect(output()).toContain("Logged in to OpenAI (ChatGPT plan)");
+				}
+			},
+		};
+	}
+
+	describe.each(["fallback", "dialog"] as const)("D4: %s login success", (ui) => {
+		for (const family of ["openai", "openai-codex"] as const) {
+			it.each([
+				{
+					label: "usable builtin Claude",
+					credential: "ANTHROPIC_API_KEY",
+					reference: "claude-sonnet-4-5",
+				},
+				{
+					label: "auto-resolved builtin ZAI",
+					credential: "ZAI_API_KEY",
+					reference: "zai/glm-5.3",
+				},
+			])(`${family} login retains $label and its persisted selection`, async (startup) => {
+				process.env[startup.credential] = "fixture-startup-key";
+				// Match the CLI's D2 resolution, retaining builtin source/intent
+				// when it passes the automatically resolved reference to the runner.
+				const decision = decideStartupModel({
+					model: "claude-sonnet-4-5",
+					source: "builtin",
+					explicit: false,
+					resuming: false,
+					isUsable: (reference) => modelAvailability(parseModelRef(reference).provider).usable,
+				});
+				expect(decision.kind).toBe(startup.credential === "ZAI_API_KEY" ? "resolve" : "keep");
+				const env = await loginEnvironment(ui, family, {
+					model: decision.kind === "resolve" ? decision.fallback.reference : "claude-sonnet-4-5",
+					modelSource: "builtin",
+				});
+				expect(env.runner.modelReference()).toBe(startup.reference);
+				expect(env.runner.modelUsable()).toBe(true);
+				expect(env.runner.modelSelectionPending()).toBe(true);
+				expect(env.runner.modelSelectedExplicitly()).toBe(false);
+				const session = env.runner.session!;
+				// Flush the startup seed without calling the provider.
+				session.appendMessage({ role: "user", content: "local persistence fixture" });
+				const before = readFileSync(session.filePath, "utf8");
+				expect(SessionStore.open(session.filePath).getModel()).toEqual(parseModelRef(startup.reference));
+
+				await env.login();
+
+				expect(env.runner.modelReference()).toBe(startup.reference);
+				expect(env.runner.modelUsable()).toBe(true);
+				expect(env.runner.modelSelectionPending()).toBe(true);
+				expect(env.runner.modelSelectedExplicitly()).toBe(false);
+				expect(env.output()).not.toContain("▪ switched to");
+				expect(env.output()).toContain(`▪ switch with /model ${env.suggestion}`);
+				expect(readFileSync(session.filePath, "utf8")).toBe(before);
+				expect(SessionStore.open(session.filePath).getModel()).toEqual(parseModelRef(startup.reference));
+				const resumed = await createRunner({
+					...env.runnerOptions,
+					model: "claude-sonnet-4-5",
+					resume: session.header.id,
+				});
+				expect(resumed.modelReference()).toBe(startup.reference);
+				expect(resumed.modelSelectionPending()).toBe(false);
+			});
+
+			it(`${family} first unselected login still selects and persists its suggestion`, async () => {
+				const env = await loginEnvironment(ui, family, {
+					model: "claude-sonnet-4-5",
+					modelSource: "builtin",
+				});
+				expect(env.runner.modelUsable()).toBe(false);
+				expect(env.runner.modelSelectionPending()).toBe(true);
+				expect(env.runner.session!.getModel()).toBeUndefined();
+
+				await env.login();
+
+				expect(env.runner.modelReference()).toBe(env.suggestion);
+				expect(env.runner.modelUsable()).toBe(true);
+				expect(env.runner.modelSelectionPending()).toBe(false);
+				expect(env.output()).toContain(`▪ switched to ${env.suggestion}`);
+				expect(env.output()).not.toContain("switch with /model");
+				expect(SessionStore.open(env.runner.session!.filePath).getModel()).toEqual(
+					parseModelRef(env.suggestion),
+				);
+			});
+
+			it(`${family} login retains a deliberate unavailable subscription choice`, async () => {
+				const reference = "openai-codex/explicit-unlisted";
+				const env = await loginEnvironment(ui, family, {
+					model: reference,
+					modelExplicit: true,
+					modelSource: "cli",
+				});
+				expect(env.runner.modelUsable()).toBe(false);
+				expect(env.runner.modelSelectionPending()).toBe(false);
+				const session = env.runner.session!;
+				session.appendMessage({ role: "user", content: "retain deliberate subscription selection" });
+				const before = readFileSync(session.filePath, "utf8");
+
+				await env.login();
+
+				expect(env.runner.modelReference()).toBe(reference);
+				expect(env.runner.modelSelectionPending()).toBe(false);
+				expect(env.output()).not.toContain("▪ switched to");
+				expect(env.output()).toContain(
+					family === "openai"
+						? `▪ switch with /model ${env.suggestion}`
+						: `▪ ${reference} is not in the account model list; keeping your selection — use /model to change`,
+				);
+				if (family === "openai") expect(env.runner.modelUsable()).toBe(false);
+				expect(readFileSync(session.filePath, "utf8")).toBe(before);
+				expect(SessionStore.open(session.filePath).getModel()).toEqual(parseModelRef(reference));
+			});
+		}
+	});
+
 	it("D4: /login auto-switches when no usable model exists", async () => {
 		const root = await mkTempDirAsync("ink-smr-");
 		const { renderer, output } = makeRenderer();
@@ -372,6 +598,102 @@ describe("#startup-model-resolution", () => {
 		expect(runner.modelReference()).toBe("zai/glm-5.3");
 		expect(output()).toContain("▪ switched to zai/glm-5.3");
 		expect(output()).not.toContain("switch with /model zai/glm-5.3");
+	});
+
+	it("D4 negative: explicitly selected subscription survives another login even without credentials", async () => {
+		const root = await mkTempDirAsync("ink-smr-");
+		const { renderer, output } = makeRenderer();
+		const runner = await createRunner({
+			cwd: path.join(root, "proj"),
+			argv: [],
+			model: "openai-codex/explicit-unlisted",
+			modelExplicit: true,
+			modelSource: "cli",
+			maxTokens: 1024,
+			maxTurns: 3,
+			noContextFiles: true,
+			noSession: true,
+			renderer,
+		});
+		expect(runner.modelUsable()).toBe(false);
+		expect(runner.modelSelectionPending()).toBe(false);
+		const { COMMANDS } = await import("../src/repl/commands.js");
+		await COMMANDS.find((command) => command.name === "login")?.run("zai", {
+			runner,
+			renderer,
+			isActive: () => false,
+			requestExit: () => {},
+			abortActive: () => false,
+			replay: () => 0,
+			submitPrompt: () => {},
+			secret: async () => "zai-fixture-key",
+		});
+		expect(runner.modelReference()).toBe("openai-codex/explicit-unlisted");
+		expect(output()).not.toContain("▪ switched to");
+	});
+
+	it("D4 retained subscription login keeps its deliberate identity through real-session round-trip", async () => {
+		const root = await mkTempDirAsync("ink-smr-");
+		const cwd = path.join(root, "project");
+		await mkdir(cwd);
+		const sessionBaseDir = path.join(root, "sessions");
+		const { renderer, output } = makeRenderer();
+		const runner = await createRunner({
+			cwd,
+			argv: [],
+			model: "openai-codex/retained-without-token",
+			modelSource: "cli",
+			modelExplicit: true,
+			maxTokens: 1024,
+			maxTurns: 3,
+			noContextFiles: true,
+			noSession: false,
+			sessionBaseDir,
+			renderer,
+		});
+		expect(runner.modelUsable()).toBe(false);
+		expect(runner.modelSelectionPending()).toBe(false);
+		const { COMMANDS } = await import("../src/repl/commands.js");
+		await COMMANDS.find((command) => command.name === "login")?.run("openai", {
+			runner,
+			renderer,
+			isActive: () => false,
+			requestExit: () => {},
+			abortActive: () => false,
+			replay: () => 0,
+			submitPrompt: () => {},
+			secret: async () => "fixture-api-key-not-subscription",
+		});
+		expect(output()).not.toContain("▪ switched to");
+		expect(runner.modelReference()).toBe("openai-codex/retained-without-token");
+		// The real provider fails before networking, but the user message
+		// and deliberate subscription identity must already be durable.
+		await expect(runner.runTurn({ userMessage: "retain my subscription provider" })).rejects.toThrow(
+			/logged in|login|authoriz/i,
+		);
+		const { SessionStore } = await import("../src/core/session/store.js");
+		expect(SessionStore.open(runner.session!.filePath).getModel()).toEqual({
+			provider: "openai-codex",
+			modelId: "retained-without-token",
+		});
+		process.env.OPENAI_API_KEY = "another-api-key-must-not-replace-subscription";
+		const resumed = await createRunner({
+			cwd,
+			argv: [],
+			model: "claude-sonnet-4-5",
+			modelSource: "builtin",
+			resume: runner.session!.header.id,
+			maxTokens: 1024,
+			maxTurns: 3,
+			noContextFiles: true,
+			noSession: false,
+			sessionBaseDir,
+			renderer,
+		});
+		expect(resumed.modelReference()).toBe("openai-codex/retained-without-token");
+		expect(resumed.modelUsable()).toBe(false);
+		expect(resumed.modelSelectionPending()).toBe(false);
+		expect(output()).not.toContain("using openai/");
 	});
 
 	it("D4 negative: a usable model is never auto-replaced", async () => {

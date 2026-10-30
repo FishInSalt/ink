@@ -41,7 +41,8 @@ async function collect(
 function lastMessage(events: Array<{ type: string } & Record<string, unknown>>) {
 	const end = events.find((e) => e.type === "message_end");
 	if (end === undefined) throw new Error("no message_end");
-	return end.message as {
+	const original = end.message as { blocks: Array<Record<string, unknown>> };
+	return { ...original, blocks: original.blocks.map(({ responses: _replay, ...block }) => block) } as {
 		blocks: Array<Record<string, unknown>>;
 		usage: Record<string, unknown>;
 		stopReason: string | null;
@@ -100,7 +101,7 @@ describe("codex-responses provider", () => {
 	function provider() {
 		return createCodexResponsesProvider({
 			baseUrl,
-			auth: async () => ({ accessToken: "fake-access", accountId: "acct-9" }),
+			auth: async () => ({ accessToken: "fake-access" }),
 		});
 	}
 
@@ -141,9 +142,10 @@ describe("codex-responses provider", () => {
 		expect(body.input).toEqual([{ role: "user", content: [{ type: "input_text", text: "hi" }] }]);
 		const headers = captured.at(-1)?.headers ?? {};
 		expect(headers.authorization).toBe("Bearer fake-access");
-		expect(headers["chatgpt-account-id"]).toBe("acct-9");
-		expect(headers.originator).toBe("ink");
-		expect(headers["openai-beta"]).toBe("responses=experimental");
+		expect(headers).not.toHaveProperty("chatgpt-account-id");
+		expect(headers).not.toHaveProperty("originator");
+		expect(headers).not.toHaveProperty("openai-beta");
+		expect(body.include).toEqual(["reasoning.encrypted_content"]);
 	});
 
 	it("hashes a full Unicode/CRLF session ID; only the three affinity fields change", async () => {
@@ -169,11 +171,12 @@ describe("codex-responses provider", () => {
 			instructions: "sys-instructions",
 			input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }],
 			parallel_tool_calls: true,
+			include: ["reasoning.encrypted_content"],
 			reasoning: { effort: "none" },
 		});
 		expect(keyed.headers).toEqual({
 			...unkeyed.headers,
-			"session-id": expected,
+			session_id: expected,
 			"x-client-request-id": expected,
 			// The local HTTP transport also adjusts the body's byte length.
 			"content-length": String(Buffer.byteLength(JSON.stringify(keyed.body))),
@@ -196,7 +199,7 @@ describe("codex-responses provider", () => {
 			const expected = createHash("sha256")
 				.update(`ink-codex-session-v1\0${sessionId}`, "utf8")
 				.digest("hex");
-			expect([body.prompt_cache_key, headers["session-id"], headers["x-client-request-id"]]).toEqual([
+			expect([body.prompt_cache_key, headers.session_id, headers["x-client-request-id"]]).toEqual([
 				expected,
 				expected,
 				expected,
@@ -222,7 +225,7 @@ describe("codex-responses provider", () => {
 			);
 			const { body, headers } = captured.at(-1)!;
 			expect(body).not.toHaveProperty("prompt_cache_key");
-			expect(headers).not.toHaveProperty("session-id");
+			expect(headers).not.toHaveProperty("session_id");
 			expect(headers).not.toHaveProperty("x-client-request-id");
 		},
 	);
@@ -270,7 +273,9 @@ describe("codex-responses provider", () => {
 		expect(msg.stopReason).toBe("tool_use");
 
 		const body = captured.at(-1)?.body as Record<string, unknown>;
-		const tools = body.tools as Array<Record<string, unknown>>;
+		const declaration = (body.input as Array<Record<string, unknown>>)[0]!;
+		expect(declaration).toMatchObject({ type: "additional_tools", role: "developer" });
+		const tools = declaration.tools as Array<Record<string, unknown>>;
 		expect(tools[0]).toEqual({
 			type: "function",
 			name: "bash",
@@ -278,7 +283,8 @@ describe("codex-responses provider", () => {
 			parameters: { type: "object", properties: { command: { type: "string" } } },
 			strict: false,
 		});
-		expect(body.tool_choice).toBe("auto");
+		expect(body).not.toHaveProperty("tools");
+		expect(body).not.toHaveProperty("tool_choice");
 	});
 
 	it("history replay: assistant text + function_call items and function_call_output items", async () => {
@@ -312,7 +318,7 @@ describe("codex-responses provider", () => {
 		const body = captured.at(-1)?.body as Record<string, unknown>;
 		expect(body.input).toEqual([
 			{ role: "user", content: [{ type: "input_text", text: "list" }] },
-			{ role: "assistant", content: [{ type: "output_text", text: "checking" }] },
+			{ role: "assistant", content: [{ type: "input_text", text: "checking" }] },
 			{ type: "function_call", call_id: "call_1", name: "bash", arguments: '{"command":"ls"}' },
 			{ type: "function_call_output", call_id: "call_1", output: "a b" },
 		]);
@@ -325,14 +331,24 @@ describe("codex-responses provider", () => {
 				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
 				sse("response.output_text.delta", { output_index: 0, delta: "cut" }),
 				sse("response.incomplete", {
-					response: { status: "incomplete", usage: { input_tokens: 1, output_tokens: 1 } },
+					response: {
+						status: "incomplete",
+						incomplete_details: { reason: "max_output_tokens" },
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
 				}),
 			],
 		};
 		const events = await collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }])));
 		expect(lastMessage(events).stopReason).toBe("max_tokens");
 
-		script = { status: 200, chunks: [sse("response.output_text.delta", { output_index: 0, delta: "x" })] }; // no terminal
+		script = {
+			status: 200,
+			chunks: [
+				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
+				sse("response.output_text.delta", { output_index: 0, delta: "x" }),
+			],
+		}; // no terminal
 		await expect(
 			collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }]))),
 		).rejects.toThrow("without response.completed");
@@ -405,7 +421,11 @@ describe("codex-responses provider", () => {
 				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
 				sse("response.output_text.delta", { output_index: 0, delta: "capped" }),
 				sse("response.incomplete", {
-					response: { status: "incomplete", usage: { input_tokens: 3, output_tokens: 1 } },
+					response: {
+						status: "incomplete",
+						incomplete_details: { reason: "max_output_tokens" },
+						usage: { input_tokens: 3, output_tokens: 1 },
+					},
 				}),
 			],
 		};
@@ -414,7 +434,7 @@ describe("codex-responses provider", () => {
 		expect(lastMessage(events).stopReason).toBe("max_tokens");
 	});
 
-	it("protocol errors after response.completed are not swallowed", async () => {
+	it("stops at response.completed without reading trailing events", async () => {
 		script = {
 			status: 200,
 			chunks: [
@@ -422,9 +442,10 @@ describe("codex-responses provider", () => {
 				sse("response.failed", { response: { error: { message: "late failure" } } }),
 			],
 		};
-		await expect(
-			collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }]))),
-		).rejects.toThrow("late failure");
+		expect(
+			lastMessage(await collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }]))))
+				.stopReason,
+		).toBe("end_turn");
 		script = {
 			status: 200,
 			chunks: [
@@ -432,9 +453,10 @@ describe("codex-responses provider", () => {
 				sse("error", { message: "late error" }),
 			],
 		};
-		await expect(
-			collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }]))),
-		).rejects.toThrow("late error");
+		expect(
+			lastMessage(await collect(provider().stream(REQ("gpt-5.5", [{ role: "user", content: "hi" }]))))
+				.stopReason,
+		).toBe("end_turn");
 	});
 
 	it("response.failed and error events throw with the server's message", async () => {
@@ -602,6 +624,7 @@ describe("codex-responses provider", () => {
 		script = {
 			status: 200,
 			chunks: [
+				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
 				sse("response.output_text.delta", { output_index: 0, delta: "hi" }),
 				sse("response.completed", { response: { status: "completed" } }),
 			],
@@ -616,6 +639,7 @@ describe("codex-responses provider", () => {
 		script = {
 			status: 200,
 			chunks: [
+				sse("response.output_item.added", { output_index: 0, item: { type: "message" } }),
 				sse("response.output_text.delta", { output_index: 0, delta: "hi" }),
 				sse("response.completed", {
 					response: { status: "completed", usage: { input_tokens: 31, output_tokens: 7 } },
@@ -633,7 +657,7 @@ describe("contextWindowFor registry", () => {
 	it("table lookups strip the prefix; env wins; unknown falls back", async () => {
 		const { contextWindowFor, DEFAULT_CONTEXT_WINDOW } = await import("../src/provider/models.js");
 		expect(contextWindowFor("gpt-5.5")).toBe(272_000);
-		expect(contextWindowFor("openai-codex/gpt-5.5")).toBe(272_000);
+		expect(contextWindowFor("openai-codex/gpt-5.5")).toBe(DEFAULT_CONTEXT_WINDOW);
 		expect(contextWindowFor("glm-4.6")).toBe(200_000);
 		expect(contextWindowFor("claude-sonnet-4-5")).toBe(1_000_000);
 		expect(contextWindowFor("mystery-model")).toBe(DEFAULT_CONTEXT_WINDOW);
@@ -649,7 +673,7 @@ describe("contextWindowFor registry", () => {
 		registerDiscoveredContextWindows({ "gpt-7-nova": 400_000, "glm-4.6": 123_456 });
 		expect(contextWindowFor("gpt-7-nova")).toBe(400_000);
 		expect(contextWindowFor("glm-4.6")).toBe(123_456); // discovery wins over the table
-		expect(contextWindowFor("openai-codex/gpt-7-nova")).toBe(400_000); // prefix-stripped
+		expect(contextWindowFor("openai-codex/gpt-7-nova")).toBe(DEFAULT_CONTEXT_WINDOW); // no cross-provider discovery
 		resetDiscoveredWindowsForTest();
 		expect(contextWindowFor("glm-4.6")).toBe(200_000); // back to the table
 		const prev = process.env.INK_CONTEXT_WINDOW;

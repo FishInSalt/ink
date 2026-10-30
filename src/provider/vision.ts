@@ -1,7 +1,7 @@
 /**
- * Vision capability rules (M13 §5). Ink has no model catalog, so — like
- * thinking.ts's MODEL_RULES — capability is a prefix table. pi's equivalent
- * is the generated catalog's `input: ("text"|"image")[]`.
+ * Vision capability rules (M13 §5). Exact public metadata wins; prefix
+ * rules are the frozen offline floor. pi's capability field is the
+ * generated catalog's `input: ("text"|"image")[]`.
  *
  * Default is false (fail-safe): an image sent to a non-vision endpoint
  * 400s the WHOLE request, so an unknown model must degrade, not gamble.
@@ -49,12 +49,8 @@ const VISION_RULES: ReadonlyArray<VisionRule> = [
 	{ provider: "openai", prefix: "gpt-5", vision: true },
 	{ provider: "openai", prefix: "o3", vision: true },
 	{ provider: "openai", prefix: "o4", vision: true },
-	// Codex (responses API) rides gpt-5-codex — vision-capable per OpenAI
-	// docs. Keyed "openai-codex" to match resolve.ts's ProviderName: the
-	// read tool's getter passes the RUNNER's providerName, and a mismatch
-	// here meant the non-vision note lied on codex models (review P1).
-	{ provider: "openai-codex", prefix: "gpt-5-codex", vision: true },
-	{ provider: "openai-codex", prefix: "gpt-5", vision: true },
+	// Direct subscription models share the frozen OpenAI rules, not a
+	// separate legacy Codex capability list.
 ];
 
 /** Does this (provider, model) accept image input? Unknown → false.
@@ -64,8 +60,9 @@ const VISION_RULES: ReadonlyArray<VisionRule> = [
 export function modelSupportsVision(provider: string, model: string): boolean {
 	const entry = catalogEntryFor(provider, model);
 	if (entry?.input !== undefined) return entry.input.includes("image");
+	const rulesProvider = provider === "openai-codex" ? "openai" : provider;
 	for (const rule of VISION_RULES) {
-		if (rule.provider === provider && model.startsWith(rule.prefix)) return rule.vision;
+		if (rule.provider === rulesProvider && model.startsWith(rule.prefix)) return rule.vision;
 	}
 	return false;
 }

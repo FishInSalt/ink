@@ -38,13 +38,9 @@ describe("SA-05 round 2: costFor is provider-scoped and fully-qualified only", (
 			cacheWrite: 0,
 			subscription: true,
 		});
-		expect(costFor("openai-codex/gpt-5.4")).toEqual({
-			input: 2.5,
-			output: 15,
-			cacheRead: 0.25,
-			cacheWrite: 0,
-			subscription: true,
-		});
+		// Direct subscription pricing uses the current OpenAI metadata catalog,
+		// never the retired backend's frozen Codex prices.
+		expect(costFor("openai-codex/gpt-5.4")).toBeUndefined();
 	});
 
 	it("a foreign model id under a known provider is NOT priced with another provider's rates", () => {

@@ -19,8 +19,9 @@ export interface LoginTarget {
 	/** The env-var alternative (the description's source label). */
 	envVar: string;
 	method: "api_key" | "oauth";
-	/** Post-login /model hint when the current family differs. */
-	switchHint: string;
+	/** API-key families' post-login /model hint. Subscription suggestions
+	 *  must come from the authenticated account list, never a static id. */
+	switchHint?: string;
 }
 
 export const LOGIN_TARGETS: readonly LoginTarget[] = [
@@ -44,7 +45,6 @@ export const LOGIN_TARGETS: readonly LoginTarget[] = [
 		name: "OpenAI (ChatGPT plan)",
 		envVar: "none — OAuth",
 		method: "oauth",
-		switchHint: "openai-codex/gpt-5.5",
 	},
 	{
 		family: "deepseek",

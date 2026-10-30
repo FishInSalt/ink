@@ -53,19 +53,8 @@ describe("buildModelList", () => {
 			configured: (f) => f === "anthropic" || f === "openai-codex",
 			discover: async (f) => (f === "anthropic" ? ["glm-4.6"] : null),
 		});
-		// static seeds = the offline floor (pi.dev catalog synced, incl. gpt-6-astra)
-		expect(rows.map((r) => r.label)).toEqual([
-			"glm-4.6",
-			"openai-codex/gpt-6-astra",
-			"openai-codex/gpt-5.5",
-			"openai-codex/gpt-5.4",
-			"openai-codex/gpt-5.4-mini",
-			"openai-codex/gpt-5.3-codex-spark",
-			"openai-codex/gpt-5.6-luna",
-			"openai-codex/gpt-5.6-sol",
-			"openai-codex/gpt-5.6-terra",
-		]);
-		expect(rows[1]?.description).toBe("ChatGPT plan (Codex)");
+		// Offline unknown subscription availability must not invent legacy ids.
+		expect(rows.map((r) => r.label)).toEqual(["glm-4.6"]);
 	});
 
 	it("openai family: discovered ids get the prefix; discovery failure falls back + notes", async () => {
@@ -83,29 +72,34 @@ describe("buildModelList", () => {
 		expect(failed.fallbackNotes).toEqual(["OpenAI-compatible endpoint"]);
 	});
 
-	it("codex: pi.dev catalog is primary (gpt-6-astra arrives with it); failure falls back to static seeds + note", async () => {
+	it("codex: only account-listed models imply availability; no static seeds when offline", async () => {
 		const fresh = await buildModelList("glm-4.6", {
 			configured: (f) => f === "openai-codex",
-			// the pi.dev shape: a bare array (or {models:[...]}) — served gpt-6-astra on day one
-			discover: async (f) => (f === "openai-codex" ? ["gpt-6-astra", "gpt-5.5", "gpt-5.4"] : null),
+			discover: async (f) => (f === "openai-codex" ? ["account-z", "account-a"] : null),
 		});
 		expect(fresh.rows.map((r) => r.label)).toEqual([
 			"glm-4.6",
-			"openai-codex/gpt-6-astra",
-			"openai-codex/gpt-5.5",
-			"openai-codex/gpt-5.4",
+			"openai-codex/account-z",
+			"openai-codex/account-a",
 		]);
 		expect(fresh.fallbackNotes).toEqual([]);
 		const failed = await buildModelList("glm-4.6", {
 			configured: (f) => f === "openai-codex",
 			discover: async () => null,
+			catalogIds: () => null,
 		});
-		expect(failed.rows.map((r) => r.label).slice(0, 3)).toEqual([
-			"glm-4.6",
-			"openai-codex/gpt-6-astra",
-			"openai-codex/gpt-5.5",
-		]);
-		expect(failed.fallbackNotes).toEqual(["model catalog (pi.dev)"]);
+		expect(failed.rows.map((r) => r.label)).toEqual(["glm-4.6"]);
+		expect(failed.fallbackNotes.join(" ")).toMatch(/unverified|unavailable|unreachable|unknown/i);
+	});
+
+	it("codex: successful empty account list suppresses all metadata fallback rows", async () => {
+		const result = await buildModelList("openai-codex/explicit-unlisted", {
+			configured: (f) => f === "openai-codex",
+			discover: async () => [],
+			catalogIds: () => ["metadata-only"],
+		});
+		expect(result.rows.map((row) => row.label)).toEqual(["openai-codex/explicit-unlisted"]);
+		expect(result.fallbackNotes).toEqual([]);
 	});
 
 	it("nothing configured (fresh install): the classic global seed list", async () => {
@@ -114,7 +108,7 @@ describe("buildModelList", () => {
 		const labels = rows.map((r) => r.label);
 		expect(labels[0]).toBe("claude-sonnet-4-5");
 		expect(labels).toContain("zai/glm-5.3"); // GLM is zai-canonical now
-		expect(labels).toContain("openai-codex/gpt-5.5");
+		expect(labels.some((id) => id.startsWith("openai-codex/"))).toBe(false);
 	});
 
 	it("a custom current id leads even when no endpoint lists it", async () => {
@@ -214,35 +208,57 @@ describe("discoverModels + familyConfigured", () => {
 		expect(hits).toContain("/models");
 	});
 
-	it("codex: pi.dev catalog (bare-array shape) via INK_CATALOG_BASE_URL; gated on login", async () => {
-		// credential present (pinned path) + local catalog server
+	it("codex: authenticated subscription models use list-visible slugs; gated on login", async () => {
+		// Credential present (isolated path), local subscription server.
 		const dir = mkTempDir("ink-disc-");
 		const credFile = path.join(dir, "auth.json");
 		writeFileSync(
 			credFile,
 			JSON.stringify({
-				provider: "openai-codex",
-				accessToken: "a",
-				refreshToken: "r",
-				expiresAt: Date.now() + 600_000,
-				accountId: "acct",
+				version: 1,
+				hostId: "a73e4eec-dc3a-4000-9000-000000000001",
+				codexRevision: "fixture-generation",
+				codex: {
+					type: "chatgpt-oauth",
+					provider: "openai-codex",
+					accessToken: "a",
+					refreshToken: "r",
+					expiresAt: Date.now() + 600_000,
+					clientId: "fixture-client",
+					issuer: "https://auth.openai.com",
+					subject: "fixture-subject",
+					idToken: "fixture-id-token",
+					scopes: ["openid", "profile", "email", "offline_access", "chatgpt.tokens.use.direct"],
+				},
 			}),
 		);
 		let hit = false;
-		const cat = createServer((_req, res) => {
+		const cat = createServer((req, res) => {
 			hit = true;
+			expect(req.url).toBe("/v1/models");
+			expect(req.headers.authorization).toBe("Bearer a");
 			res.writeHead(200, { "content-type": "application/json" });
-			res.end(JSON.stringify({ "gpt-6-astra": { id: "gpt-6-astra" }, gpt55: { id: "gpt-5.5" } })); // pi.dev's record-keyed shape
+			res.end(
+				JSON.stringify({
+					models: [
+						{ slug: "account-first", visibility: "list" },
+						{ slug: "hidden", visibility: "hidden" },
+						{ slug: "account-second", visibility: "list" },
+					],
+				}),
+			);
 		});
 		await new Promise<void>((r) => cat.listen(0, "127.0.0.1", r));
 		const { port } = cat.address() as { port: number };
 		const savedAuth = process.env.INK_AUTH_PATH;
-		const savedCat = process.env.INK_CATALOG_BASE_URL;
 		process.env.INK_AUTH_PATH = credFile;
-		process.env.INK_CATALOG_BASE_URL = `http://127.0.0.1:${port}`;
+		const { discoverCodexModels } = await import("../src/provider/discover.js");
 		try {
 			resetDiscoveryCacheForTest();
-			expect(await discoverModels("openai-codex")).toEqual(["gpt-6-astra", "gpt-5.5"]);
+			expect(await discoverCodexModels({ baseUrl: `http://127.0.0.1:${port}/v1` })).toEqual([
+				"account-first",
+				"account-second",
+			]);
 			expect(hit).toBe(true);
 			// without the login, no fetch happens even with the catalog configured
 			process.env.INK_AUTH_PATH = "/nonexistent";
@@ -254,8 +270,6 @@ describe("discoverModels + familyConfigured", () => {
 			cat.close();
 			if (savedAuth === undefined) delete process.env.INK_AUTH_PATH;
 			else process.env.INK_AUTH_PATH = savedAuth;
-			if (savedCat === undefined) delete process.env.INK_CATALOG_BASE_URL;
-			else process.env.INK_CATALOG_BASE_URL = savedCat;
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
@@ -263,7 +277,7 @@ describe("discoverModels + familyConfigured", () => {
 	it("unconfigured families resolve null WITHOUT any network", async () => {
 		expect(await discoverModels("anthropic")).toBeNull();
 		expect(await discoverModels("openai")).toBeNull();
-		expect(await discoverModels("openai-codex")).toBeNull(); // static family, never fetches
+		expect(await discoverModels("openai-codex")).toBeNull();
 		expect(hits).toEqual([]);
 		expect(familyConfigured("anthropic")).toBe(false);
 		expect(familyConfigured("openai")).toBe(false);
@@ -283,18 +297,28 @@ describe("familyConfigured via INK_AUTH_PATH", () => {
 		writeFileSync(
 			file,
 			JSON.stringify({
-				provider: "openai-codex",
-				accessToken: "a",
-				refreshToken: "r",
-				expiresAt: Date.now() + 600_000,
-				accountId: "acct",
+				version: 1,
+				hostId: "a73e4eec-dc3a-4000-9000-000000000001",
+				codexRevision: "fixture-generation",
+				codex: {
+					type: "chatgpt-oauth",
+					provider: "openai-codex",
+					accessToken: "a",
+					refreshToken: "r",
+					expiresAt: Date.now() + 600_000,
+					clientId: "fixture-client",
+					issuer: "https://auth.openai.com",
+					subject: "fixture-subject",
+					idToken: "fixture-id-token",
+					scopes: ["openid", "profile", "email", "offline_access", "chatgpt.tokens.use.direct"],
+				},
 			}),
 		);
 		const prev = process.env.INK_AUTH_PATH;
 		try {
 			process.env.INK_AUTH_PATH = file;
 			expect(familyConfigured("openai-codex")).toBe(true);
-			// and the picker shows the static codex catalog
+			// Availability still requires the authenticated account listing.
 		} finally {
 			if (prev === undefined) delete process.env.INK_AUTH_PATH;
 			else process.env.INK_AUTH_PATH = prev;
@@ -306,8 +330,8 @@ describe("familyConfigured via INK_AUTH_PATH", () => {
 describe("costFor (footer cost table)", () => {
 	it("resolves fully qualified references; bare ids and unknown → undefined", async () => {
 		const { costFor } = await import("../src/provider/models.js");
-		const gpt = costFor("openai-codex/gpt-5.5");
-		expect(gpt).toEqual({ input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0, subscription: true });
+		// Legacy Codex static pricing is not metadata for direct subscriptions.
+		expect(costFor("openai-codex/gpt-5.5")).toBeUndefined();
 		// SA-05 round 2: a bare id carries no provider — never inferred.
 		expect(costFor("gpt-5.5")).toBeUndefined();
 		const glm = costFor("zai/glm-5.3");

@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CATALOG_FRESH_WINDOW_MS,
 	type CatalogFetcher,
+	CODEX_METADATA_SOURCE,
 	catalogEntryFor,
 	catalogModelIds,
 	loadCatalogCache,
@@ -87,7 +88,7 @@ function fixtureFetcher(
 // Only the injected fetcher handles these URLs; no network requests are made.
 const catalogBaseUrl = "https://catalog.example";
 const piZaiUrl = `${catalogBaseUrl}/api/models/providers/zai`;
-const piCodexUrl = `${catalogBaseUrl}/api/models/providers/openai-codex`;
+const piCodexUrl = `${catalogBaseUrl}/api/models/providers/openai`;
 
 describe("M14 catalog refresh", () => {
 	let tmpDir: string;
@@ -139,6 +140,76 @@ describe("M14 catalog refresh", () => {
 		expect(catalogModelIds("zai")).toEqual(["glm-5.3"]);
 		expect(catalogModelIds("openai-codex")).toEqual(["gpt-5.5"]);
 	});
+
+	it("direct subscription metadata uses OpenAI source under Ink's stable identity", async () => {
+		const { fetcher, logs } = fixtureFetcher({
+			[piCodexUrl]: jsonResponse(200, {
+				"gpt-direct": {
+					id: "gpt-direct",
+					contextWindow: 800_000,
+					input: ["text", "image"],
+					reasoning: true,
+					thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high" },
+					cost: { input: 2, output: 8, cacheRead: 0.2, cacheWrite: 0 },
+				},
+			}),
+		});
+		setCatalogFetcherForTest(fetcher);
+		await refreshCatalog({ families: ["openai-codex"], force: true });
+		expect(logs.map((log) => log.url)).toEqual([piCodexUrl]);
+		expect(catalogEntryFor("openai", "gpt-direct")).toBeNull();
+		expect(contextWindowFor("openai-codex/gpt-direct")).toBe(800_000);
+		expect(modelSupportsVision("openai-codex", "gpt-direct")).toBe(true);
+		expect(supportedThinkingLevels(thinkingMetaFor("openai-codex", "gpt-direct"))).toEqual(["low", "high"]);
+		expect(costFor("openai-codex/gpt-direct")).toEqual({
+			input: 2,
+			output: 8,
+			cacheRead: 0.2,
+			cacheWrite: 0,
+			subscription: true,
+		});
+		const file = JSON.parse(readFileSync(process.env.INK_CATALOG_PATH!, "utf8"));
+		expect(file.version).toBe(2);
+		expect(file.providers["openai-codex"].source).toBe(CODEX_METADATA_SOURCE);
+		resetCatalogForTest();
+		expect(loadCatalogCache()).toBe(true);
+		expect(contextWindowFor("openai-codex/gpt-direct")).toBe(800_000);
+	});
+
+	it.each([
+		{ version: 1, source: undefined },
+		{ version: 2, source: "openai-codex" },
+		{ version: 2, source: undefined },
+	])(
+		"rejects legacy/unknown subscription metadata ($version/$source), preserving other providers",
+		async ({ version, source }) => {
+			writeFileSync(
+				process.env.INK_CATALOG_PATH!,
+				JSON.stringify({
+					version,
+					providers: {
+						"openai-codex": {
+							source,
+							models: { "gpt-5.5": { id: "gpt-5.5", contextWindow: 99 } },
+							checkedAt: clockMs,
+							etag: '"legacy"',
+						},
+						zai: { models: { "glm-5.3": { id: "glm-5.3", contextWindow: 600_000 } }, checkedAt: clockMs },
+					},
+				}),
+			);
+			expect(loadCatalogCache()).toBe(true);
+			expect(catalogModelIds("openai-codex")).toBeNull();
+			expect(contextWindowFor("openai-codex/gpt-5.5")).toBe(131_072);
+			expect(costFor("openai-codex/gpt-5.5")).toBeUndefined();
+			expect(contextWindowFor("zai/glm-5.3")).toBe(600_000);
+			const { fetcher, logs } = fixtureFetcher({ [piCodexUrl]: jsonResponse(200, [{ id: "gpt-direct" }]) });
+			setCatalogFetcherForTest(fetcher);
+			await refreshCatalog({ families: ["openai-codex"] });
+			expect(logs).toHaveLength(1);
+			expect(logs[0]?.headers["if-none-match"]).toBeUndefined();
+		},
+	);
 
 	it("drops invalid entries instead of failing the family", async () => {
 		const body = { bad: "not-an-object", "glm-x": { id: "glm-x" }, nullish: null };
@@ -498,6 +569,12 @@ describe("M14 consult wiring", () => {
 		expect(thinkingMetaFor("zai", "glm-5.2")?.style).toBe("glm-openai");
 	});
 
+	it("direct subscription metadata never inherits unscoped gateway discovery windows", () => {
+		registerDiscoveredContextWindows({ "gpt-5.5": 99 });
+		expect(contextWindowFor("openai/gpt-5.5")).toBe(99);
+		expect(contextWindowFor("openai-codex/gpt-5.5")).toBe(131_072);
+	});
+
 	it("adaptive style derives from compat.forceAdaptiveThinking", () => {
 		writeFileSync(
 			process.env.INK_CATALOG_PATH as string,
@@ -525,6 +602,29 @@ describe("M14 consult wiring", () => {
 		expect(meta?.style).toBe("anthropic-adaptive");
 		expect(meta?.adaptive).toBe(true);
 		expect(meta?.levelMap?.max).toBe("max");
+	});
+
+	it("subscription metadata lookup never borrows another provider's live capability overlay", () => {
+		writeFileSync(
+			process.env.INK_CATALOG_PATH!,
+			JSON.stringify({
+				version: 2,
+				providers: {
+					openai: {
+						models: {
+							"gpt-5.5": { id: "gpt-5.5", reasoning: false, input: ["text"], contextWindow: 900_000 },
+						},
+						checkedAt: 1,
+					},
+				},
+			}),
+		);
+		loadCatalogCache();
+		expect(thinkingMetaFor("openai", "gpt-5.5")).toBeNull();
+		expect(thinkingMetaFor("openai-codex", "gpt-5.5")?.style).toBe("codex-effort");
+		expect(modelSupportsVision("openai", "gpt-5.5")).toBe(false);
+		expect(modelSupportsVision("openai-codex", "gpt-5.5")).toBe(true);
+		expect(contextWindowFor("openai-codex/gpt-5.5")).toBe(131_072);
 	});
 
 	it("catalog input array decides vision; the prefix table is the floor", () => {

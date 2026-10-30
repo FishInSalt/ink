@@ -42,6 +42,10 @@ export const CATALOG_FAMILIES: readonly ProviderName[] = [
 	"moonshotai-cn",
 ];
 
+/** Schema/source boundary: old openai-codex metadata is not reusable for
+ *  direct subscription access, even when an id happens to match. */
+export const CODEX_METADATA_SOURCE = "openai:chatgpt-direct-v1";
+
 /** pi's REMOTE_CATALOG_REFRESH_INTERVAL_MS — how long a check stays fresh. */
 export const CATALOG_FRESH_WINDOW_MS = 4 * 60 * 60 * 1000;
 /** pi's REMOTE_CATALOG_ATTEMPT_TIMEOUT_MS. */
@@ -78,6 +82,8 @@ export interface CatalogEntry {
 
 /** Disk-cache state per family (pi's ModelsStoreEntry shape). */
 interface ProviderCache {
+	/** Subscription metadata moved from legacy Codex to public OpenAI. */
+	source?: string;
 	models: Record<string, CatalogEntry>;
 	checkedAt: number;
 	lastModified?: number;
@@ -85,7 +91,7 @@ interface ProviderCache {
 }
 
 interface CatalogFile {
-	version: 1;
+	version: 1 | 2;
 	providers: Partial<Record<ProviderName, ProviderCache>>;
 }
 
@@ -151,13 +157,27 @@ export function loadCatalogCache(path = catalogPath()): boolean {
 	try {
 		if (!existsSync(path)) return false;
 		const file = JSON.parse(readFileSync(path, "utf-8")) as CatalogFile;
-		if (file.version !== 1 || typeof file.providers !== "object" || file.providers === null) {
+		if (
+			(file.version !== 1 && file.version !== 2) ||
+			typeof file.providers !== "object" ||
+			file.providers === null
+		) {
 			return false;
 		}
 		for (const family of CATALOG_FAMILIES) {
 			const entry = file.providers[family];
-			if (entry === undefined || typeof entry !== "object" || entry.models === undefined) continue;
-			if (typeof entry.checkedAt !== "number") continue;
+			if (
+				entry === undefined ||
+				entry === null ||
+				typeof entry !== "object" ||
+				typeof entry.models !== "object" ||
+				entry.models === null ||
+				Array.isArray(entry.models)
+			)
+				continue;
+			if (typeof entry.checkedAt !== "number" || !Number.isFinite(entry.checkedAt)) continue;
+			if (family === "openai-codex" && (file.version !== 2 || entry.source !== CODEX_METADATA_SOURCE))
+				continue;
 			// The LOAD path sanitizes exactly like the fetch path (review
 			// P2-1): a hand-edited or corrupt-but-parseable cache must not put
 			// a string contextWindow into contextWindowFor.
@@ -208,8 +228,9 @@ export function modelMaxTokensFor(reference: string): number | undefined {
 	return undefined;
 }
 
-/** Family ids from the overlay (endpoint order preserved), or null when the
- *  catalog has nothing for the family. */
+/** Public METADATA ids, not account availability. Subscription callers
+ *  must use discoverCodexModels/cachedCodexModelIds for selectable models;
+ *  any offline metadata rows must be labeled availability unverified. */
 export function catalogModelIds(provider: string): string[] | null {
 	const models = overlay.get(provider as ProviderName);
 	if (models === undefined) return null;
@@ -296,7 +317,10 @@ async function refreshFamily(
 		// Revalidate ONLY when a cached body backs the validator — a 304 must
 		// never empty the overlay (pi parity).
 		const validator = cached !== undefined && Object.keys(cached.models).length > 0 ? cached.etag : undefined;
-		const url = `${catalogBase()}/api/models/providers/${encodeURIComponent(family)}`;
+		// Ink retains its subscription provider identity while using ordinary
+		// OpenAI metadata. Never fetch pi's legacy openai-codex catalog.
+		const sourceFamily = family === "openai-codex" ? "openai" : family;
+		const url = `${catalogBase()}/api/models/providers/${encodeURIComponent(sourceFamily)}`;
 		// One quiet retry on throttling/transient 5xx (discover.ts precedent,
 		// adapted from pi's fetchWithRetry — review P2-2): a single 503 must
 		// not freeze a family for the whole 4h window.
@@ -443,11 +467,12 @@ function sanitizeEntry(entry: CatalogEntry): CatalogEntry {
 
 /** Update the overlay + store and write the file atomically. */
 function persistFamily(family: ProviderName, cache: ProviderCache): void {
-	store.set(family, cache);
-	overlay.set(family, cache.models);
+	const entry = family === "openai-codex" ? { ...cache, source: CODEX_METADATA_SOURCE } : cache;
+	store.set(family, entry);
+	overlay.set(family, entry.models);
 
 	const path = catalogPath();
-	const file: CatalogFile = { version: 1, providers: {} };
+	const file: CatalogFile = { version: 2, providers: {} };
 	for (const f of CATALOG_FAMILIES) {
 		const entry = store.get(f);
 		if (entry !== undefined) file.providers[f] = entry;

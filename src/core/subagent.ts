@@ -137,17 +137,20 @@ export interface SubagentOutcome {
 }
 
 /**
- * The child's last assistant text: scan messages backward, and within a
- * message take its first non-empty text block (pi's getFinalOutput shape).
+ * The child's last assistant text: scan messages backward and concatenate
+ * all text parts of the latest nonempty assistant in block order. Parts can
+ * split a sentence; preserve their exact whitespace without adding separators.
  * A text-less final message falls back to earlier assistant messages.
  */
 export function finalAssistantText(messages: AgentMessage[]): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i];
 		if (message?.role !== "assistant") continue;
-		for (const block of message.blocks) {
-			if (block.type === "text" && block.text.trim() !== "") return block.text;
-		}
+		const text = message.blocks
+			.filter((block) => block.type === "text")
+			.map((block) => block.text)
+			.join("");
+		if (text.trim() !== "") return text;
 	}
 	return undefined;
 }
@@ -209,6 +212,8 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 	// qualified form). Absent → no stamp: the bare wire id is never persisted
 	// as if it were a priced identity (delta review F2).
 	const childReference = options.modelReference;
+	// An inferred target is for estimation only, never a persisted pricing stamp.
+	const estimateTarget = childReference ?? `${options.provider.name}/${options.model}`;
 
 	// Between-turn auto-compaction, mirroring the main loop's onBeforeTurn hook
 	// (runner.runTurnInner): estimate -> shouldCompact -> compact -> splice.
@@ -233,7 +238,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 	const onBeforeTurn: RunAgentLoopOptions["onBeforeTurn"] | undefined = autoCompact
 		? async (history) => {
 				if (compactionDisabled) return;
-				const est = estimateContextTokens(history, childFloor);
+				const est = estimateContextTokens(history, childFloor, estimateTarget);
 				if (!shouldCompact(est.tokens, settings)) return;
 				await compactChildHistory(history);
 			}
@@ -287,6 +292,8 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 					messages: history,
 					provider: options.provider,
 					model: options.model,
+					modelReference: estimateTarget,
+					minAnchorIndex: childFloor,
 					signal: child.signal,
 					settings,
 					modelMaxTokens, // #derived-budget (SA-02 D4: canonical reference)
@@ -430,7 +437,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 			// said survives (§3); the task tool decides error vs partial-result.
 			return crashWith(rawMessage(err));
 		}
-		const guidanceTokens = () => estimateContextTokens(history).tokens;
+		const guidanceTokens = () => estimateContextTokens(history, childFloor, estimateTarget).tokens;
 		if (compactionDisabled) {
 			return crashWith(
 				overflowGuidance(guidanceTokens(), settings, "compaction disabled after repeated failures"),
