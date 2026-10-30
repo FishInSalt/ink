@@ -190,7 +190,7 @@ describe("Fold", () => {
 	});
 });
 
-// ── decorateDiffLines: body coloring + new-file line numbers ────────────
+// ── decorateDiffLines: body coloring + old/new line numbers ─────────────
 
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
@@ -199,10 +199,10 @@ const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
 
 describe("decorateDiffLines", () => {
-	it("colors by prefix and numbers new-file lines from the hunk header (headers themselves unnumbered)", () => {
+	it("colors by prefix and numbers both sides from the hunk header (headers themselves unnumbered)", () => {
 		expect(decorateDiffLines(["@@ line 10 @@", "- old line", "+ new line", "+ newer line"])).toEqual([
 			`${CYAN}@@ line 10 @@${RESET}`,
-			`${RED}- old line${RESET}`,
+			`${DIM}10│ ${RESET}${RED}- old line${RESET}`,
 			`${DIM}10│ ${RESET}${GREEN}+ new line${RESET}`,
 			`${DIM}11│ ${RESET}${GREEN}+ newer line${RESET}`,
 		]);
@@ -216,11 +216,55 @@ describe("decorateDiffLines", () => {
 		]);
 	});
 
-	it("a removed line between adds gets no number and does not advance the counter", () => {
+	it("a removed line gets its old-file number and advances only the old counter", () => {
 		const body = decorateDiffLines(["@@ line 3 @@", "+ keep", "- drop", "+ next"]);
 		expect(body[1]).toBe(`${DIM}3│ ${RESET}${GREEN}+ keep${RESET}`);
-		expect(body[2]).toBe(`${RED}- drop${RESET}`);
+		expect(body[2]).toBe(`${DIM}3│ ${RESET}${RED}- drop${RESET}`);
 		expect(body[3]).toBe(`${DIM}4│ ${RESET}${GREEN}+ next${RESET}`);
+	});
+
+	it("a two-sided header numbers removed lines from the old side and added lines from the new side", () => {
+		expect(decorateDiffLines(["@@ old 5 new 7 @@", "- old", "+ new", "  same"])).toEqual([
+			`${CYAN}@@ old 5 new 7 @@${RESET}`,
+			`${DIM}5│ ${RESET}${RED}- old${RESET}`,
+			`${DIM}7│ ${RESET}${GREEN}+ new${RESET}`,
+			`${DIM}8│ ${RESET}${DIM}  same${RESET}`,
+		]);
+	});
+
+	it("a deletion-only hunk still numbers the removed line", () => {
+		expect(decorateDiffLines(["@@ old 5 new 5 @@", "- gone"])).toEqual([
+			`${CYAN}@@ old 5 new 5 @@${RESET}`,
+			`${DIM}5│ ${RESET}${RED}- gone${RESET}`,
+		]);
+	});
+
+	it("pads the gutter to the wider old-file number", () => {
+		expect(decorateDiffLines(["@@ old 1000 new 9 @@", "- old", "+ new"])).toEqual([
+			`${CYAN}@@ old 1000 new 9 @@${RESET}`,
+			`${DIM}1000│ ${RESET}${RED}- old${RESET}`,
+			`${DIM}   9│ ${RESET}${GREEN}+ new${RESET}`,
+		]);
+	});
+
+	it("the elided marker turns numbering off after a numbered block", () => {
+		expect(
+			decorateDiffLines([
+				"@@ old 1 new 1 @@",
+				"- head",
+				"+ HEAD",
+				"@@ diff elided @@",
+				"- 1001 lines",
+				"+ 1001 lines (diff elided)",
+			]),
+		).toEqual([
+			`${CYAN}@@ old 1 new 1 @@${RESET}`,
+			`${DIM}1│ ${RESET}${RED}- head${RESET}`,
+			`${DIM}1│ ${RESET}${GREEN}+ HEAD${RESET}`,
+			`${CYAN}@@ diff elided @@${RESET}`,
+			`${RED}- 1001 lines${RESET}`,
+			`${GREEN}+ 1001 lines (diff elided)${RESET}`,
+		]);
 	});
 
 	it("no hunk header: colored, never numbered (tolerant degradation)", () => {
@@ -258,7 +302,7 @@ describe("Fold diff decoration", () => {
 		expect(rendered).toHaveLength(4);
 		expect(stripAnsi(rendered[0] ?? "")).toBe("▾ edit src/foo.ts (+1/-1)");
 		expect(rendered[1]).toBe(`${CYAN}@@ line 10 @@${RESET}`);
-		expect(rendered[2]).toBe(`${RED}- old${RESET}`);
+		expect(rendered[2]).toBe(`${DIM}10│ ${RESET}${RED}- old${RESET}`);
 		expect(rendered[3]).toBe(`${DIM}10│ ${RESET}${GREEN}+ new${RESET}`);
 		expect(stripAnsi(rendered[3] ?? "")).toBe("10│ + new");
 	});

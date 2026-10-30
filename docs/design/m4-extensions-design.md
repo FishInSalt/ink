@@ -227,6 +227,11 @@ the same data shapes the core uses; there is no `ToolDefinition` wrapper layer, 
 `renderCall`/`renderResult` slots (no UI to render into), no `prepareArguments` shim (imp has
 no legacy stored args to upgrade — pi needed it for pre-1.0 sessions, docs/extensions.md).
 
+> **Later change (2026-10-30):** `docs/design/edit-tool-alignment-design.md`
+> adds an optional `prepareArguments` hook to `Tool` for model-emitted
+> malformed shapes and generic tool authoring. The rejection above is
+> superseded; the rest of this section still applies.
+
 ---
 
 ## 6. The ExtensionApi — complete surface

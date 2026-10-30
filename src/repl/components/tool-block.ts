@@ -2,6 +2,7 @@ import { formatToolElapsed } from "../../format.js";
 import { type Component, truncateToWidth, visibleWidth } from "../../tui.js";
 import { type ToolColor, toolColorSgr } from "../tool-colors.js";
 import { type RawSection, sanitizeDisplay, type ToolBlock } from "../tool-presentation.js";
+import { createDiffNumbering, nextDiffLineNumber, parseHunkHeader } from "./diff-numbering.js";
 
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
@@ -331,7 +332,7 @@ export class ToolBlockFold implements Component {
 		for (const section of selectedSections) {
 			const ends = new Map<number, number>();
 			lineEnds.set(section, ends);
-			let number: number | null = null;
+			let numbering = createDiffNumbering(null);
 			for (const [index, text] of [section.caption, ...section.lines].entries()) {
 				const lineIndex = index - 1;
 				const hiddenCaption =
@@ -351,13 +352,21 @@ export class ToolBlockFold implements Component {
 				if (structured && !this.raw && block.fieldBodyLines?.includes(lineIndex)) prefix += "  ";
 				let style = "";
 				if (section.diff && index > 0) {
+					let kind: "header" | "add" | "remove" | "context";
 					if (text.startsWith("@@")) {
-						number = Number(/^@@ line (\d+) @@$/.exec(text)?.[1]) || null;
+						numbering = createDiffNumbering(parseHunkHeader(text));
 						style = "\x1b[36m";
-					} else if (text.startsWith("- ")) style = "\x1b[31m";
-					else {
+						kind = "header";
+					} else if (text.startsWith("- ")) {
+						style = "\x1b[31m";
+						kind = "remove";
+					} else {
 						style = text.startsWith("+ ") ? "\x1b[32m" : DIM;
-						if (number !== null) prefix += `${number++} `;
+						kind = text.startsWith("+ ") ? "add" : "context";
+					}
+					if (kind !== "header") {
+						const lineNumber = nextDiffLineNumber(numbering, kind);
+						if (lineNumber !== null) prefix += `${lineNumber} `;
 					}
 				}
 				if (visibleWidth(prefix) >= w) prefix = "";
@@ -443,7 +452,7 @@ export class ToolBlockFold implements Component {
 		let count = 0;
 		let summaryOffset = 0;
 		const summaryVisible: { start: number; end: number }[] = [];
-		let number: number | null = null;
+		let numbering = createDiffNumbering(null);
 		const emit = (
 			line: string,
 			diff = false,
@@ -453,16 +462,21 @@ export class ToolBlockFold implements Component {
 		): void => {
 			let style = "";
 			if (diff) {
+				let kind: "header" | "add" | "remove" | "context";
 				if (line.startsWith("@@")) {
-					number = Number(/^@@ line (\d+) @@$/.exec(line)?.[1]) || null;
+					numbering = createDiffNumbering(parseHunkHeader(line));
 					style = "\x1b[36m";
-				} else if (line.startsWith("- ")) style = "\x1b[31m";
-				else {
-					style = line.startsWith("+ ") ? "\x1b[32m" : "\x1b[2m";
-					if (number !== null) {
-						prefix += `${number} `;
-						number++;
-					}
+					kind = "header";
+				} else if (line.startsWith("- ")) {
+					style = "\x1b[31m";
+					kind = "remove";
+				} else {
+					style = line.startsWith("+ ") ? "\x1b[32m" : DIM;
+					kind = line.startsWith("+ ") ? "add" : "context";
+				}
+				if (kind !== "header") {
+					const lineNumber = nextDiffLineNumber(numbering, kind);
+					if (lineNumber !== null) prefix += `${lineNumber} `;
 				}
 			}
 			if (visibleWidth(prefix) >= w) prefix = "";

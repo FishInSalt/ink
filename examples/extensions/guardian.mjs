@@ -19,7 +19,7 @@
 // Patterns are plain text where `*` matches anything (including newlines);
 // a `regex` entry is the escape hatch for full regular expressions. Entries
 // target bash by default; add "tool" (write/edit) to guard file paths — the
-// resolved absolute path is matched. No modes, no model calls.
+// normalized resolved absolute path is matched. No modes, no model calls.
 //
 // A missing config file is valid (zero rules). An invalid one keeps the last
 // valid rules, shows a footer flag and an audit line, and is recoverable
@@ -40,6 +40,19 @@ const oneLine = (text, cap = 160) => {
 };
 
 const plainObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** Mirror src/core/tools/path-resolve.ts:resolveToCwd for file-tool targets. */
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+const expandHome = (input) => {
+	if (input === "~") return os.homedir();
+	if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
+	return input;
+};
+const resolveGuardianPath = (target, base) => {
+	let normalized = target.replace(UNICODE_SPACES, " ");
+	if (normalized.startsWith("@")) normalized = normalized.slice(1);
+	return path.resolve(expandHome(base), expandHome(normalized));
+};
 
 /** #ask-timeout: pinned duration wording for agent-facing copy — minutes at
  *  60 s and above, seconds below, rounded, never zero (999 → "1 second",
@@ -283,7 +296,7 @@ export default function (api) {
 		} else if (tool === "write" || tool === "edit") {
 			const target = typeof event.args?.path === "string" ? event.args.path : undefined;
 			const base = typeof event.cwd === "string" ? event.cwd : api.cwd;
-			text = target === undefined ? undefined : path.resolve(base, target);
+			text = target === undefined ? undefined : resolveGuardianPath(target, base);
 		}
 		const who = event.subagent === true ? ` (child${event.agent ? `:${event.agent}` : ""})` : "";
 		const subject = text === undefined ? "?" : oneLine(text);

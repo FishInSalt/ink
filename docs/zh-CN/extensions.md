@@ -36,7 +36,9 @@ export default function (api) {
 ## api 接口
 
 - **`registerTool(tool)`**——注册一个可被 LLM 调用的工具（与内置工具结构
-  相同：名称、描述、typebox `parameters`、`execute`）。
+  相同：名称、描述、typebox `parameters`、`execute`）。工具还可以提供可选的
+  同步 `prepareArguments(args)` 钩子，在 schema 校验前整理模型原始参数；
+  它必须返回普通对象且不得修改输入。门控和 `execute` 收到整理后的对象。
 - **`registerCommand(command)`**——注册一个 REPL 斜杠命令（在 `/help` 中
   标记 `[source]`）。
 - **`registerContext(id, text)`**——向系统提示追加一个静态段落，位于
@@ -65,7 +67,8 @@ export default function (api) {
 
 ## 事件
 
-- `tool_call`——在参数校验之后、执行之前触发。处理器可以返回
+- `tool_call`——在 `prepareArguments` 和参数校验之后、执行之前触发。处理器
+  收到与 `execute` 相同的整理后参数对象；修改它会影响执行。处理器可以返回
   `{ block: true, reason: "…" }`；阻止决定会成为模型看到的工具结果（包含
   reason），因此运行会作出调整而不是直接失败。子代理调用会带着
   `subagent: true` 和 `agent` 配置名通过同一道门控——门控可以让子代理

@@ -26,6 +26,16 @@ their original release identity.
 
 ### Fixed
 
+- **Edit/write path and argument robustness.** `edit` and `write` now
+  normalize `~`, one leading `@`, and Unicode-space path variants like
+  `read`. `edit` also accepts stringified `edits`, a single edit object, and
+  legacy top-level `oldText`/`newText` before schema validation; the gate
+  sees the prepared arguments while history keeps the raw model arguments.
+  The edit top-level schema is now closed, so unknown fields and partial
+  legacy pairs fail validation instead of being silently ignored. Edit diff
+  folds now show old-file line numbers for removed lines and use a per-block
+  old/new start header, including after preceding insertions.
+
 - **Login preserves usable models.** Signing in to another provider no longer
   replaces a working builtin or automatically selected model. Automatic login
   selection requires both an unusable current model and no deliberate choice.

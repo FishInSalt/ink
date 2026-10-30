@@ -39,6 +39,10 @@ started in), `version` (Ink version string), and `origin`
 
 - **`registerTool(tool)`** — add an LLM-callable tool (same shape as the
   built-in tools: name, description, typebox `parameters`, `execute`).
+  Tools may also provide an optional synchronous `prepareArguments(args)`
+  hook to coerce raw model arguments before schema validation; it must return
+  a plain object without mutating its input. The gate and `execute` receive
+  the prepared object.
 - **`registerCommand(command)`** — add a REPL slash command (tagged
   `[source]` in `/help`).
 - **`registerContext(id, text)`** — append a static section to the system
@@ -72,12 +76,13 @@ started in), `version` (Ink version string), and `origin`
 
 ## Events
 
-- `tool_call` — after argument validation, before execution. Handlers may
-  return `{ block: true, reason: "…" }`; the block decision becomes the
-  tool result the model sees (reason included), so the run adapts instead
-  of dying. Subagent calls pass through the same gate with
-  `subagent: true` plus the `agent` profile name — a gate can hold children
-  to stricter rules.
+- `tool_call` — after `prepareArguments` and schema validation, before
+  execution. Handlers receive the same prepared argument object `execute`
+  receives; mutating it affects execution. They may return
+  `{ block: true, reason: "…" }`; the block decision becomes the tool result
+  the model sees (reason included), so the run adapts instead of dying.
+  Subagent calls pass through the same gate with `subagent: true` plus the
+  `agent` profile name — a gate can hold children to stricter rules.
 - `tool_end` / `message_end` — observers: results and finalized assistant
   messages.
 - `run_start` — fires once when a top-level run begins. `run_end` does NOT

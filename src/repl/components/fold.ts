@@ -1,4 +1,5 @@
 import { type Component, truncateToWidth } from "../../tui.js";
+import { createDiffNumbering, nextDiffLineNumber, parseHunkHeader } from "./diff-numbering.js";
 
 const DIM = "\x1b[2m";
 const RED = "\x1b[31m";
@@ -19,7 +20,7 @@ const RESET = "\x1b[0m";
  * format.ts's isTTY gate (which tests process.stdout, the wrong stream
  * here) does not apply.
  *
- * The body renders through decorateDiffLines (prefix colors + a new-file
+ * The body renders through decorateDiffLines (prefix colors + an old/new
  * line-number gutter) — a presentation concern of the fold alone. The raw
  * diff text the machine feeds in is never rewritten: it flows verbatim
  * into the model context and the print-mode stream.
@@ -73,37 +74,28 @@ export class Fold implements Component {
 	}
 }
 
-/** The edit tool's hunk header: "@@ line K @@", K = the hunk's first
- *  new-file line number. Any other "@@" line (unified-diff style, prose)
- *  is still a header — colored, but never numbered. */
-const HUNK_HEADER = /^@@ line (\d+) @@$/;
-
 /**
  * Decorate one diff body for display: "+ " adds green, "- " removes red,
  * "@@" headers cyan, everything else (context) dim. While a parseable
- * hunk header has opened counting, added and context lines carry a dim,
- * right-aligned new-file line number ("NNN│ ") — removed lines are not in
- * the new file, so they get no number and never increment. Tolerant: with
- * no parseable header there is no gutter, only the colors. Pure — the
- * input text itself is never modified.
+ * hunk header has opened counting, removed lines carry the old-file number,
+ * and added/context lines carry the new-file number (a dim, right-aligned
+ * "NNN│ " gutter). Tolerant: with no parseable header there is no gutter,
+ * only the colors. Pure — the input text itself is never modified.
  */
 export function decorateDiffLines(lines: string[]): string[] {
 	type Kind = "header" | "add" | "remove" | "context";
 	const plan: Array<{ line: string; kind: Kind; number: number | null }> = [];
-	let next: number | null = null; // next new-file line number; null = numbering off
+	let numbering = createDiffNumbering(null);
 	for (const line of lines) {
 		if (line.startsWith("@@")) {
-			const match = HUNK_HEADER.exec(line);
-			next = match === null ? null : Number(match[1] ?? 0);
+			numbering = createDiffNumbering(parseHunkHeader(line));
 			plan.push({ line, kind: "header", number: null });
 		} else if (line.startsWith("+ ")) {
-			plan.push({ line, kind: "add", number: next });
-			if (next !== null) next += 1;
+			plan.push({ line, kind: "add", number: nextDiffLineNumber(numbering, "add") });
 		} else if (line.startsWith("- ")) {
-			plan.push({ line, kind: "remove", number: null });
+			plan.push({ line, kind: "remove", number: nextDiffLineNumber(numbering, "remove") });
 		} else {
-			plan.push({ line, kind: "context", number: next });
-			if (next !== null) next += 1;
+			plan.push({ line, kind: "context", number: nextDiffLineNumber(numbering, "context") });
 		}
 	}
 	const width = plan.reduce((max, p) => Math.max(max, p.number === null ? 0 : String(p.number).length), 1);

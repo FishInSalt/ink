@@ -170,6 +170,11 @@ untouched):
    ("allow all this session"); deny rules are unaffected.
 5. Otherwise → pass.
 
+> **Later change (2026-10-30):** `docs/design/edit-tool-alignment-design.md`
+> supersedes the file-target resolution step. `write` / `edit` targets are
+> first normalized like `resolveToCwd` (Unicode spaces, one leading `@`, `~`)
+> and then resolved lexically; no realpath is added.
+
 - `<source>` in messages and audits is the wildcard pattern or the regex
   source, as written.
 - Precedence: **deny before ask**.
