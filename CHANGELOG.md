@@ -8,13 +8,26 @@ their original release identity.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-30
+
+### Upgrade
+
+- **Existing ChatGPT device-code users must run `ink login` once after
+  upgrading.** No prior logout is required; other providers' API keys and
+  existing sessions are preserved.
+
+### Added
+
+- **Tool argument preparation.** Extensions may provide a synchronous
+  `prepareArguments` hook before schema validation. The gate and execution
+  receive the prepared object; model history retains the raw arguments.
+
 ### Changed
 
 - **Direct ChatGPT subscription access.** Replace the Codex device-code/backend
   connection with browser Sign in with ChatGPT and the public Responses API.
-  Existing users must run `ink login` once; no prior logout, token conversion,
-  migration framework or API-key billing fallback is used. Commands, the
-  `openai-codex` provider identity and existing sessions remain supported.
+  Commands and the `openai-codex` provider identity remain supported; no token
+  conversion, migration framework or API-key billing fallback is used.
 - **Complete Responses history.** Stream reasoning summaries and retain finalized
   encrypted reasoning, item IDs, content parts and phases for exact-model replay.
   Preserve strict tool identity/argument finalization, reject incomplete protocol
@@ -23,6 +36,19 @@ their original release identity.
   authorized account. Empty listings remain empty; offline snapshots are labeled
   stale/unverified. Deliberate subscription selections survive missing credentials
   and resume without silently switching to another billing provider.
+- **Subscription model metadata.** Keep context windows, output limits,
+  estimated costs, thinking maps and vision scoped to pi.dev's `openai-codex`
+  catalog. Ignore ordinary-OpenAI-derived subscription caches and their ETags;
+  metadata alone is not evidence of account access.
+- **grep behavior.** Include hidden working-tree files while excluding recursive
+  VCS metadata searches, ignore ambient ripgrep configuration, and include the
+  filename for single-file results.
+- **find behavior.** Default to 1000 results, support path-shaped globs, stop fd
+  at the requested result limit and report the cap. Probe fd capabilities:
+  `--max-results` is required; non-Git `.gitignore` handling additionally needs
+  `--no-require-git` (fd 8.7+). Both search tools normalize path variants.
+- **Task timeout guidance.** Describe `timeoutMs` as a hard abort cap to omit
+  unless deliberately needed; runtime timeout defaults are unchanged.
 
 ### Fixed
 
@@ -69,6 +95,9 @@ their original release identity.
 - **English CLI/TUI recovery hints.** Stream-interruption errors and
   interactive recovery notes now use "continue" as the example message.
   Model responses, tool output, and upstream error details remain unchanged.
+- **Bundled URL reading.** Accept `text/*` and XHTML responses and report the
+  received unsupported media type. Distinguish redirect loops, DNS, TLS,
+  timeout and connection failures with tool-local recovery hints.
 
 ### Security
 
@@ -81,8 +110,14 @@ their original release identity.
   (including `@vitest/mocker`) and Vite from `8.3.0` to `8.3.5`. These
   versions fix eight advisories covering editor command injection, file
   access restrictions, and development-server script injection. Raise the
-  declared Vitest minimum to `^4.1.12`; production runtime dependencies and
-  the supported Node minimum are unchanged.
+  declared Vitest minimum to `^4.1.12`; these development-toolchain updates
+  leave production runtime dependencies and the supported Node minimum unchanged.
+
+### Documentation
+
+- Add the grep/find reference and its Chinese mirror to the published docs
+  and self-documentation routing. Give documentation pages explicit titles
+  and summaries for site discovery.
 
 ## [0.4.4] - 2026-10-26
 
