@@ -40,7 +40,8 @@ npm exec -- ink-agent@latest --help
 ```
 
 登录：启动后用 `/login`——选择提供商并输入 API key（存储到
-`~/.ink/auth.json`，优先于环境变量）；ChatGPT 套餐走 OAuth 设备码流程。
+`~/.ink/auth.json`，优先于环境变量）；ChatGPT 套餐通过浏览器 OAuth 授权。
+已使用旧设备码登录的用户需运行一次 `ink login`，授权新的连接方式。
 也可以在启动前设环境变量（如 `export ANTHROPIC_API_KEY=sk-ant-...`；
 全部提供商与凭据方式见[提供商文档](docs/providers.md)）。接着给 Ink
 一个任务。完整的入门介绍请从[文档](docs/index.md)的主题地图开始。

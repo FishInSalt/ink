@@ -10,22 +10,22 @@ export type LLMEvent =
 	| { type: "text_delta"; text: string }
 	| { type: "tool_call_start"; id: string; name: string }
 	| { type: "tool_call_delta"; id: string; jsonDelta: string }
-	/** Reasoning trace delta (Anthropic thinking blocks, GLM/DeepSeek
-	 *  reasoning_content). Displayed dim; never part of the answer text. */
+	/** Reasoning trace delta (Anthropic thinking, Responses summaries,
+	 *  GLM/DeepSeek reasoning_content). Displayed dim; never answer text. */
 	| { type: "thinking_delta"; text: string }
 	/** Fully assembled assistant message. Always the last event of a turn. */
 	| { type: "message_end"; message: AssistantMessage };
 
 export interface LLMRequest {
 	system: string;
-	/** Conversation identity, interpreted only by Codex. Never sent verbatim. */
+	/** Conversation identity, hashed by the ChatGPT subscription adapter. */
 	sessionId?: string;
 	messages: AgentMessage[];
 	tools: Tool[];
 	model: string;
 	maxTokens: number;
-	/** Thinking level (pi parity). "off"/undefined = no thinking knob sent;
-	 *  providers map the level to their native parameter (see thinking.ts). */
+	/** Thinking level (pi parity). Providers map off/undefined and enabled
+	 *  levels to their native defaults/parameters (see thinking.ts). */
 	thinking?: import("./thinking.js").ThinkingLevel;
 	signal?: AbortSignal;
 }

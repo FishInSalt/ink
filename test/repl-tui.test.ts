@@ -2075,6 +2075,50 @@ describe("runRepl with shell:tui", () => {
 		expect(withChild).toBe(control); // child usage feeds work totals only — never ctx%
 	});
 
+	it("footer updates native context estimates on model switches without a new response", async () => {
+		const target = "openai-codex/footer-model";
+		const identity = { version: 1 as const, provider: "openai-codex" as const };
+		const env = await startTuiRepl([], {
+			model: target,
+			seed: [
+				{
+					role: "assistant",
+					blocks: [
+						{
+							type: "thinking",
+							thinking: "",
+							responses: { ...identity, summary: [], encryptedContent: "FAKE_CIPHER" },
+						},
+					],
+					provenance: { ...identity, model: "footer-model" },
+					usage: { inputTokens: 0, outputTokens: 65536 },
+					stopReason: "end_turn",
+				},
+				assistant([{ type: "text", text: "away" }], "end_turn", { inputTokens: 4, outputTokens: 1 }),
+			],
+		});
+		const routing = await import("../src/provider/resolve.js");
+		const replacement = vi.spyOn(routing, "createProviderFor").mockReturnValue(scriptedProvider([]));
+		try {
+			env.terminal.resize(180);
+			await frameContains(env, "50.0%/131k");
+			for (const [reference, percent] of [
+				["openai-codex/other", "0.0"],
+				["anthropic/footer-model", "0.0"],
+				[target, "50.0"],
+			] as const) {
+				const mark = env.terminal.writes.length;
+				env.terminal.data(`/model ${reference}\r`);
+				await waitUntil(() => env.terminal.frameSince(mark).includes(`${percent}%/131k`));
+			}
+			expect(env.requests).toHaveLength(0);
+		} finally {
+			replacement.mockRestore();
+			env.terminal.data("/exit\r");
+			await env.repl;
+		}
+	});
+
 	it("SA-05 R1: the footer keeps compacted-away usage (whole-session totals)", async () => {
 		const usageAssistant = (text: string, inputTokens: number, outputTokens: number): AssistantMessage => ({
 			role: "assistant",
@@ -2533,7 +2577,11 @@ describe("runRepl with shell:tui", () => {
 			env.terminal.data("/login deepseek\r");
 			await settle();
 			env.terminal.data("a-test-key-123\r"); // the key prompt's answer
-			await settle();
+			// The credential update now waits for the shared lock and durable
+			// atomic write; completion is not bounded by one render interval.
+			await vi.waitFor(() => {
+				expect(env.terminal.frameSince(0)).toContain("Saved API key for DeepSeek");
+			});
 			const frame = env.terminal.frameSince(0);
 			expect(frame).toContain("Saved API key for DeepSeek");
 			expect(frame).toContain("deepseek/deepseek-v4-pro"); // D6: footer flipped on login success

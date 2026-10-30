@@ -211,26 +211,26 @@ describe("moonshotai provider (#moonshotai-provider)", () => {
 		expect(familyConfigured("moonshotai")).toBe(true);
 		expect(familyConfigured("moonshotai-cn")).toBe(true);
 		// stored keys are per family: logging into -cn must not shadow the .ai env
-		saveApiKey("moonshotai-cn", "sk-stored-cn", authPath);
+		await saveApiKey("moonshotai-cn", "sk-stored-cn", authPath);
 		expect(moonshotCnApiKey()).toBe("sk-stored-cn"); // stored wins
 		expect(moonshotApiKey()).toBe("sk-env-moonshot"); // other family untouched
 		// familyConfigured must key off the PER-FAMILY resolution (the review
 		// round's mutation gap: the cn case using moonshotApiKey() slipped
 		// through every other test)
 		setEnv("MOONSHOT_API_KEY", undefined);
-		clearApiKey("moonshotai-cn", authPath);
-		saveApiKey("moonshotai", "sk-only-ai", authPath);
+		await clearApiKey("moonshotai-cn", authPath);
+		await saveApiKey("moonshotai", "sk-only-ai", authPath);
 		expect(familyConfigured("moonshotai")).toBe(true);
 		expect(familyConfigured("moonshotai-cn")).toBe(false);
-		clearApiKey("moonshotai", authPath);
-		saveApiKey("moonshotai-cn", "sk-only-cn", authPath);
+		await clearApiKey("moonshotai", authPath);
+		await saveApiKey("moonshotai-cn", "sk-only-cn", authPath);
 		expect(familyConfigured("moonshotai")).toBe(false);
 		expect(familyConfigured("moonshotai-cn")).toBe(true);
 		// the no-key error names the family's own var — the OPENAI_API_KEY
 		// fallback must never lend its key to api.moonshot.* (design §2.2)
 		setEnv("MOONSHOT_BASE_URL", baseUrl);
 		setEnv("MOONSHOT_API_KEY", undefined);
-		clearApiKey("moonshotai-cn", authPath);
+		await clearApiKey("moonshotai-cn", authPath);
 		const provider = createProviderFor("moonshotai");
 		let message = "";
 		try {

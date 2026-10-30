@@ -6,22 +6,29 @@ import path from "node:path";
 
 const { join } = path;
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { renderMdPrompt } from "../src/core/commands-md.js";
 import type { AgentMessage, UserMessage } from "../src/core/messages.js";
 import { createSession, listSessions } from "../src/core/session/manager.js";
 import { loadSettings } from "../src/core/settings.js";
 import { setTrust } from "../src/core/trust.js";
 import { clearApiKey, loadApiKey, saveApiKey } from "../src/provider/auth-store.js";
-import { loadCodexCredential } from "../src/provider/codex-auth.js";
+import { loadCodexCredential, loginCodex } from "../src/provider/codex-auth.js";
 import { familyConfigured } from "../src/provider/discover.js";
 import { parseModelRef } from "../src/provider/resolve.js";
 import type { LLMProvider, LLMRequest } from "../src/provider/types.js";
 import type { CommandContext } from "../src/repl/commands.js";
-import { dispatchCommand, helpText, loginNeedsGuard, parseCommand } from "../src/repl/commands.js";
+import {
+	buildModelList,
+	dispatchCommand,
+	helpText,
+	loginNeedsGuard,
+	parseCommand,
+} from "../src/repl/commands.js";
 import { buildTreeRows } from "../src/repl/components/tree-selector.js";
 import type { SelectOptions } from "../src/repl/line-input.js";
 import { createRunner, type Runner } from "../src/runner.js";
+import { deferred, FakeCodexOidc } from "./helpers/codex-auth-fake.js";
 import { assistant, gate, makeRenderer, scriptedProvider, user } from "./helpers/fakes.js";
 import { mkTempDir, mkTempDirAsync } from "./helpers/mktemp.js";
 
@@ -93,59 +100,30 @@ async function makeGitRepo(args?: {
 	return { root, path: wtPath, branch };
 }
 
-/** A local fake of auth.openai.com's device-code endpoints for /login's
- *  OAuth path (batch B). Default script: one pending poll, then success —
- *  { hang: true } polls forever (cancellation tests). */
-async function fakeCodexAuth(options?: {
-	hang?: boolean;
-	/** Delay the usercode response — the abort-DURING-fetch window (P2). */
-	delayUserCodeMs?: number;
-}): Promise<{ baseUrl: string; close: () => Promise<void> }> {
-	const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
-	const jwt = (acct: string) =>
-		`${b64({ alg: "none" })}.${b64({ "https://api.openai.com/auth": { chatgpt_account_id: acct } })}.sig`;
-	let polls = 0;
-	const server = createServer((req, res) => {
-		const chunks: Buffer[] = [];
-		req.on("data", (c) => chunks.push(c as Buffer));
-		req.on("end", () => {
-			const json = (status: number, payload: unknown) => {
-				res.writeHead(status, { "content-type": "application/json" });
-				res.end(JSON.stringify(payload));
-			};
-			if (req.url === "/api/accounts/deviceauth/usercode") {
-				const reply = () => json(200, { device_auth_id: "dev-login", user_code: "WXYZ-6789", interval: 0 });
-				if (options?.delayUserCodeMs !== undefined) setTimeout(reply, options.delayUserCodeMs);
-				else reply();
-				return;
-			}
-			if (req.url === "/api/accounts/deviceauth/token") {
-				polls++;
-				if (options?.hang !== true && polls >= 2) {
-					json(200, { authorization_code: "ac-login", code_verifier: "cv-login" });
-				} else {
-					json(403, {});
-				}
-				return;
-			}
-			if (req.url === "/oauth/token") {
-				json(200, {
-					access_token: jwt("acct-login"),
-					refresh_token: "rt-login",
-					expires_in: 3600,
-				});
-				return;
-			}
-			json(404, {});
-		});
-	});
-	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const address = server.address();
-	if (address === null || typeof address === "string") throw new Error("no address");
-	return {
-		baseUrl: `http://127.0.0.1:${address.port}`,
-		close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+/** Signed local OIDC tokens and explicit UI seams; no real browser/network. */
+async function fakeCodexAuth(
+	ctx: CommandContext,
+	options: { hang?: boolean; delayTokenMs?: number } = {},
+): Promise<FakeCodexOidc> {
+	const fake = new FakeCodexOidc();
+	await fake.start();
+	onTestFinished(() => fake.close());
+	if (options.delayTokenMs !== undefined)
+		fake.onToken = async () => {
+			await new Promise((resolve) => setTimeout(resolve, options.delayTokenMs));
+			return { body: await fake.tokens() };
+		};
+	ctx.codexLogin = {
+		authBaseUrl: fake.baseUrl,
+		callbackPort: 0,
+		openBrowser: options.hang
+			? () => undefined
+			: async (url) => {
+					await fetch(fake.callback(url));
+				},
+		discoverModels: async () => ["account-z", "account-a"],
 	};
+	return fake;
 }
 
 async function makeEnv(args?: {
@@ -154,6 +132,7 @@ async function makeEnv(args?: {
 	active?: boolean;
 	provider?: LLMProvider;
 	model?: string;
+	pendingSelection?: boolean;
 	/** Trust the project dir — project settings participate (batch B P2-2). */
 	trusted?: boolean;
 }): Promise<TestEnv> {
@@ -173,6 +152,7 @@ async function makeEnv(args?: {
 		settingsPath,
 		projectSettingsAllowed: args?.trusted === true,
 		model: args?.model ?? "claude-sonnet-4-5",
+		modelSource: args?.pendingSelection ? "builtin" : "cli",
 		maxTokens: 1024,
 		maxTurns: 10,
 		noContextFiles: true,
@@ -223,6 +203,176 @@ async function makeEnv(args?: {
 	(env as { replayed: string[] }).replayed = replayed;
 	return env;
 }
+
+describe("direct subscription login and model intent", () => {
+	it("unselected login uses the first live account model and refreshes after switching", async () => {
+		const env = await makeEnv({ pendingSelection: true, noSession: true });
+		vi.spyOn(env.runner, "modelUsable").mockReturnValue(false);
+		expect(env.runner.modelSelectionPending()).toBe(true);
+		await fakeCodexAuth(env.ctx);
+		const discover = vi.fn(async () => ["server-z", "server-a"]);
+		env.ctx.codexLogin!.discoverModels = discover;
+		const refreshed: string[] = [];
+		env.ctx.refreshFooter = () => refreshed.push(env.runner.modelReference());
+		await dispatchCommand("/login openai-codex", env.ctx);
+		expect(discover).toHaveBeenCalledWith({ force: true, signal: expect.any(AbortSignal) });
+		expect(env.runner.modelReference()).toBe("openai-codex/server-z");
+		expect(refreshed).toEqual(["openai-codex/server-z"]);
+		expect(env.runner.modelSelectionPending()).toBe(false);
+	});
+
+	it.each([{ models: [] }, { models: null }])(
+		"empty/offline account list ($models) leaves unselected startup unresolved",
+		async ({ models }) => {
+			const env = await makeEnv({ pendingSelection: true, noSession: true });
+			await fakeCodexAuth(env.ctx);
+			env.ctx.codexLogin!.discoverModels = async () => (models === null ? null : []);
+			await dispatchCommand("/login openai-codex", env.ctx);
+			expect(env.runner.modelReference()).toBe("claude-sonnet-4-5");
+			expect(env.runner.modelSelectionPending()).toBe(true);
+			expect(env.output()).toContain("use /model");
+			expect(env.output()).not.toContain("▪ switched");
+		},
+	);
+
+	it("unavailable deliberate subscription selection is retained even when the live list differs", async () => {
+		const env = await makeEnv({ model: "openai-codex/chosen-unlisted", noSession: true });
+		vi.spyOn(env.runner, "modelUsable").mockReturnValue(false);
+		await fakeCodexAuth(env.ctx);
+		await dispatchCommand("/login openai-codex", env.ctx);
+		expect(env.runner.modelReference()).toBe("openai-codex/chosen-unlisted");
+		expect(env.output()).toContain("keeping your selection");
+		expect(env.output()).not.toContain("▪ switched");
+	});
+
+	it("a deliberate /model choice made before login is not replaced", async () => {
+		const env = await makeEnv({ pendingSelection: true, noSession: true });
+		await dispatchCommand("/model openai-codex/typed-selection", env.ctx);
+		await fakeCodexAuth(env.ctx);
+		await dispatchCommand("/login openai-codex", env.ctx);
+		expect(env.runner.modelReference()).toBe("openai-codex/typed-selection");
+		expect(env.output()).toContain("keeping your selection");
+	});
+
+	it("a different unavailable provider choice is not replaced by API-key login", async () => {
+		const env = await makeEnv({ model: "openai-codex/deliberate", noSession: true });
+		vi.spyOn(env.runner, "modelUsable").mockReturnValue(false);
+		env.ctx.secret = async () => "local-api-key";
+		await dispatchCommand("/login zai", env.ctx);
+		expect(loadApiKey("zai", env.ctx.authStorePath)).toBe("local-api-key");
+		expect(env.runner.modelReference()).toBe("openai-codex/deliberate");
+		expect(env.output()).not.toContain("▪ switched");
+	});
+
+	it("API-key login can resolve only an unselected startup", async () => {
+		const env = await makeEnv({ pendingSelection: true, noSession: true });
+		vi.spyOn(env.runner, "modelUsable").mockReturnValue(false);
+		env.ctx.secret = async () => "local-api-key";
+		await dispatchCommand("/login zai", env.ctx);
+		expect(env.runner.modelReference()).toBe("zai/glm-5.3");
+	});
+
+	it("browser opener failure does not fail login, and no echoed prompt is used", async () => {
+		const env = await makeEnv();
+		const fake = await fakeCodexAuth(env.ctx);
+		const authorized = deferred<string>();
+		env.ctx.codexLogin!.openBrowser = (url) => {
+			authorized.resolve(url);
+			throw new Error("no browser");
+		};
+		env.ctx.secret = async () => {
+			throw new Error("callback must not use echoed REPL input");
+		};
+		const pending = dispatchCommand("/login openai-codex", env.ctx);
+		await fetch(fake.callback(await authorized.promise));
+		await pending;
+		expect(env.output()).toContain("Logged in to OpenAI (ChatGPT plan)");
+		expect(env.output()).not.toContain("no browser");
+	});
+
+	it("logout awaits revocation/local clearing and reports an unconfirmed remote result", async () => {
+		const env = await makeEnv();
+		const fake = await fakeCodexAuth(env.ctx);
+		await loginCodex({
+			authPath: env.ctx.authStorePath,
+			authBaseUrl: fake.baseUrl,
+			callbackPort: 0,
+			onAuth: async ({ url }) => {
+				await fetch(fake.callback(url));
+			},
+		});
+		fake.onRevoke = () => ({ status: 503, body: {} });
+		env.ctx.select = async () => 0;
+		await dispatchCommand("/logout", env.ctx);
+		expect(loadCodexCredential(env.ctx.authStorePath)).toBeNull();
+		expect(env.output()).toContain("Remote revocation was not confirmed");
+		expect(fake.revoked).toHaveLength(2);
+	});
+});
+
+describe("direct subscription picker availability", () => {
+	it("uses live server order, never metadata or stale cached models", async () => {
+		const cached = vi.fn(() => ["old-model"]);
+		const catalog = vi.fn(() => ["metadata-model"]);
+		const result = await buildModelList("openai-codex/explicit", {
+			configured: (family) => family === "openai-codex",
+			discover: async () => ["live-z", "live-a"],
+			cachedCodexIds: cached,
+			catalogIds: catalog,
+		});
+		expect(result.rows.map((row) => row.label)).toEqual([
+			"openai-codex/explicit",
+			"openai-codex/live-z",
+			"openai-codex/live-a",
+		]);
+		expect(result.fallbackNotes).toEqual([]);
+		expect(cached).not.toHaveBeenCalled();
+		expect(catalog).not.toHaveBeenCalled();
+	});
+
+	it("an empty live account list suppresses cached and metadata rows", async () => {
+		const cached = vi.fn(() => ["old-model"]);
+		const result = await buildModelList("explicit", {
+			configured: (family) => family === "openai-codex",
+			discover: async () => [],
+			cachedCodexIds: cached,
+			catalogIds: () => ["metadata-model"],
+		});
+		expect(result.rows).toEqual([{ label: "explicit", description: "current" }]);
+		expect(result.fallbackNotes).toEqual([]);
+		expect(cached).not.toHaveBeenCalled();
+	});
+
+	it("offline account cache is explicitly stale/unverified, not metadata entitlement", async () => {
+		const result = await buildModelList("explicit", {
+			configured: (family) => family === "openai-codex",
+			discover: async () => null,
+			cachedCodexIds: () => ["saved-z", "saved-a"],
+			catalogIds: () => ["metadata-model"],
+		});
+		expect(result.rows.map((row) => row.label)).toEqual([
+			"explicit",
+			"openai-codex/saved-z",
+			"openai-codex/saved-a",
+		]);
+		expect(result.rows[1]?.description).toMatch(/offline\/stale.*unverified/);
+		expect(result.fallbackNotes.join(" ")).toMatch(/offline.*stale/);
+	});
+
+	it.each([{ models: [] }, { models: null }])(
+		"offline empty/unknown cache ($models) never adds legacy seeds",
+		async ({ models }) => {
+			const result = await buildModelList("explicit", {
+				configured: (family) => family === "openai-codex",
+				discover: async () => null,
+				cachedCodexIds: () => (models === null ? null : []),
+				catalogIds: () => ["metadata-model"],
+			});
+			expect(result.rows).toEqual([{ label: "explicit", description: "current" }]);
+			expect(result.fallbackNotes.join(" ")).toMatch(/offline|unknown/);
+		},
+	);
+});
 
 describe("parseCommand", () => {
 	it("parses /model glm-4.6 extra, bare /, and rejects non-slash lines", () => {
@@ -421,7 +571,6 @@ describe("slash commands", () => {
 			"zai/glm-5.3",
 			"zai/glm-5.3-highspeed",
 			"zai/glm-4.7",
-			"openai-codex/gpt-5.5",
 			"openai/gpt-5.2",
 			"deepseek/deepseek-v4-pro",
 			"moonshotai/kimi-k3",
@@ -791,6 +940,47 @@ describe("md commands during a run (review)", () => {
 });
 
 describe("/status (M11)", () => {
+	it("updates native context estimates when switching away and back without inference", async () => {
+		const target = "openai-codex/status-model";
+		const env = await makeEnv({ model: target, noSession: true });
+		const identity = { version: 1 as const, provider: "openai-codex" as const };
+		env.runner.history.push(
+			{
+				role: "assistant",
+				blocks: [
+					{
+						type: "thinking",
+						thinking: "",
+						responses: { ...identity, summary: [], encryptedContent: "FAKE_CIPHER" },
+					},
+				],
+				provenance: { ...identity, model: "status-model" },
+				usage: { inputTokens: 0, outputTokens: 512 },
+				stopReason: "end_turn",
+			},
+			assistant([{ type: "text", text: "away" }], "end_turn", { inputTokens: 4, outputTokens: 1 }),
+		);
+		const routing = await import("../src/provider/resolve.js");
+		const replacement = vi.spyOn(routing, "createProviderFor").mockReturnValue(scriptedProvider([]));
+		try {
+			for (const [reference, tokens] of [
+				[target, 513],
+				["openai-codex/other", 5],
+				["anthropic/status-model", 5],
+				[target, 513],
+			] as const) {
+				await dispatchCommand(`/model ${reference}`, env.ctx);
+				const mark = env.output().length;
+				await dispatchCommand("/status", env.ctx);
+				expect(env.output().slice(mark)).toContain(`▪ context ~${tokens} tokens`);
+			}
+			expect(env.requests).toHaveLength(0);
+		} finally {
+			replacement.mockRestore();
+			env.runner.close();
+		}
+	});
+
 	it("prints model, session, context, and trust lines", async () => {
 		const env = await makeEnv();
 		await dispatchCommand("/status", env.ctx);
@@ -1072,14 +1262,13 @@ describe("/tree (#10 batch 2)", () => {
 		}
 	});
 
-	it("switching families adapts the compaction window both ways (glm-5.3 1M ↔ gpt-5.5 272k)", async () => {
+	it("switching families adapts the compaction window without a legacy subscription metadata floor", async () => {
 		const env = await makeEnv({ model: "glm-5.3" });
 		expect((env.runner as any).settings.contextWindow).toBe(1_000_000);
 		await dispatchCommand("/model openai-codex/gpt-5.5", env.ctx);
-		// switched DOWN to 272k: the gate tightens with the new family's window —
-		// an over-limit history compacts on the next turn instead of 400ing
-		expect((env.runner as any).settings.contextWindow).toBe(272_000);
-		expect(env.runner.contextWindow).toBe(272_000);
+		// Without direct-access metadata, use the conservative unknown-model window.
+		expect((env.runner as any).settings.contextWindow).toBe(131_072);
+		expect(env.runner.contextWindow).toBe(131_072);
 		await dispatchCommand("/model glm-5.3", env.ctx);
 		// switched back UP to 1M: the gate relaxes; compaction no longer fires early
 		expect((env.runner as any).settings.contextWindow).toBe(1_000_000);
@@ -1184,7 +1373,7 @@ describe("/tree (#10 batch 2)", () => {
 		expect(env.runner.contextWindow).toBe(200_000);
 		await dispatchCommand("/model openai-codex/gpt-5.4", env.ctx); // cross-family: provider swaps
 		expect(env.runner.model).toBe("gpt-5.4");
-		expect(env.runner.contextWindow).toBe(272_000);
+		expect(env.runner.contextWindow).toBe(131_072);
 		// pi's showStatus form: consecutive switches print one dim line each
 		expect(env.output()).toContain("Model: zai/glm-4.6");
 		expect(env.output()).toContain("Model: openai-codex/gpt-5.4"); // canonical — the family is visible (P2-5)
@@ -1807,37 +1996,37 @@ describe("/think (#thinking-levels)", () => {
 		expect(cancel.output()).toBe("");
 	});
 
-	it("/login: unknown provider teaches; codex runs the device-code flow in-REPL; a missing secret prompts the env var", async () => {
+	it("/login: unknown provider teaches; codex uses a browser callback; a missing secret prompts the env var", async () => {
 		const env = await makeEnv();
 		await dispatchCommand("/login foo", env.ctx);
 		expect(env.output()).toContain('unknown provider "/login foo"');
 		expect(env.output()).toContain(
 			"known: zai, anthropic, openai, openai-codex, deepseek, moonshotai, moonshotai-cn",
 		);
-		// oauth family (batch B): URL + code render, no secret prompt at all
+		// Callback-only fallback must never ask the REPL's echoed secret prompt.
 		const codex = await makeEnv();
 		codex.ctx.secret = async () => {
 			throw new Error("must not prompt");
 		};
-		const fake = await fakeCodexAuth(); // local device-code server
-		codex.ctx.codexAuthBaseUrl = fake.baseUrl;
+		const fake = await fakeCodexAuth(codex.ctx);
 		await dispatchCommand("/login openai-codex", codex.ctx);
-		expect(codex.output()).toContain("/codex/device and enter code: WXYZ-6789"); // the URL follows the injected base
+		expect(codex.output()).toContain(`${fake.baseUrl}/api/accounts/authorize`);
 		expect(codex.output()).toContain("Logged in to OpenAI (ChatGPT plan)");
-		expect(codex.output()).toContain("▪ switch with /model openai-codex/gpt-5.5");
-		expect(loadCodexCredential(codex.ctx.authStorePath)?.accountId).toBe("acct-login");
+		expect(codex.output()).toContain("▪ switch with /model openai-codex/account-z");
+		expect(loadCodexCredential(codex.ctx.authStorePath)?.subject).toBe(fake.subject);
+		expect(codex.output()).not.toContain("local-code-do-not-log");
 		// legacy ctx (no secret bound): the teaching error names the env var
 		const legacy = await makeEnv();
 		await dispatchCommand("/login zai", legacy.ctx);
 		expect(legacy.output()).toContain("export ZAI_API_KEY=<key>");
 	});
 
-	it("loginNeedsGuard: only the OAuth-capable /login lines take the guarded state", () => {
+	it("loginNeedsGuard: every known fallback login owns the guard through async storage", () => {
 		expect(loginNeedsGuard("/login")).toBe(true); // the picker can land on codex
 		expect(loginNeedsGuard("/login openai-codex")).toBe(true);
 		expect(loginNeedsGuard("/login OpenAI (ChatGPT plan)")).toBe(true); // display name, any case
-		expect(loginNeedsGuard("/login zai")).toBe(false); // short api-key path
-		expect(loginNeedsGuard("/login Z.AI")).toBe(false);
+		expect(loginNeedsGuard("/login zai")).toBe(true); // async storage is exclusive too
+		expect(loginNeedsGuard("/login Z.AI")).toBe(true);
 		expect(loginNeedsGuard("/model")).toBe(false);
 		expect(loginNeedsGuard("hello")).toBe(false);
 	});
@@ -1849,14 +2038,16 @@ describe("/think (#thinking-levels)", () => {
 		expect(empty.output()).toContain("No stored credentials to remove");
 		// a stored zai key + codex token → two rows; env vars never listed
 		const env = await makeEnv();
-		saveApiKey("zai", "sk-z", env.ctx.authStorePath);
-		const cred = { accessToken: "at", refreshToken: "rt", expiresAt: Date.now() + 3600_000, accountId: "a" };
-		// makeEnv always seeds authStorePath; narrow for writeFileSync
-		if (!env.ctx.authStorePath) throw new Error("makeEnv must set authStorePath");
-		writeFileSync(
-			env.ctx.authStorePath,
-			JSON.stringify({ version: 1, apiKeys: { zai: "sk-z" }, codex: { provider: "openai-codex", ...cred } }),
-		);
+		await saveApiKey("zai", "sk-z", env.ctx.authStorePath);
+		const fake = await fakeCodexAuth(env.ctx);
+		await loginCodex({
+			authPath: env.ctx.authStorePath,
+			authBaseUrl: fake.baseUrl,
+			callbackPort: 0,
+			onAuth: async ({ url }) => {
+				await fetch(fake.callback(url));
+			},
+		});
 		let rows: Array<{ label: string; description?: string }> = [];
 		env.ctx.select = async (options) => {
 			rows = options.items;
@@ -1869,7 +2060,7 @@ describe("/think (#thinking-levels)", () => {
 			expect(rows.map((r) => r.label)).toEqual(["OpenAI (ChatGPT plan)", "Z.AI"]); // stored only (deepseek never stored here)
 			expect(env.output()).toContain("Removed stored API key for Z.AI. Environment variables are unchanged.");
 			expect(loadApiKey("zai", env.ctx.authStorePath)).toBeNull();
-			expect(loadCodexCredential(env.ctx.authStorePath)?.accountId).toBe("a"); // untouched
+			expect(loadCodexCredential(env.ctx.authStorePath)?.subject).toBe(fake.subject); // untouched
 			// now remove the codex token (pi's oauth wording)
 			let rows2: Array<{ label: string; description?: string }> = [];
 			env.ctx.select = async (options) => {
@@ -1886,7 +2077,7 @@ describe("/think (#thinking-levels)", () => {
 		}
 		// legacy ctx (no picker): the text path
 		const legacy = await makeEnv();
-		saveApiKey("anthropic", "sk-a", legacy.ctx.authStorePath);
+		await saveApiKey("anthropic", "sk-a", legacy.ctx.authStorePath);
 		await dispatchCommand("/logout", legacy.ctx);
 		expect(legacy.output()).toContain("stored: Anthropic");
 		expect(legacy.output()).toContain("edit ~/.ink/auth.json");
@@ -1896,8 +2087,7 @@ describe("/think (#thinking-levels)", () => {
 		// Review P2 (batch B): aborting inside a fetch's network window used
 		// to surface as "login failed — This operation was aborted".
 		const env = await makeEnv();
-		const fake = await fakeCodexAuth({ delayUserCodeMs: 400 }); // slow usercode
-		env.ctx.codexAuthBaseUrl = fake.baseUrl;
+		await fakeCodexAuth(env.ctx, { delayTokenMs: 400 });
 		env.ctx.onLongOpAbort = (controller) => {
 			if (controller !== null) setTimeout(() => controller.abort(), 150); // inside the fetch
 		};
@@ -1912,19 +2102,18 @@ describe("/think (#thinking-levels)", () => {
 		// cancellation: the machine aborts the registered controller — here the
 		// command path is exercised with a self-aborting one
 		const cancel = await makeEnv();
-		const fake = await fakeCodexAuth({ hang: true }); // polls never succeed
-		cancel.ctx.codexAuthBaseUrl = fake.baseUrl;
+		await fakeCodexAuth(cancel.ctx, { hang: true });
 		cancel.ctx.onLongOpAbort = (controller) => {
 			if (controller !== null) setTimeout(() => controller.abort(), 150);
 		};
 		await dispatchCommand("/login openai-codex", cancel.ctx);
-		expect(cancel.output()).toContain("enter code: WXYZ-6789"); // the URL line rendered first
+		expect(cancel.output()).toContain("waiting for browser authentication");
 		expect(cancel.output()).not.toContain("Logged in");
 		expect(cancel.output()).not.toContain("failed"); // silent cancel (pi)
 		expect(loadCodexCredential(cancel.ctx.authStorePath)).toBeNull();
 		// failure: an unreachable auth base surfaces as an error, not a hang
 		const dead = await makeEnv();
-		dead.ctx.codexAuthBaseUrl = "http://127.0.0.1:1";
+		dead.ctx.codexLogin = { authBaseUrl: "http://127.0.0.1:1", openBrowser: () => undefined };
 		await dispatchCommand("/login openai-codex", dead.ctx);
 		expect(dead.output()).toContain("login failed");
 	});
@@ -1935,8 +2124,7 @@ describe("/think (#thinking-levels)", () => {
 		env.ctx.secret = async () => "sk-dn";
 		await dispatchCommand("/login Z.AI", env.ctx);
 		expect(loadApiKey("zai", env.ctx.authStorePath)).toBe("sk-dn");
-		const fake = await fakeCodexAuth();
-		env.ctx.codexAuthBaseUrl = fake.baseUrl;
+		await fakeCodexAuth(env.ctx);
 		await dispatchCommand("/login openai (chatgpt plan)", env.ctx);
 		expect(env.output()).toContain("Logged in to OpenAI (ChatGPT plan)"); // matched the codex row by name
 		// whitespace-only = cancel (readline delivers raw spaces)

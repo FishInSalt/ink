@@ -46,7 +46,8 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 	"kimi-k2.7-code": 262_144,
 	"kimi-k2.7-code-highspeed": 262_144,
 	"kimi-k3": 1_048_576,
-	// OpenAI Codex — ChatGPT subscription models (pi openai-codex.json)
+	// Historical static floor for non-subscription lookups. Direct ChatGPT
+	// access must not reuse legacy Codex windows (see lookup boundary below).
 	"gpt-6-astra": 272_000, // pi.dev catalog 2026-09
 	"gpt-5.3-codex-spark": 128_000,
 	"gpt-5.4": 272_000,
@@ -120,17 +121,8 @@ const MODEL_COSTS: Partial<Record<ProviderName, Record<string, ModelCost>>> = {
 	// KIMI_COSTS). An EXPLICIT alias section keeps provider-scoped lookups
 	// honest — authored data, not a runtime cross-provider fallback.
 	"moonshotai-cn": KIMI_COSTS,
-	"openai-codex": {
-		// OpenAI Codex — ChatGPT subscription; rates mirror the API list (pi openai-codex.json)
-		"gpt-6-astra": { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, subscription: true },
-		"gpt-5.3-codex-spark": { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0, subscription: true },
-		"gpt-5.4": { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0, subscription: true },
-		"gpt-5.4-mini": { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0, subscription: true },
-		"gpt-5.5": { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0, subscription: true },
-		"gpt-5.6-luna": { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 1.25, subscription: true },
-		"gpt-5.6-sol": { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25, subscription: true },
-		"gpt-5.6-terra": { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 3.125, subscription: true },
-	},
+	// Direct subscription rates are metadata from pi.dev/openai only.
+	// The legacy Codex floor is intentionally not a billing estimate.
 };
 
 // circular-safe: discover.js owns the runtime map; import lazily via type-only + accessor
@@ -194,9 +186,12 @@ export function contextWindowInfoFor(reference: string): ContextWindowInfo {
 	// metadata) > static table > default
 	const entry = catalogEntryForReference(reference);
 	if (entry?.contextWindow !== undefined) return { contextWindow: entry.contextWindow, source: "catalog" };
-	const discovered = discoveredWindowFor(modelId);
+	const ref = parseModelRef(reference);
+	// Runtime discovery windows are historically unscoped. Do not import a
+	// compatibility gateway's metadata into direct subscription requests.
+	const discovered = ref.provider === "openai-codex" ? undefined : discoveredWindowFor(modelId);
 	if (discovered !== undefined) return { contextWindow: discovered, source: "discovery" };
-	const fixed = MODEL_CONTEXT_WINDOWS[modelId];
+	const fixed = ref.provider === "openai-codex" ? undefined : MODEL_CONTEXT_WINDOWS[modelId];
 	if (fixed !== undefined) return { contextWindow: fixed, source: "static" };
 	return { contextWindow: DEFAULT_CONTEXT_WINDOW, source: "fallback" };
 }

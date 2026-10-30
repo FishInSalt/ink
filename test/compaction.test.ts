@@ -81,6 +81,36 @@ describe("token estimation", () => {
 		expect(est.tokens).toBe(estimateTokens(user("hello world!")));
 	});
 
+	it.each([undefined, "anthropic/m", "openai/m", "openai-codex/m"])(
+		"ordinary histories retain estimates and cache arithmetic with target %s",
+		(target) => {
+			const measured = assistant([{ type: "text", text: "ok" }], "end_turn", {
+				inputTokens: 100,
+				outputTokens: 20,
+				cacheReadTokens: 30,
+				cacheWriteTokens: 40,
+			});
+			const thinking = assistant([{ type: "thinking", thinking: "abcd" }]);
+			expect(estimateTokens(thinking, target)).toBe(1); // no output floor
+			const messages = [user("before"), measured, toolResult, user("abcd")];
+			expect(estimateContextTokens(messages, 0, target)).toEqual({
+				tokens: 190 + estimateTokens(toolResult) + 1,
+				measured: true,
+			});
+			expect(estimateContextTokens(messages, 2, target)).toEqual({
+				tokens: messages.reduce((sum, message) => sum + estimateTokens(message), 0),
+				measured: false,
+			});
+			expect(findCutIndex(messages, 3, target)).toBe(findCutIndex(messages, 3));
+		},
+	);
+
+	it("preserves the existing ordinary usageMissing anchor contract", () => {
+		const message = assistant([{ type: "text", text: "ok" }]);
+		message.usageMissing = true;
+		expect(estimateContextTokens([message], 0, "openai-codex/m")).toEqual({ tokens: 15, measured: true });
+	});
+
 	it("shouldCompact triggers when context nears the window", () => {
 		const settings = { reserveTokens: 16_384, keepRecentTokens: 20_000, contextWindow: 131_072 };
 		expect(shouldCompact(100_000, settings)).toBe(false);
@@ -262,6 +292,41 @@ describe("compactSession", () => {
 		}
 		const tail = context.messages.slice(1);
 		if (tail.length > 0) expect(["user", "assistant"]).toContain(tail[0]?.role);
+	});
+
+	it("forwards the rebuilt store boundary so a second compaction cannot quote stale usage", async () => {
+		const dir = await mkTempDirAsync("ink-compact-");
+		const session = SessionStore.create(path.join(dir, "s.jsonl"), "/p");
+		const stale = assistantText("retained", 224852);
+		session.appendMessage(user("old work"));
+		session.appendCompaction("first checkpoint", [stale], 224872);
+		session.appendMessage(user("new work"));
+		const before = session.buildContext();
+		const result = await compactSession({
+			session,
+			provider: summarizerProvider("updated checkpoint"),
+			model: "m",
+			settings: { reserveTokens: 32, keepRecentTokens: 1, contextWindow: 131072 },
+		});
+		expect(result).not.toBeNull();
+		expect(result?.tokensBefore).toBe(
+			before.messages.reduce((sum, message) => sum + estimateTokens(message), 0),
+		);
+		expect(result?.tokensBefore).toBeLessThan(224852);
+	});
+
+	it("compactHistory honors minAnchorIndex for tokensBefore without excluding retained content", async () => {
+		const stale = assistantText("retained", 224852);
+		const messages = [summaryToMessage("first checkpoint"), stale, user("new work")];
+		const result = await compactHistory({
+			messages,
+			minAnchorIndex: 2,
+			provider: summarizerProvider("updated checkpoint"),
+			model: "m",
+			settings: { reserveTokens: 32, keepRecentTokens: 1, contextWindow: 131072 },
+		});
+		expect(result?.tokensBefore).toBe(messages.reduce((sum, message) => sum + estimateTokens(message), 0));
+		expect(result?.retainedTail).toEqual([messages[2]]);
 	});
 
 	it("sends only the pre-cut messages to the summarizer", async () => {

@@ -1,4 +1,5 @@
 import { loadApiKey } from "./auth-store.js";
+import { freshCachedCodexModelIds } from "./discover.js";
 import { LOGIN_TARGETS } from "./login-targets.js";
 import { configuredFamilies } from "./model-availability.js";
 import type { ProviderName } from "./resolve.js";
@@ -47,21 +48,25 @@ export function credentialSourceFamilies(): ProviderName[] {
 }
 
 export interface StartupModelFallback {
-	/** The family's curated recommended model (LOGIN_TARGETS.switchHint). */
+	/** API-key recommendation or first server-listed subscription slug. */
 	reference: string;
 	family: ProviderName;
 }
 
-/** D1/D2: the family's switchHint, or undefined when the credential set is
- *  empty or not unique. Never invents an id: the switchHint is the exact
- *  reference the /login tail already teaches. */
+/** D1/D2: resolve only an unselected startup with one credential source.
+ *  Subscription availability is account-scoped: stale/unknown/empty
+ *  lists remain unresolved, never a legacy Codex recommendation. */
 export function resolveStartupModelFallback(): StartupModelFallback | undefined {
 	const families = credentialSourceFamilies();
 	if (families.length !== 1) return undefined;
 	const family = families[0];
 	if (family === undefined) return undefined;
+	if (family === "openai-codex") {
+		const id = freshCachedCodexModelIds()?.[0];
+		return id === undefined ? undefined : { reference: `openai-codex/${id}`, family };
+	}
 	const target = LOGIN_TARGETS.find((t) => t.family === family);
-	if (target === undefined) return undefined;
+	if (target?.switchHint === undefined) return undefined;
 	return { reference: target.switchHint, family };
 }
 

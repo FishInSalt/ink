@@ -4,7 +4,7 @@
  * pi's model of the world:
  *  - a 7-level ladder (off/minimal/low/medium/high/xhigh/max);
  *  - per-model metadata (pi's generated catalog: packages/ai/src/providers/
- *    data/*.json, and pi.dev/api/models for openai-codex): `reasoning`
+ *    data/*.json, and pi.dev/openai for direct subscriptions): `reasoning`
  *    (has a knob at all), `thinkingLevelMap` (level → wire value, where
  *    null = the model cannot do that level), and `compat` flags
  *    (forceAdaptiveThinking for Claude ≥4.6, supportsReasoningEffort for
@@ -30,7 +30,7 @@ export type ThinkingStyle =
 	| "glm-anthropic" // Z.ai GLM on the anthropic-compat protocol: binary enable
 	| "openai-effort" // OpenAI Chat Completions: reasoning_effort
 	| "glm-openai" // Z.ai GLM on openai-compat: native thinking object
-	| "codex-effort" // ChatGPT backend Responses: reasoning.effort
+	| "codex-effort" // Direct subscription Responses: reasoning.effort
 	| "deepseek" // DeepSeek official: thinking {type} + reasoning_effort
 	| "auto"; // deepseek-reasoner via openai-compat: reasons by default, no request knob
 
@@ -396,34 +396,8 @@ const MODEL_RULES: ReadonlyArray<{ provider: string; prefix: string; meta: Model
 		meta: { style: "glm-openai", supportsEffort: true, levelMap: GLM_52_MAP },
 	},
 	{ provider: "zai", prefix: "glm-", meta: { style: "glm-openai" } },
-	// ---- chatgpt backend responses ----
-	{
-		provider: "openai-codex",
-		prefix: "gpt-6",
-		meta: {
-			style: "codex-effort",
-			levelMap: {
-				off: null,
-				minimal: "low",
-				low: "low",
-				medium: "medium",
-				high: "high",
-				xhigh: "xhigh",
-				max: "max",
-			},
-		},
-	},
-	{
-		provider: "openai-codex",
-		prefix: "gpt-5.6",
-		meta: { style: "codex-effort", levelMap: { minimal: "low", xhigh: "xhigh", max: "max" } },
-	},
-	// pi.dev's pattern for 5.3-spark/5.4/5.5 (+ unknown codex ids)
-	{
-		provider: "openai-codex",
-		prefix: "gpt-",
-		meta: { style: "codex-effort", levelMap: { minimal: "low", xhigh: "xhigh" } },
-	},
+	// Direct subscriptions use ordinary OpenAI metadata/rules, not
+	// the former ChatGPT backend's Codex-specific thinking ladders.
 ];
 
 /** M14 (#model-catalog): the pi.dev catalog entry for this exact id, mapped
@@ -528,13 +502,17 @@ function sanitizeCatalogLevelMap(
 export function thinkingMetaFor(provider: string, modelId: string): ModelThinkingMeta | null {
 	const fromCatalog = catalogThinkingMeta(provider, modelId);
 	if (fromCatalog !== undefined) return fromCatalog;
+	// Share only the frozen OpenAI rule source, not another provider's live
+	// overlay. Exact direct-subscription metadata stays provider-scoped.
+	const rulesProvider = provider === "openai-codex" ? "openai" : provider;
 	let best: { prefix: string; meta: ModelThinkingMeta } | null = null;
 	for (const rule of MODEL_RULES) {
-		if (rule.provider !== provider) continue;
+		if (rule.provider !== rulesProvider) continue;
 		if (!modelId.startsWith(rule.prefix)) continue;
 		if (best === null || rule.prefix.length > best.prefix.length) best = rule;
 	}
-	return best?.meta ?? null;
+	if (best === null) return null;
+	return provider === "openai-codex" ? { ...best.meta, style: "codex-effort" } : best.meta;
 }
 
 /** Back-compat shim for call sites that only need the family style. */

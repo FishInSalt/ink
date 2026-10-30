@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompactionSettings } from "../src/core/compaction.js";
 import type { LLMRequest } from "../src/provider/types.js";
-import { assistant, makeRenderer, scriptedProvider } from "./helpers/fakes.js";
+import { assistant, makeRenderer, scriptedProvider, user } from "./helpers/fakes.js";
 import { mkTempDir } from "./helpers/mktemp.js";
 
 let base: string;
@@ -47,6 +47,7 @@ beforeEach(async () => {
 	loadCatalogCache();
 });
 afterEach(() => {
+	vi.restoreAllMocks();
 	vi.unstubAllEnvs();
 });
 
@@ -230,4 +231,173 @@ describe("Runner model-aware compaction wiring", () => {
 		expect(requests).toHaveLength(4);
 		expect(requests.slice(2).every((r) => r.model === "small")).toBe(true);
 	});
+});
+
+describe("Runner Responses target-aware compaction wiring", () => {
+	function encryptedAssistant(outputTokens: number) {
+		const identity = { version: 1 as const, provider: "openai-codex" as const };
+		return {
+			...assistant(
+				[
+					{
+						type: "thinking",
+						thinking: "",
+						responses: { ...identity, itemId: "rs_hidden", summary: [], encryptedContent: "FAKE_CIPHER" },
+					},
+					{ type: "text", text: "visible" },
+				],
+				"end_turn",
+				{ inputTokens: 90000, outputTokens },
+			),
+			provenance: { ...identity, model: "shared" },
+			modelReference: "openai-codex/shared",
+		};
+	}
+
+	it.each(["openai-codex/other", "anthropic/shared"])(
+		"switching to %s avoids false compaction and switching back restores hidden accounting",
+		async (otherReference) => {
+			vi.stubEnv("INK_CONTEXT_WINDOW", "100000");
+			const { createSession } = await import("../src/core/session/manager.js");
+			const cwd = join(base, "project");
+			const store = createSession(cwd, base);
+			const native = encryptedAssistant(90000);
+			// Ciphertext retained below the boundary still invalidates newer
+			// usage anchors from calls that omitted it while switched away.
+			store.appendCompaction("previous checkpoint", [user("old work"), native], 180000);
+			store.appendMessage(user("new work"));
+			const requests: LLMRequest[] = [];
+			const provider = scriptedProvider(
+				["away", "SUMMARY", "back"].map((text) => assistant([{ type: "text", text }])),
+				requests,
+				"not-a-provider-family",
+			);
+			const routing = await import("../src/provider/resolve.js");
+			vi.spyOn(routing, "createProviderFor").mockReturnValue(provider);
+			const { createRunner } = await import("../src/runner.js");
+			const { renderer, output } = makeRenderer();
+			const runner = await createRunner({
+				cwd,
+				argv: [],
+				model: "openai-codex/shared",
+				maxTokens: 1024,
+				maxTurns: 3,
+				noContextFiles: true,
+				noSession: false,
+				resume: store.header.id,
+				sessionBaseDir: base,
+				renderer,
+				provider,
+				agentsHomeDir: base,
+			});
+			try {
+				expect(runner.contextEstimateFloor).toBe(3);
+				expect(output()).toContain("~90k tokens (compacted)");
+				runner.setModel(otherReference);
+				await runner.runTurn({ userMessage: "away" });
+				expect(requests).toHaveLength(1);
+				expect(requests[0]?.model).toBe(otherReference.split("/")[1]);
+				expect(runner.history).toContainEqual(native);
+				expect(runner.session?.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+
+				runner.setModel("openai-codex/shared");
+				await runner.runTurn({
+					userMessage: "back",
+					getSteeringMessages: () => {
+						// A switch after run-entry must not change its captured target.
+						runner.setModel(otherReference);
+						return [];
+					},
+				});
+				expect(requests).toHaveLength(3);
+				expect(requests[1]).toMatchObject({ model: "shared", tools: [] });
+				expect(requests[2]?.model).toBe("shared");
+				expect(runner.history[0]).toMatchObject({
+					role: "user",
+					content: expect.stringContaining("SUMMARY"),
+				});
+				const compactions = runner.session?.getEntries().filter((entry) => entry.type === "compaction");
+				expect(compactions).toHaveLength(2);
+				expect(compactions?.at(-1)).toMatchObject({ modelReference: "openai-codex/shared" });
+			} finally {
+				runner.close();
+			}
+		},
+	);
+
+	it.each([
+		["openai-codex", "not-a-provider-family", 2000],
+		["anthropic", "openai-codex", 2],
+	] as const)(
+		"manual compaction uses declared %s target, not provider.name=%s, for the boundary, cut and tokensAfter",
+		async (family, providerName, nativeTokens) => {
+			vi.stubEnv("INK_CONTEXT_WINDOW", "100000");
+			vi.stubEnv("INK_KEEP_RECENT", "1000");
+			const compaction = await import("../src/core/compaction.js");
+			const compactSession = vi.spyOn(compaction, "compactSession");
+			const { createSession } = await import("../src/core/session/manager.js");
+			const cwd = join(base, "project");
+			const store = createSession(cwd, base);
+			const stale = assistant([{ type: "text", text: "x".repeat(4800) }], "end_turn", {
+				inputTokens: 90000,
+				outputTokens: 1,
+			});
+			const native = encryptedAssistant(2000);
+			// A 1k keep budget stops at native reasoning only for the exact target;
+			// canonical fallback must also keep the preceding 1.2k text message.
+			store.appendCompaction("previous checkpoint", [user("old work"), stale, native], 99999);
+			store.appendMessage(user("tail"));
+			const tokensBefore =
+				compaction.estimateTokens(store.buildContext().messages[0]!) + 2 + 1200 + nativeTokens + 1;
+			const retainedTail = family === "openai-codex" ? [native, user("tail")] : [stale, native, user("tail")];
+			const tokensAfter = 2 + (family === "openai-codex" ? 0 : 1200) + nativeTokens + 1;
+			const requests: LLMRequest[] = [];
+			const provider = scriptedProvider(
+				[assistant([{ type: "text", text: "SUMMARY" }])],
+				requests,
+				providerName,
+			);
+			const { createRunner } = await import("../src/runner.js");
+			const { renderer } = makeRenderer();
+			const target = `${family}/shared`;
+			const runner = await createRunner({
+				cwd,
+				argv: [],
+				model: target,
+				maxTokens: 1024,
+				maxTurns: 3,
+				noContextFiles: true,
+				noSession: false,
+				resume: store.header.id,
+				sessionBaseDir: base,
+				renderer,
+				provider,
+				agentsHomeDir: base,
+			});
+			try {
+				expect(runner.contextEstimateFloor).toBe(4);
+				expect(await runner.compactNow()).toBe("compacted");
+				expect(compactSession).toHaveBeenCalledExactlyOnceWith(
+					expect.objectContaining({ model: "shared", modelReference: target }),
+				);
+				expect(await compactSession.mock.results[0]?.value).toMatchObject({
+					tokensBefore,
+					tokensAfter,
+					retainedCount: retainedTail.length,
+				});
+				expect(runner.history.slice(1)).toEqual(retainedTail);
+				expect(runner.session?.getEntries().at(-1)).toMatchObject({
+					type: "compaction",
+					modelReference: target,
+					tokensBefore,
+					retainedTail,
+				});
+				expect(requests).toHaveLength(1);
+				expect(requests[0]).toMatchObject({ model: "shared", tools: [] });
+				expect(JSON.stringify(requests[0])).not.toMatch(/FAKE_CIPHER|rs_hidden|provenance|encryptedContent/);
+			} finally {
+				runner.close();
+			}
+		},
+	);
 });

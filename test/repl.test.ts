@@ -5,11 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "../src/core/messages.js";
 import type { Tool } from "../src/core/tools/types.js";
 import { VERSION } from "../src/format.js";
-import { loadApiKey } from "../src/provider/auth-store.js";
+import { loadApiKey, saveApiKey } from "../src/provider/auth-store.js";
 import type { LLMProvider, LLMRequest } from "../src/provider/types.js";
 import { Renderer } from "../src/render.js";
 import { runRepl } from "../src/repl/repl.js";
 import { createRunner, type Runner } from "../src/runner.js";
+import { FakeCodexOidc } from "./helpers/codex-auth-fake.js";
 import {
 	assistant,
 	type FakeConsole,
@@ -963,7 +964,7 @@ describe("legacy-shell secret (the /login prompt, readline side)", () => {
 			await ticks(2);
 			expect(fake.output()).toContain("Enter Z.AI API key");
 			fake.send("sk-legacy\n");
-			await ticks(3);
+			await waitUntil(() => fake.output().includes("Saved API key for Z.AI"));
 			expect(loadApiKey("zai")).toBe("sk-legacy");
 			expect(fake.output()).toContain("Saved API key for Z.AI");
 			fake.send("/exit\n");
@@ -981,8 +982,86 @@ describe("legacy-shell secret (the /login prompt, readline side)", () => {
 	});
 });
 
+describe("asynchronous API-key login machine guard", () => {
+	it("Ctrl+C cancels a contended API-key save before lock release and preserves existing keys", async () => {
+		const env = await startRepl({ noSession: true });
+		const authPath = path.join(env.baseDir, "auth.json");
+		vi.stubEnv("INK_AUTH_PATH", authPath);
+		await saveApiKey("zai", "previous-key", authPath);
+		await saveApiKey("openai", "unrelated-key", authPath);
+		const before = readFileSync(authPath, "utf8");
+		const { withAuthStoreLock } = await import("../src/provider/auth-storage.js");
+		const acquired = gate();
+		const release = gate();
+		const held = withAuthStoreLock(authPath, async () => {
+			acquired.resolve();
+			await release.promise;
+		});
+		await acquired.promise;
+		try {
+			env.send("/login zai\n");
+			await waitUntil(() => env.output().includes("Enter Z.AI API key"));
+			env.send("cancelled-replacement\n");
+			await new Promise((resolve) => setTimeout(resolve, 60));
+			expect(env.output()).not.toContain("Saved API key for Z.AI");
+			env.fake.interrupt();
+			// This must exit while the other writer still owns the lock.
+			env.send("/exit\n");
+			await expect(
+				Promise.race([
+					env.repl,
+					new Promise((_, reject) =>
+						setTimeout(() => reject(new Error("Login cancellation waited for store lock")), 1000),
+					),
+				]),
+			).resolves.toBe(0);
+			expect(readFileSync(authPath, "utf8")).toBe(before);
+			expect(env.output()).not.toContain("authentication cancelled");
+			expect(env.output()).not.toContain("compacting — press");
+			expect(env.exitCodes).toEqual([]);
+		} finally {
+			release.resolve();
+			await held;
+			env.fake.eof();
+			await env.repl;
+		}
+		await saveApiKey("anthropic", "later-key", authPath);
+		expect(loadApiKey("zai", authPath)).toBe("previous-key");
+		expect(loadApiKey("openai", authPath)).toBe("unrelated-key");
+		expect(env.output()).not.toContain("Saved API key for Z.AI");
+	});
+
+	it("a model turn cannot run while the key write is waiting for the shared store lock", async () => {
+		const env = await startRepl({ noSession: true });
+		const authPath = path.join(env.baseDir, "auth.json");
+		vi.stubEnv("INK_AUTH_PATH", authPath);
+		const { withAuthStoreLock } = await import("../src/provider/auth-storage.js");
+		const acquired = gate();
+		const release = gate();
+		const held = withAuthStoreLock(authPath, async () => {
+			acquired.resolve();
+			await release.promise;
+		});
+		await acquired.promise;
+		env.send("/login zai\n");
+		await waitUntil(() => env.output().includes("Enter Z.AI API key"));
+		env.send("local-stored-key\n");
+		env.send("hello-after-login\n");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(env.requests).toHaveLength(0);
+		release.resolve();
+		await held;
+		await waitUntil(() => env.output().includes("Saved API key for Z.AI"));
+		await waitUntil(() => env.requests.length === 1);
+		expect(loadApiKey("zai", authPath)).toBe("local-stored-key");
+		expect(JSON.stringify(env.requests)).not.toContain("local-stored-key");
+		env.send("/exit\n");
+		expect(await env.repl).toBe(0);
+	});
+});
+
 describe("/login codex guarded state (batch B, machine level)", () => {
-	it("Ctrl+C aborts the OAuth poll (no force-quit counting); the REPL stays usable; nothing persists", async () => {
+	it("Ctrl+C aborts browser authorization (no force-quit counting); the REPL stays usable; nothing persists", async () => {
 		const baseDir = await mkTempDirAsync("ink-loginb-");
 		const requests: LLMRequest[] = [];
 		const fake = makeConsole({ tty: true });
@@ -1004,37 +1083,15 @@ describe("/login codex guarded state (batch B, machine level)", () => {
 			renderer,
 			provider: scriptedProvider([assistant([{ type: "text", text: "ok" }])], requests),
 		});
-		// a hang-forever device server: the usercode answers, polls never do
-		let hangServer: import("node:http").Server;
-		const { createServer } = await import("node:http");
-		hangServer = createServer((req, res) => {
-			const chunks: Buffer[] = [];
-			req.on("data", (c) => chunks.push(c as Buffer));
-			req.on("end", () => {
-				if (req.url === "/api/accounts/deviceauth/usercode") {
-					res.writeHead(200, { "content-type": "application/json" });
-					res.end(JSON.stringify({ device_auth_id: "d", user_code: "HANG-0000", interval: 0 }));
-					return;
-				}
-				if (req.url === "/api/accounts/deviceauth/token") {
-					res.writeHead(403, { "content-type": "application/json" });
-					res.end("{}");
-					return;
-				}
-				res.writeHead(404);
-				res.end("{}");
-			});
-		});
-		await new Promise<void>((r) => hangServer.listen(0, "127.0.0.1", r));
-		const hangBase = `http://127.0.0.1:${(hangServer.address() as { port: number }).port}`;
+		const oidc = new FakeCodexOidc();
+		await oidc.start();
 		const authPath = path.join(baseDir, "auth.json");
 		const prevAuth = process.env.INK_AUTH_PATH;
-		const prevCodexBase = process.env.INK_CODEX_AUTH_BASE;
 		process.env.INK_AUTH_PATH = authPath;
-		process.env.INK_CODEX_AUTH_BASE = hangBase;
 		const repl = runRepl({
 			runner,
 			commands: [],
+			codexLogin: { authBaseUrl: oidc.baseUrl, callbackPort: 0, openBrowser: () => undefined },
 			input: fake.stdin,
 			output: fake.stdout,
 			interactive: true,
@@ -1045,8 +1102,8 @@ describe("/login codex guarded state (batch B, machine level)", () => {
 		try {
 			await ticks(2);
 			fake.send("/login openai-codex\n");
-			await new Promise((r) => setTimeout(r, 300)); // usercode + first poll
-			expect(fake.output()).toContain("enter code: HANG-0000");
+			await waitUntil(() => fake.output().includes("waiting for browser authentication"));
+			expect(fake.output()).toContain(`${oidc.baseUrl}/api/accounts/authorize`);
 			// Review P1 (batch B): a command typed mid-login used to disarm the
 			// cancel — its runCommand finally nulled the controller and a double
 			// Ctrl+C force-quit over the live poll. /help fully runs (unstateful);
@@ -1067,9 +1124,7 @@ describe("/login codex guarded state (batch B, machine level)", () => {
 		} finally {
 			if (prevAuth === undefined) delete process.env.INK_AUTH_PATH;
 			else process.env.INK_AUTH_PATH = prevAuth;
-			if (prevCodexBase === undefined) delete process.env.INK_CODEX_AUTH_BASE;
-			else process.env.INK_CODEX_AUTH_BASE = prevCodexBase;
-			await new Promise<void>((r) => hangServer.close(() => r()));
+			await oidc.close();
 		}
 	});
 });

@@ -42,7 +42,8 @@ npm exec -- ink-agent@latest --help
 
 Sign in with `/login` inside a session — pick a provider and enter its
 API key (stored in `~/.ink/auth.json`, where it beats the environment
-variable); the ChatGPT plan signs in via OAuth device code. Or set an
+variable); the ChatGPT plan signs in through browser OAuth. Existing device-code
+users run `ink login` once to authorize the new connection. Or set an
 environment variable before launching (e.g.
 `export ANTHROPIC_API_KEY=sk-ant-...`; all providers and credential
 methods are in [providers.md](docs/providers.md)). Give Ink a task.

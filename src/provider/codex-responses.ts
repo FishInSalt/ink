@@ -1,373 +1,61 @@
 import { createHash } from "node:crypto";
-import type { AgentMessage, AssistantBlock, ContentBlock, StopReason, Usage } from "../core/messages.js";
+import type { StopReason, Usage } from "../core/messages.js";
 import { getCodexAccessToken } from "./codex-auth.js";
 import {
-	abortSafe,
-	downgradeUnsupportedImages,
-	parseSse,
-	postJsonWithRetry,
-	StreamInterruptedError,
-	safeParseJson,
-	wrapStreamInterruptions,
-} from "./shared.js";
+	CodexResponseError,
+	diagnosticField,
+	protocolError,
+	record,
+	responseError,
+} from "./responses-errors.js";
+import { toResponsesInput } from "./responses-history.js";
+import { CodexOutput } from "./responses-output.js";
+import { parseResponsesSse } from "./responses-sse.js";
+import { postResponses, responsesEndpoint } from "./responses-transport.js";
+import { abortSafe, downgradeUnsupportedImages, wrapStreamInterruptions } from "./shared.js";
 import { clampThinkingLevel, effortFor, thinkingMetaFor } from "./thinking.js";
 import type { LLMEvent, LLMProvider, LLMRequest } from "./types.js";
 import { modelSupportsVision } from "./vision.js";
 
-/**
- * OpenAI Responses wire protocol as spoken by the Codex backend
- * (chatgpt.com/backend-api/codex/responses) — the ChatGPT-subscription
- * credential path. Auth comes from the device-code OAuth store
- * (~/.ink/auth.json, `ink login`); the chatgpt-account-id header is derived
- * from the access token's JWT claim.
- *
- * Wire shape differs from both prior protocols in the ways that matter:
- *   - the system prompt rides as the top-level `instructions` field
- *   - messages are `input` ITEMS: user text as input_text parts, a tool call
- *     as a standalone {type:"function_call"} item, results as
- *     {type:"function_call_output"} items
- *   - tools are flat {type:"function", name, parameters} (no nested function
- *     wrapper, unlike Chat Completions)
- *   - streams use `event:` lines: response.output_item.added creates a slot
- *     per output_index, deltas flow per slot, response.completed terminates
- *   - usage.input_tokens INCLUDES cached tokens — subtract for the
- *     anthropic-compatible inputTokens semantics
- *
- * Reasoning output (response.reasoning_* events) stays ignored: the codex
- * Responses protocol surfaces no reasoning deltas here, so there is
- * nothing to stream or store (the request-side reasoning.effort knob
- * landed with #thinking-levels).
- */
+export { CodexResponseError } from "./responses-errors.js";
 
-const DEFAULT_BASE_URL = "https://chatgpt.com/backend-api";
-
-/** Hash the complete conversation ID into a bounded, header-safe identity. */
+/** The complete identity stays hashed; raw session IDs never leave Ink. */
 function sessionKey(sessionId: unknown): string | undefined {
 	if (typeof sessionId !== "string" || sessionId === "") return undefined;
 	return createHash("sha256").update("ink-codex-session-v1\0").update(sessionId).digest("hex");
 }
 
 export interface CodexResponsesProviderOptions {
+	/** API base, default https://api.openai.com/v1 (not the old backend-api). */
 	baseUrl?: string;
-	/** Injectable for tests; default: the OAuth credential store. */
-	auth?: () => Promise<{ accessToken: string; accountId: string }>;
+	/** Test seam; HTTP is allowed only with explicit loopback base + injection. */
+	auth?: (options?: { signal?: AbortSignal }) => Promise<{ accessToken: string }>;
+	fetch?: typeof fetch;
 }
 
-interface InputItem {
-	type?: string;
-	role?: string;
-	content?: unknown;
-	call_id?: string;
-	name?: string;
-	arguments?: string;
-	output?: string | unknown[];
-	[key: string]: unknown;
-}
-
-/** pi openai-responses-shared parity (M13 §7): text-only → the pre-M13
- *  input_text shape; with images → input_image parts with data URLs. */
-function toUserInputContent(content: string | ContentBlock[]): unknown {
-	if (typeof content === "string") return [{ type: "input_text", text: content }];
-	const parts: unknown[] = [];
-	for (const block of content) {
-		if (block.type === "text") parts.push({ type: "input_text", text: block.text });
-		else
-			parts.push({
-				type: "input_image",
-				detail: "auto",
-				image_url: `data:${block.mimeType};base64,${block.data}`,
-			});
-	}
-	return parts;
-}
-
-/** function_call_output: string for text-only, the input-part array when
- *  images ride the result (pi convertToolResultOutput parity). */
-function toToolOutput(content: string | ContentBlock[]): string | unknown[] {
-	if (typeof content === "string") return content;
-	const text = content
-		.filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
-		.map((b) => b.text)
-		.join("\n");
-	const images = content.filter((b): b is Extract<ContentBlock, { type: "image" }> => b.type === "image");
-	if (images.length === 0) return text;
-	const parts: unknown[] = [];
-	if (text !== "") parts.push({ type: "input_text", text });
-	for (const image of images) {
-		parts.push({
-			type: "input_image",
-			detail: "auto",
-			image_url: `data:${image.mimeType};base64,${image.data}`,
-		});
-	}
-	return parts;
-}
-
-function toInputItems(systemIgnored: string, messages: AgentMessage[]): InputItem[] {
-	// system rides as `instructions` — the caller sets it; this parameter is
-	// kept for signature symmetry with the other adapters' translators.
-	void systemIgnored;
-	const items: InputItem[] = [];
-	for (const msg of messages) {
-		switch (msg.role) {
-			case "user":
-				items.push({ role: "user", content: toUserInputContent(msg.content) });
-				break;
-			case "assistant": {
-				const text = msg.blocks
-					.filter((b): b is Extract<AssistantBlock, { type: "text" }> => b.type === "text")
-					.map((b) => b.text)
-					.join("\n");
-				if (text !== "") items.push({ role: "assistant", content: [{ type: "output_text", text }] });
-				for (const block of msg.blocks) {
-					if (block.type !== "toolCall") continue;
-					items.push({
-						type: "function_call",
-						call_id: block.id,
-						name: block.name,
-						arguments: JSON.stringify(block.arguments),
-					});
-				}
-				break;
-			}
-			case "toolResult":
-				for (const r of msg.results) {
-					items.push({
-						type: "function_call_output",
-						call_id: r.toolCallId,
-						output: toToolOutput(r.content),
-					});
-				}
-				break;
-			default: {
-				const exhaustive: never = msg;
-				throw new Error(`unreachable message role: ${JSON.stringify(exhaustive)}`);
-			}
-		}
-	}
-	return items;
-}
-
-interface ResponsesUsage {
-	input_tokens?: number;
-	output_tokens?: number;
-	input_tokens_details?: { cached_tokens?: number };
-}
-
-function usageFromResponse(raw: ResponsesUsage | undefined): Usage {
-	const input = raw?.input_tokens ?? 0;
-	const cached = raw?.input_tokens_details?.cached_tokens ?? 0;
+function usageFromResponse(value: unknown): { usage: Usage; sawUsage: boolean } {
+	const raw = record(value) ?? {};
+	const inputDetails = record(raw.input_tokens_details) ?? {};
+	const counter = (value: unknown): number | undefined =>
+		typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+	const input = counter(raw.input_tokens);
+	const cached = counter(inputDetails.cached_tokens);
+	const written = counter(inputDetails.cache_write_tokens);
+	const output = counter(raw.output_tokens);
 	return {
-		// api semantics: input_tokens includes cache reads — subtract to match
-		// the anthropic inputTokens convention the ctx% math assumes
-		inputTokens: Math.max(0, input - cached),
-		outputTokens: raw?.output_tokens ?? 0,
-		cacheReadTokens: cached > 0 ? cached : undefined,
+		sawUsage: [input, cached, written, output].some((v) => v !== undefined),
+		usage: {
+			inputTokens: Math.max(0, (input ?? 0) - (cached ?? 0) - (written ?? 0)),
+			// Responses output_tokens already includes reasoning_tokens.
+			outputTokens: output ?? 0,
+			cacheReadTokens: cached !== undefined && cached > 0 ? cached : undefined,
+			...(written === undefined ? {} : { cacheWriteTokens: written }),
+		},
 	};
 }
 
-type ToolCallBlock = Extract<AssistantBlock, { type: "toolCall" }>;
-interface ToolSlot {
-	type: "toolCall";
-	block: ToolCallBlock;
-	index: number;
-	itemId?: string;
-	raw: string;
-	argumentsDone: boolean;
-	done: boolean;
-}
-type OutputSlot = ToolSlot | { type: "text"; block: Extract<AssistantBlock, { type: "text" }> };
-
-function protocolError(event: string, index: unknown, reason: string): Error {
-	// Never include argument text, untrusted identities, or native JSON errors.
-	const location = typeof index === "number" ? ` at output_index ${index}` : "";
-	return new Error(`Codex protocol error (${event}${location}): ${reason}`);
-}
-
-function requireIndex(value: unknown, event: string): number {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-		throw protocolError(event, undefined, "expected a nonnegative integer output_index");
-	}
-	return value;
-}
-
-function identityField(item: Record<string, unknown>, key: string, event: string, index: unknown) {
-	const value = item[key];
-	if (value === undefined) return undefined;
-	if (typeof value !== "string" || value.trim() === "") {
-		throw protocolError(event, index, `expected a nonempty string ${key}`);
-	}
-	return value;
-}
-
-/** Reconcile incremental and final argument sources without mixing calls.
- * Final blocks follow output_index, not discovery order (a done item can
- * introduce a call whose added event was absent). Streaming stays in arrival order. */
-class CodexOutput {
-	private readonly slots = new Map<number, OutputSlot>();
-	private readonly toolsByItemId = new Map<string, ToolSlot>();
-	private readonly callIds = new Set<string>();
-
-	private bindItemId(slot: ToolSlot, itemId: string | undefined, event: string): void {
-		if (itemId === undefined) return;
-		const owner = this.toolsByItemId.get(itemId);
-		if ((slot.itemId !== undefined && slot.itemId !== itemId) || (owner !== undefined && owner !== slot)) {
-			throw protocolError(event, slot.index, "conflicting or duplicate tool item ID");
-		}
-		slot.itemId = itemId;
-		this.toolsByItemId.set(itemId, slot);
-	}
-
-	private createTool(index: number, item: Record<string, unknown>, event: string): ToolSlot {
-		if (this.slots.has(index)) throw protocolError(event, index, "duplicate output slot");
-		const callId = identityField(item, "call_id", event, index);
-		const name = identityField(item, "name", event, index);
-		if (callId === undefined || name === undefined) {
-			throw protocolError(event, index, "a new function call requires call_id and name");
-		}
-		if (this.callIds.has(callId)) throw protocolError(event, index, "duplicate tool call ID");
-		const slot: ToolSlot = {
-			type: "toolCall",
-			block: { type: "toolCall", id: callId, name, arguments: {} },
-			index,
-			raw: "",
-			argumentsDone: false,
-			done: false,
-		};
-		this.bindItemId(slot, identityField(item, "id", event, index), event);
-		this.slots.set(index, slot);
-		this.callIds.add(callId);
-		return slot;
-	}
-
-	private argumentSlot(data: Record<string, unknown>, event: string): ToolSlot {
-		const itemId = identityField(data, "item_id", event, data.output_index);
-		let slot: OutputSlot | undefined;
-		if (data.output_index !== undefined) {
-			slot = this.slots.get(requireIndex(data.output_index, event));
-		} else if (itemId !== undefined) {
-			slot = this.toolsByItemId.get(itemId);
-		}
-		if (slot?.type !== "toolCall") {
-			throw protocolError(event, data.output_index, "unknown function call target");
-		}
-		// An indexed event may first-bind an ID omitted by the added item.
-		// Index-less events can only resolve a binding that already exists.
-		this.bindItemId(slot, itemId, event);
-		return slot;
-	}
-
-	private *snapshot(slot: ToolSlot, value: unknown, event: string): Generator<LLMEvent> {
-		if (value === undefined) return;
-		if (typeof value !== "string") {
-			throw protocolError(event, slot.index, "expected string arguments");
-		}
-		if (value.trim() === "") return; // omission/blank must not erase a known buffer
-		const previous = slot.raw;
-		slot.raw = value;
-		// The event interface is append-only: corrections are authoritative in
-		// message_end, while an extending snapshot can stream just its suffix.
-		if (value.startsWith(previous) && value.length > previous.length) {
-			yield { type: "tool_call_delta", id: slot.block.id, jsonDelta: value.slice(previous.length) };
-		}
-	}
-
-	*addItem(data: Record<string, unknown>): Generator<LLMEvent> {
-		const item = (data.item ?? {}) as Record<string, unknown>;
-		if (item.type !== "message" && item.type !== "function_call") return;
-		const event = "response.output_item.added";
-		const index = requireIndex(data.output_index, event);
-		if (this.slots.has(index)) throw protocolError(event, index, "duplicate output slot");
-		if (item.type === "message") {
-			this.slots.set(index, { type: "text", block: { type: "text", text: "" } });
-		} else {
-			const slot = this.createTool(index, item, event);
-			yield { type: "tool_call_start", id: slot.block.id, name: slot.block.name };
-			yield* this.snapshot(slot, item.arguments, event);
-		}
-	}
-
-	textDelta(data: Record<string, unknown>): LLMEvent | undefined {
-		const slot = this.slots.get(data.output_index as number);
-		if (slot?.type !== "text") return undefined;
-		const delta = String(data.delta ?? "");
-		slot.block.text += delta;
-		return { type: "text_delta", text: delta };
-	}
-
-	*appendArguments(data: Record<string, unknown>): Generator<LLMEvent> {
-		const event = "response.function_call_arguments.delta";
-		const slot = this.argumentSlot(data, event);
-		if (slot.argumentsDone || slot.done) throw protocolError(event, slot.index, "arguments already closed");
-		if (typeof data.delta !== "string") throw protocolError(event, slot.index, "expected string delta");
-		slot.raw += data.delta;
-		if (data.delta !== "") yield { type: "tool_call_delta", id: slot.block.id, jsonDelta: data.delta };
-	}
-
-	*finishArguments(data: Record<string, unknown>): Generator<LLMEvent> {
-		const event = "response.function_call_arguments.done";
-		const slot = this.argumentSlot(data, event);
-		if (slot.argumentsDone || slot.done) throw protocolError(event, slot.index, "arguments already closed");
-		if (typeof data.arguments !== "string") {
-			throw protocolError(event, slot.index, "expected string arguments");
-		}
-		yield* this.snapshot(slot, data.arguments, event);
-		slot.argumentsDone = true;
-	}
-
-	*finishItem(data: Record<string, unknown>): Generator<LLMEvent> {
-		const item = (data.item ?? {}) as Record<string, unknown>;
-		if (item.type !== "function_call") return; // text/reasoning snapshots are outside this repair
-		const event = "response.output_item.done";
-		const index = requireIndex(data.output_index, event);
-		let slot = this.slots.get(index);
-		if (slot === undefined) {
-			slot = this.createTool(index, item, event);
-			yield { type: "tool_call_start", id: slot.block.id, name: slot.block.name };
-		}
-		if (slot.type !== "toolCall") throw protocolError(event, index, "function call collides with text slot");
-		if (slot.done) throw protocolError(event, index, "function call already closed");
-		for (const [key, expected] of [
-			["call_id", slot.block.id],
-			["name", slot.block.name],
-		] as const) {
-			const supplied = identityField(item, key, event, index);
-			if (supplied !== undefined && supplied !== expected) {
-				throw protocolError(event, index, `conflicting function call ${key}`);
-			}
-		}
-		this.bindItemId(slot, identityField(item, "id", event, index), event);
-		yield* this.snapshot(slot, item.arguments, event);
-		slot.done = true;
-	}
-
-	blocks(incomplete: boolean): AssistantBlock[] {
-		return [...this.slots.entries()]
-			.sort(([a], [b]) => a - b)
-			.map(([index, slot]) => {
-				if (slot.type === "text") return slot.block;
-				if (incomplete) {
-					// The loop refuses the entire max_tokens batch. Preserve its existing
-					// partial-message/usage/replay behavior rather than throwing here.
-					slot.block.arguments = slot.raw.trim() === "" ? {} : safeParseJson(slot.raw);
-				} else {
-					const event = "response.completed";
-					if (!slot.done) throw protocolError(event, index, "function call missing output_item.done");
-					if (slot.raw.trim() === "") throw protocolError(event, index, "function call has no argument data");
-					try {
-						slot.block.arguments = JSON.parse(slot.raw);
-					} catch {
-						throw protocolError(event, index, "function call arguments are not valid JSON");
-					}
-				}
-				return slot.block;
-			});
-	}
-}
-
-/** One SSE item may emit start + snapshot. Check before advancing the
- * suspended assembler again, not merely after its next yield: it may throw
- * while inspecting a snapshot the caller cancelled at tool_call_start. */
+/** Stop before resuming a suspended assembler after a yielded start/delta.
+ * A cancellation at tool_call_start must not inspect the deferred arguments. */
 function* untilAborted(events: Iterable<LLMEvent>, signal?: AbortSignal): Generator<LLMEvent> {
 	if (signal?.aborted) return;
 	for (const event of events) {
@@ -377,176 +65,178 @@ function* untilAborted(events: Iterable<LLMEvent>, signal?: AbortSignal): Genera
 }
 
 export function createCodexResponsesProvider(options: CodexResponsesProviderOptions = {}): LLMProvider {
-	const baseUrl = (options.baseUrl ?? process.env.OPENAI_CODEX_BASE_URL ?? DEFAULT_BASE_URL).replace(
-		/\/+$/,
-		"",
+	const explicitBase = options.baseUrl;
+	const endpoint = responsesEndpoint(
+		explicitBase ?? process.env.OPENAI_CODEX_BASE_URL,
+		explicitBase !== undefined && (options.auth !== undefined || options.fetch !== undefined),
 	);
-	const auth = options.auth ?? (() => getCodexAccessToken());
-
+	const auth = options.auth ?? getCodexAccessToken;
 	return {
 		name: "openai-codex",
 		async *stream(request: LLMRequest): AsyncIterable<LLMEvent> {
-			if (request.signal?.aborted) return; // before auth: the refresh POST is not abortable (review F5)
-			const credential = await auth();
 			if (request.signal?.aborted) return;
-
+			// Validate persisted native data before consulting credentials/network.
+			const input: unknown[] = toResponsesInput(
+				downgradeUnsupportedImages(request.messages, modelSupportsVision("openai-codex", request.model)),
+				request.model,
+			);
+			if (request.tools.length > 0) {
+				input.unshift({
+					type: "additional_tools",
+					role: "developer",
+					tools: request.tools.map((tool) => ({
+						type: "function",
+						name: tool.name,
+						description: tool.description,
+						parameters: tool.parameters,
+						strict: false,
+					})),
+				});
+			}
+			let credential: { accessToken: string };
+			try {
+				credential = await auth({ signal: request.signal });
+			} catch (error) {
+				if (request.signal?.aborted) return;
+				throw error;
+			}
+			if (request.signal?.aborted) return;
 			const key = sessionKey(request.sessionId);
 			const body: Record<string, unknown> = {
 				model: request.model,
-				...(key === undefined ? {} : { prompt_cache_key: key }),
 				store: false,
 				stream: true,
 				instructions: request.system,
-				input: toInputItems(
-					request.system,
-					downgradeUnsupportedImages(request.messages, modelSupportsVision("openai-codex", request.model)),
-				),
+				input,
+				include: ["reasoning.encrypted_content"],
 				parallel_tool_calls: true,
-				// NOTE: no max_output_tokens — the ChatGPT backend REJECTS it
-				// ("Unsupported parameter", live 400 on the first real turn). The
-				// reference implementation sends none either; output limits are
-				// plan/policy-managed server-side. request.maxTokens is simply
-				// not applicable to this family.
+				...(key === undefined ? {} : { prompt_cache_key: key }),
+				// No previous_response_id, temperature, max_output_tokens or cache
+				// retention: full stateless replay; output is plan/policy-managed.
 			};
-			// Thinking (#thinking-levels, pi parity): the Responses protocol
-			// takes a reasoning object. Effort values come from the model's
-			// level map (pi.dev catalog: gpt-5.3+ minimal→"low", xhigh native;
-			// gpt-6 max native). "off" sends effort:"none" — the backend
-			// defaults reasoning-capable models to medium, so omission would
-			// not disable anything (pi openai-responses.js:240).
 			const meta = thinkingMetaFor("openai-codex", request.model);
 			const level = request.thinking !== undefined ? clampThinkingLevel(meta, request.thinking) : undefined;
 			if (level !== undefined && level !== "off") {
 				body.reasoning = { effort: effortFor(meta, level), summary: "auto" };
-			} else if ((level === undefined || level === "off") && meta !== null && meta.levelMap?.off !== null) {
-				// "off" AND undefined (the runner maps off→undefined — pi
-				// :238): explicit "none"; off:null models (gpt-6) never land here.
+			} else if (meta !== null && meta.levelMap?.off !== null) {
 				body.reasoning = { effort: meta.levelMap?.off ?? "none" };
 			}
-			if (request.tools.length > 0) {
-				body.tools = request.tools.map((t) => ({
-					type: "function",
-					name: t.name,
-					description: t.description,
-					parameters: t.parameters,
-					strict: false,
-				}));
-				body.tool_choice = "auto";
-			}
-
-			const response = await postJsonWithRetry(
-				`${baseUrl}/codex/responses`,
-				{
+			const response = await postResponses({
+				url: endpoint,
+				headers: {
 					"content-type": "application/json",
 					accept: "text/event-stream",
 					authorization: `Bearer ${credential.accessToken}`,
-					"chatgpt-account-id": credential.accountId,
-					originator: "ink",
-					"OpenAI-Beta": "responses=experimental",
-					...(key === undefined ? {} : { "session-id": key, "x-client-request-id": key }),
+					...(key === undefined ? {} : { session_id: key, "x-client-request-id": key }),
 				},
-				JSON.stringify(body),
-				request.signal,
-				"Codex",
-			);
-			if (response === null) return; // aborted mid-connect
-			if (!response.ok || !response.body) {
-				const text = await response.text().catch(() => "");
-				const hint =
-					response.status === 401
-						? " — run: ink login"
-						: response.status === 404
-							? " — check the model id (a Codex/ChatGPT model name, e.g. openai-codex/gpt-5.5)"
-							: "";
-				throw new Error(`OpenAI Codex API error ${response.status}${hint}: ${text.slice(0, 500)}`);
-			}
-
+				body: JSON.stringify(body),
+				signal: request.signal,
+				fetch: options.fetch ?? fetch,
+				redactions: [credential.accessToken],
+			});
+			if (response === null || request.signal?.aborted) return;
+			const errorFields = {
+				status: response.status,
+				requestId: response.headers.get("x-request-id") ?? undefined,
+				redactions: [credential.accessToken],
+			};
 			const output = new CodexOutput();
 			let usage: Usage = { inputTokens: 0, outputTokens: 0 };
-			// SA-04: did a mapped counter hold a number on the terminal event?
 			let sawUsage = false;
 			let stopReason: StopReason = null;
-			let sawCompleted = false;
-
-			try {
-				for await (const sse of abortSafe(
-					wrapStreamInterruptions(parseSse(response.body), "Codex"),
-					request.signal,
-				)) {
-					if (request.signal?.aborted) return;
-					const data = sse.data as Record<string, unknown>;
-
-					switch (sse.event) {
-						case "response.output_item.added":
-							yield* untilAborted(output.addItem(data), request.signal);
-							break;
-						case "response.output_text.delta": {
-							const delta = output.textDelta(data);
-							if (delta !== undefined) yield delta;
-							break;
+			let terminal = false;
+			for await (const sse of abortSafe(
+				wrapStreamInterruptions(parseResponsesSse(response.body!, request.signal), "Codex"),
+				request.signal,
+			)) {
+				if (request.signal?.aborted) return;
+				const data = sse.data;
+				let events: Iterable<LLMEvent> = [];
+				switch (sse.event) {
+					case "response.output_item.added":
+						events = output.addItem(data);
+						break;
+					case "response.output_item.done":
+						events = output.finishItem(data);
+						break;
+					case "response.function_call_arguments.delta":
+						events = output.appendArguments(data);
+						break;
+					case "response.function_call_arguments.done":
+						events = output.finishArguments(data);
+						break;
+					case "response.output_text.delta":
+					case "response.output_text.done":
+					case "response.refusal.delta":
+					case "response.refusal.done":
+						events = output.textEvent(data, sse.event);
+						break;
+					case "response.content_part.added":
+					case "response.content_part.done":
+					case "response.reasoning_summary_part.added":
+					case "response.reasoning_summary_part.done":
+						events = output.partEvent(data, sse.event);
+						break;
+					case "response.reasoning_summary_text.delta":
+					case "response.reasoning_summary_text.done":
+					case "response.reasoning_text.delta":
+					case "response.reasoning_text.done":
+						events = output.reasoningEvent(data, sse.event);
+						break;
+					case "response.completed":
+					case "response.incomplete": {
+						const final = record(data.response);
+						if (!final) throw protocolError("terminal", undefined, "expected response object");
+						const status = final.status;
+						const incomplete = sse.event === "response.incomplete" || status === "incomplete";
+						if (status !== undefined && status !== "completed" && status !== "incomplete") {
+							throw responseError(final, {
+								...errorFields,
+								reason: diagnosticField(status),
+								label: "Codex response did not complete",
+							});
 						}
-						case "response.function_call_arguments.delta":
-							yield* untilAborted(output.appendArguments(data), request.signal);
-							break;
-						case "response.function_call_arguments.done":
-							yield* untilAborted(output.finishArguments(data), request.signal);
-							break;
-						case "response.output_item.done":
-							yield* untilAborted(output.finishItem(data), request.signal);
-							break;
-						case "response.completed":
-						case "response.incomplete": {
-							sawCompleted = true;
-							const responseObj = (data.response ?? {}) as Record<string, unknown>;
-							const rawUsage = responseObj.usage as ResponsesUsage | undefined;
-							if (
-								typeof rawUsage?.input_tokens === "number" ||
-								typeof rawUsage?.output_tokens === "number" ||
-								typeof rawUsage?.input_tokens_details?.cached_tokens === "number"
-							) {
-								sawUsage = true;
+						if (incomplete) {
+							const reason = diagnosticField(record(final.incomplete_details)?.reason);
+							if (reason !== "max_output_tokens") {
+								throw responseError(final, {
+									...errorFields,
+									reason: reason ?? "unknown_incomplete",
+									label: "Codex response incomplete",
+								});
 							}
-							usage = usageFromResponse(rawUsage);
-							const status = String(responseObj.status ?? "completed");
-							if (sse.event === "response.incomplete" || status === "incomplete") {
-								stopReason = "max_tokens";
-							} else {
-								stopReason = "end_turn";
-							}
-							break;
 						}
-						case "response.failed": {
-							const responseObj = (data.response ?? {}) as Record<string, unknown>;
-							const error = (responseObj.error ?? data.error ?? {}) as Record<string, unknown>;
-							throw new Error(
-								`Codex response failed: ${String(error.message ?? JSON.stringify(data).slice(0, 300))}`,
-							);
-						}
-						case "error": {
-							throw new Error(
-								`Codex stream error: ${String(data.message ?? JSON.stringify(data).slice(0, 300))}`,
-							);
-						}
-						default:
-							// Reasoning deltas / unknown events: intentionally ignored.
-							break;
+						if (record(final.error))
+							throw responseError(final, { ...errorFields, label: "Codex response failed" });
+						({ usage, sawUsage } = usageFromResponse(final.usage));
+						stopReason = incomplete ? "max_tokens" : "end_turn";
+						events = output.reconcile(final.output, incomplete);
+						terminal = true;
+						break;
 					}
-					if (request.signal?.aborted) return;
+					case "response.failed":
+					case "response.cancelled":
+						throw responseError(record(data.response) ?? data, {
+							...errorFields,
+							label: "Codex response failed",
+							reason: sse.event === "response.cancelled" ? "cancelled" : "failed",
+						});
+					case "error":
+						throw responseError(data, { ...errorFields, reason: "error", label: "Codex stream error" });
+					default:
+						break; // lifecycle/annotations/unknown non-executable events
 				}
-			} catch (err) {
-				// response.completed / response.incomplete already arrived: a
-				// trailing socket close is a benign end of stream, not a truncation.
-				if (!(err instanceof StreamInterruptedError) || !sawCompleted) throw err;
+				yield* untilAborted(events, request.signal);
+				if (request.signal?.aborted) return;
+				if (terminal) break; // cancel reader immediately; never wait for EOF/[DONE]
 			}
-
 			if (request.signal?.aborted) return;
-			// A stream without a terminal event was truncated — fail loudly
-			// rather than persisting a partial turn as complete.
-			if (!sawCompleted) {
-				throw new Error("Codex stream ended without response.completed — response may be truncated");
-			}
+			if (!terminal)
+				throw new CodexResponseError(
+					"Codex stream ended without response.completed — response may be truncated",
+					{ code: "missing_terminal" },
+				);
 			const blocks = output.blocks(stopReason === "max_tokens");
-			if (stopReason === null && blocks.some((b) => b.type === "toolCall")) stopReason = "tool_use";
 			if (stopReason === "end_turn" && blocks.some((b) => b.type === "toolCall")) stopReason = "tool_use";
 			if (blocks.length === 0) blocks.push({ type: "text", text: "(empty)" });
 			yield {
@@ -556,6 +246,7 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 					blocks,
 					usage,
 					stopReason,
+					provenance: { version: 1, provider: "openai-codex", model: request.model },
 					...(sawUsage ? {} : { usageMissing: true as const }),
 				},
 			};

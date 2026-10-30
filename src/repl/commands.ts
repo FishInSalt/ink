@@ -25,12 +25,18 @@ import { priceUsageTotals } from "../core/usage-totals.js";
 import { listChildWorktrees, resolveRepoState } from "../core/worktree.js";
 import type { RegisteredExtensionCommand } from "../extensions/types.js";
 import { formatTokens, usageMoneySegment } from "../format.js";
+import { type BrowserOpener, logoutNotice, openLoginBrowser, visibleAuthorizationUrl } from "../login-ui.js";
 import { mcpConfigPaths } from "../mcp/config.js";
 import type { McpManager } from "../mcp/manager.js";
 import { clearApiKey, loadApiKey, saveApiKey, storedApiKeyFamilies } from "../provider/auth-store.js";
 import { catalogModelIds, refreshCatalog } from "../provider/catalog.js";
 import { loadCodexCredential, loginCodex, logoutCodex } from "../provider/codex-auth.js";
-import { discoverModels, familyConfigured } from "../provider/discover.js";
+import {
+	cachedCodexModelIds,
+	discoverCodexModels,
+	discoverModels,
+	familyConfigured,
+} from "../provider/discover.js";
 import { LOGIN_TARGETS, type LoginTarget, loginTargetFor } from "../provider/login-targets.js";
 import { costFor } from "../provider/models.js";
 import { resolveStartupModelFallback } from "../provider/startup-model.js";
@@ -47,6 +53,14 @@ import { copyToClipboard } from "./clipboard-write.js";
 import { buildTreeRows, TREE_FILTER_MODES } from "./components/tree-selector.js";
 import type { SelectOptions, TreeSelectRequest } from "./line-input.js";
 import type { LoginDialogOptions } from "./login-dialog.js";
+
+export interface CodexLoginContextOptions {
+	/** Explicit test/embedding options, never read from environment variables. */
+	authBaseUrl?: string;
+	callbackPort?: number;
+	openBrowser?: BrowserOpener;
+	discoverModels?: typeof discoverCodexModels;
+}
 
 export interface CommandContext {
 	runner: Runner;
@@ -112,12 +126,10 @@ export interface CommandContext {
 	/** #login-repl: credential store location — hermetic tests inject a temp
 	 *  path; production defaults to ~/.ink/auth.json. */
 	authStorePath?: string;
-	/** #login-repl batch B: the codex device-code OAuth base URL — hermetic
-	 *  tests inject a local fake; production uses auth.openai.com. */
-	codexAuthBaseUrl?: string;
-	/** #login-repl batch B: register the long operation's AbortController so
-	 *  the machine's Ctrl+C can cancel it (the OAuth poll runs up to 15 min).
-	 *  Wired by the machine's commandContext; absent in dispatch-only tests. */
+	/** UI/test injection only. Production authentication endpoints stay pinned. */
+	codexLogin?: CodexLoginContextOptions;
+	/** Register the guarded operation's AbortController so Ctrl+C cancels
+	 *  waiting/revocation without bypassing local storage. */
 	onLongOpAbort?: (controller: AbortController | null) => void;
 	/** Guard-owner activity text; null hides the row without releasing the guard. */
 	onLongOpLabel?: (label: string | null) => void;
@@ -264,7 +276,6 @@ const MODEL_CANDIDATES: readonly string[] = [
 	"zai/glm-5.3",
 	"zai/glm-5.3-highspeed",
 	"zai/glm-4.7",
-	"openai-codex/gpt-5.5",
 	"openai/gpt-5.2",
 	"deepseek/deepseek-v4-pro",
 	"moonshotai/kimi-k3",
@@ -281,19 +292,6 @@ const FAMILY_FALLBACKS: Record<string, readonly string[]> = {
 	// one official GLM path (bare glm-* ids still route there via ZAI_API_KEY)
 	anthropic: ["claude-sonnet-4-5"],
 	openai: ["openai/gpt-5.2"],
-	// The complete official coding-plan catalog (pi's generated
-	// openai-codex.json is the sourced truth — probe confirmed the backend's
-	// /codex/models returns an empty list for plan accounts today).
-	"openai-codex": [
-		"openai-codex/gpt-6-astra",
-		"openai-codex/gpt-5.5",
-		"openai-codex/gpt-5.4",
-		"openai-codex/gpt-5.4-mini",
-		"openai-codex/gpt-5.3-codex-spark",
-		"openai-codex/gpt-5.6-luna",
-		"openai-codex/gpt-5.6-sol",
-		"openai-codex/gpt-5.6-terra",
-	],
 	// pi.dev's live zai catalog (2026-09)
 	zai: [
 		"zai/glm-5.3",
@@ -681,14 +679,17 @@ export interface ModelListDeps {
 	catalogIds?: (
 		family: "anthropic" | "openai" | "openai-codex" | "zai" | "deepseek" | "moonshotai" | "moonshotai-cn",
 	) => string[] | null;
+	/** Account-scoped snapshot only, never the public metadata catalog. */
+	cachedCodexIds?: () => string[] | null;
 }
 
 /**
  * Build the picker list: the union of what every CONFIGURED family serves
  * (#model-discovery — "what you can use right now"). Unconfigured families
- * are excluded outright; a configured family whose listing fails falls back
- * to its static seed. When NOTHING is configured (fresh install) the classic
- * global seed list keeps the picker useful. The current model always leads,
+ * are excluded outright. API-key families may use public metadata/static
+ * seeds offline; ChatGPT uses only account-scoped cached availability with
+ * an explicit stale notice. Fresh-install seeds exclude subscription models.
+ * The current model always leads,
  * even when it is a custom id the endpoints never listed.
  */
 export async function buildModelList(
@@ -708,13 +709,30 @@ export async function buildModelList(
 		"moonshotai-cn",
 	] as const;
 	const fallbackNotes: string[] = [];
+	const staleCodexIds = new Set<string>();
 	let ids: string[] = [];
 	const configuredFamilies = families.filter((f) => deps.configured(f));
 	if (configuredFamilies.length === 0) {
 		ids = modelCandidates(current).filter((id) => id !== current);
 	} else {
 		for (const family of configuredFamilies) {
-			let discovered = await deps.discover(family);
+			const discovered = await deps.discover(family);
+			if (family === "openai-codex") {
+				const listed = discovered ?? deps.cachedCodexIds?.() ?? null;
+				if (discovered === null) {
+					fallbackNotes.push(
+						listed === null
+							? "!codex ChatGPT account model list unavailable — availability unknown; no fallback models advertised"
+							: "!codex ChatGPT account model list offline — showing cached, possibly stale availability (unverified)",
+					);
+				}
+				for (const id of listed ?? []) {
+					const reference = `openai-codex/${id}`;
+					ids.push(reference);
+					if (discovered === null) staleCodexIds.add(reference);
+				}
+				continue;
+			}
 			// #gateway-truth: pi.dev's catalog and the static seeds describe
 			// FIRST-PARTY endpoints. When a family's endpoint is redirected by an
 			// env var (ANTHROPIC_BASE_URL → a compat gateway), neither is a truth
@@ -729,29 +747,7 @@ export async function buildModelList(
 				(family === "zai" && process.env.ZAI_BASE_URL === undefined) ||
 				(family === "deepseek" && process.env.DEEPSEEK_BASE_URL === undefined) ||
 				(family === "moonshotai" && process.env.MOONSHOT_BASE_URL === undefined) ||
-				(family === "moonshotai-cn" && process.env.MOONSHOT_CN_BASE_URL === undefined) ||
-				family === "openai-codex";
-			// M14: the pi.dev disk cache stands between live discovery and the
-			// static floor — offline picker lists the real family catalog. The
-			// live probe still runs FIRST (fresh 5-min data wins; no staleness
-			// regression); the 4h catalog cache answers only when the probe is
-			// unreachable, so a dropped endpoint still shows real ids (at the
-			// cost of a second pi.dev hit for openai-codex on /model open).
-			if (discovered === null && family === "openai-codex") {
-				discovered = deps.catalogIds?.(family) ?? null;
-			}
-			if (family === "openai-codex") {
-				// pi.dev's catalog is the primary truth (it served gpt-6-astra the
-				// day it shipped); the static seeds are the offline fallback — a
-				// union floor so a catalog regression can never HIDE models.
-				if (discovered === null) {
-					ids.push(...(FAMILY_FALLBACKS[family] ?? []));
-					fallbackNotes.push("model catalog (pi.dev)");
-				} else {
-					for (const id of discovered) ids.push(`openai-codex/${id}`);
-				}
-				continue;
-			}
+				(family === "moonshotai-cn" && process.env.MOONSHOT_CN_BASE_URL === undefined);
 			if (discovered === null) {
 				if (!firstParty) {
 					// redirected endpoint: no catalog, no seeds — the honest empty
@@ -791,7 +787,11 @@ export async function buildModelList(
 	ids = [...new Set(ids)];
 	const rows = (ids.includes(current) ? ids : [current, ...ids]).map((id) => ({
 		label: id,
-		description: id === current ? "current" : familyLabel(id),
+		description: staleCodexIds.has(id)
+			? `${id === current ? "current · " : ""}ChatGPT plan · offline/stale availability unverified`
+			: id === current
+				? "current"
+				: familyLabel(id),
 	}));
 	return { rows, fallbackNotes };
 }
@@ -890,18 +890,14 @@ function loginStatus(target: LoginTarget, authPath?: string): string {
 	return "not signed in";
 }
 
-/** Whether a /login line needs the machine's guarded long-op state (the
- *  codex OAuth poll runs up to 15 minutes): no-arg /login (the picker may
- *  land on codex) or a ref that resolves to the oauth target.
- *  #login-dialog: shell-aware (design §2.2) — suppressed on dialog shells,
- *  where the dialog + dialogOpen own the flow; the fallback (readline/
- *  piped) keeps the guarded state verbatim. */
+/** Fallback login owns the guarded state through browser waiting or the
+ *  asynchronous API-key write. Dialog shells own their existing mutex. */
 export function loginNeedsGuard(line: string, hasDialogShell = false): boolean {
 	if (hasDialogShell) return false;
 	const parsed = parseCommand(line);
 	if (parsed === null || parsed.name !== "login") return false;
 	if (parsed.args.trim() === "") return true; // picker — codex is pickable
-	return loginTargetFor(parsed.args)?.method === "oauth";
+	return loginTargetFor(parsed.args) !== undefined;
 }
 
 /** #login-dialog: whether a /login line runs through the exclusive dialog
@@ -914,26 +910,48 @@ export function loginUsesDialog(line: string, hasDialogShell: boolean): boolean 
 	return parsed !== null && parsed.name === "login";
 }
 
-/** #startup-model-resolution (D4): the shared login success tail. When NO
- *  usable model exists — Ink's analog of pi's unknown-model sentinel — the
- *  family's curated switchHint is selected (pi auto-selects too) and the
- *  manual /model step after a first login is gone. With a usable model the
- *  pre-D4 behavior is byte-identical: footer refresh, then the family
- *  pointer. The switch branch refreshes AFTER setModel so the footer never
- *  renders the pre-switch state (round-1 A-F5). */
-function loginSelectionTail(ctx: CommandContext, target: LoginTarget): void {
-	if (!ctx.runner.modelUsable()) {
-		ctx.runner.setModel(target.switchHint);
-		ctx.renderer.note(`▪ switched to ${target.switchHint}`);
+/** Login can resolve an unselected startup, never a deliberate model choice. */
+function loginSelectionTail(ctx: CommandContext, target: LoginTarget, models?: string[] | null): void {
+	const suggestion =
+		target.family === "openai-codex"
+			? models?.[0] === undefined
+				? undefined
+				: `openai-codex/${models[0]}`
+			: target.switchHint;
+	if (!ctx.runner.modelUsable() && ctx.runner.modelSelectionPending() && suggestion !== undefined) {
+		ctx.runner.setModel(suggestion);
+		ctx.renderer.note(`▪ switched to ${suggestion}`);
 		ctx.refreshFooter?.();
 		return;
 	}
-	ctx.refreshFooter?.(); // #fresh-install-hint (D6/F3): the credential change flips the footer's model segment
+	ctx.refreshFooter?.();
 	const current = ctx.runner.modelReference();
 	const currentFamily = current.includes("/") ? current.slice(0, current.indexOf("/")) : "anthropic";
-	if (currentFamily !== target.family) {
-		ctx.renderer.note(`▪ switch with /model ${target.switchHint}`);
+	if (target.family === "openai-codex") {
+		if (models === null) {
+			ctx.renderer.note(
+				"▪ ChatGPT account model list unavailable — use /model when connected; model selection unchanged",
+			);
+		} else if (models?.length === 0) {
+			ctx.renderer.note(
+				"▪ no selectable ChatGPT models listed for this account — use /model to check again; model selection unchanged",
+			);
+		} else if (
+			currentFamily === target.family &&
+			!models?.includes(current.slice(current.indexOf("/") + 1))
+		) {
+			ctx.renderer.note(
+				`▪ ${current} is not in the account model list; keeping your selection — use /model to change`,
+			);
+		}
 	}
+	if (suggestion !== undefined && currentFamily !== target.family) {
+		ctx.renderer.note(`▪ switch with /model ${suggestion}`);
+	}
+}
+
+async function discoverLoginModels(ctx: CommandContext, signal: AbortSignal): Promise<string[] | null> {
+	return (ctx.codexLogin?.discoverModels ?? discoverCodexModels)({ force: true, signal }).catch(() => null);
 }
 
 /** /login's body, shared by the picker's pick and "/login <family>".
@@ -945,28 +963,30 @@ async function loginToTarget(ctx: CommandContext, target: LoginTarget): Promise<
 		return;
 	}
 	if (target.method === "oauth") {
-		// pi's LoginDialog: the URL + user code render, the poll runs in the
-		// background, Esc/Ctrl+C cancels ("Login cancelled" stays silent).
-		// The machine guards the dispatch (loginNeedsGuard) so Ctrl+C aborts
-		// THIS controller instead of counting toward a force quit.
+		// The fallback relies on the loopback callback only. A second input
+		// reader would race the REPL and could echo/store the callback URL.
 		const controller = new AbortController();
 		ctx.onLongOpAbort?.(controller);
 		try {
 			await loginCodex({
 				authPath: ctx.authStorePath,
-				// INK_CODEX_AUTH_BASE: machine-level e2e seam (dispatch tests
-				// use ctx.codexAuthBaseUrl; the machine builds no such ctx)
-				authBaseUrl: ctx.codexAuthBaseUrl ?? process.env.INK_CODEX_AUTH_BASE,
+				authBaseUrl: ctx.codexLogin?.authBaseUrl,
+				callbackPort: ctx.codexLogin?.callbackPort,
 				signal: controller.signal,
-				onDeviceCode: ({ verificationUri, userCode }) => {
-					ctx.renderer.note(`▪ open ${verificationUri} and enter code: ${userCode}`);
+				onAuth: ({ url }) => {
+					const visible = visibleAuthorizationUrl(url);
+					ctx.renderer.note(`▪ open ${visible}`);
+					ctx.renderer.note("▪ waiting for browser authentication (Ctrl+C cancels)");
+					openLoginBrowser(visible, ctx.codexLogin?.openBrowser);
 				},
 			});
-			ctx.renderer.status(`Logged in to ${target.name}`); // pi's wording
-			loginSelectionTail(ctx, target); // #startup-model-resolution D4
+			const models = await discoverLoginModels(ctx, controller.signal);
+			if (controller.signal.aborted) return;
+			ctx.renderer.status(`Logged in to ${target.name}`);
+			loginSelectionTail(ctx, target, models);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
-			if (message === "Login cancelled") return; // pi: silent cancel
+			if (controller.signal.aborted || message === "Login cancelled") return;
 			ctx.renderer.error(`ink: ${target.name} login failed — ${message}`);
 		} finally {
 			ctx.onLongOpAbort?.(null);
@@ -981,12 +1001,21 @@ async function loginToTarget(ctx: CommandContext, target: LoginTarget): Promise<
 		);
 		return;
 	}
-	// pi's prompt: `Enter ${name}` (packages/ai/src/auth/helpers.ts).
-	const key = await secret(`Enter ${target.name} API key`);
-	if (key === null || key.trim() === "") return; // cancelled/blank — silent, like pi's "Login cancelled"
-	saveApiKey(target.family, key, ctx.authStorePath);
-	ctx.renderer.status(`Saved API key for ${target.name}`); // pi's wording
-	loginSelectionTail(ctx, target); // #startup-model-resolution D4
+	const controller = new AbortController();
+	ctx.onLongOpAbort?.(controller);
+	try {
+		const key = await secret(`Enter ${target.name} API key`);
+		if (key === null || key.trim() === "" || controller.signal.aborted) return;
+		await saveApiKey(target.family, key, ctx.authStorePath, { signal: controller.signal });
+		if (controller.signal.aborted) return;
+		ctx.renderer.status(`Saved API key for ${target.name}`);
+		loginSelectionTail(ctx, target);
+	} catch (err) {
+		if (controller.signal.aborted) return;
+		throw err;
+	} finally {
+		ctx.onLongOpAbort?.(null);
+	}
 }
 
 /** #login-dialog: the dialog-path body (design §2.2.2). The success tail
@@ -994,29 +1023,45 @@ async function loginToTarget(ctx: CommandContext, target: LoginTarget): Promise<
  *  dialog.message is in-flow progress only. "unavailable" (a queued entry
  *  drained by close()) is a silent no-op. */
 async function loginViaDialog(ctx: CommandContext, target: LoginTarget): Promise<void> {
+	let models: string[] | null = null;
 	try {
 		const outcome = await ctx.openLoginDialog?.({
 			title: `Login to ${target.name}`,
 			run: async (dialog) => {
-				if (target.method === "oauth") {
-					await loginCodex({
-						authPath: ctx.authStorePath,
-						authBaseUrl: ctx.codexAuthBaseUrl ?? process.env.INK_CODEX_AUTH_BASE,
-						signal: dialog.signal, // the dialog's own AbortController
-						onDeviceCode: (p) => {
-							dialog.deviceCode({ verificationUri: p.verificationUri, userCode: p.userCode });
-							// pi's notifyAuthDialog runs showWaiting right after
-							// showDeviceCode (interactive-mode.ts:5912-5913) — and it
-							// APPENDS: the URL + code stay visible (parity table).
-							dialog.waiting("Waiting for authentication...");
-						},
-					});
-				} else if (target.family !== "openai-codex") {
-					// Null only for a submitted EMPTY line — cancel REJECTS with
-					// "Login cancelled" (the unified channel, design rev5 P3-D).
-					const key = await dialog.prompt(`Enter ${target.name} API key`);
-					if (key === null || key.trim() === "") throw new Error("Login cancelled");
-					saveApiKey(target.family, key, ctx.authStorePath);
+				try {
+					if (target.method === "oauth") {
+						await loginCodex({
+							authPath: ctx.authStorePath,
+							authBaseUrl: ctx.codexLogin?.authBaseUrl,
+							callbackPort: ctx.codexLogin?.callbackPort,
+							signal: dialog.signal,
+							onAuth: ({ url }) => {
+								const visible = visibleAuthorizationUrl(url);
+								dialog.auth({ url: visible });
+								dialog.waiting("Waiting for browser authentication...");
+								openLoginBrowser(visible, ctx.codexLogin?.openBrowser);
+							},
+							onManualCallback: ({ signal }) =>
+								dialog.prompt(
+									"Paste the complete callback URL if the browser cannot connect (hidden)",
+									undefined,
+									{ signal, sensitive: true },
+								),
+						});
+						models = await discoverLoginModels(ctx, dialog.signal);
+					} else if (target.family !== "openai-codex") {
+						// Null only for a submitted EMPTY line — cancel REJECTS with
+						// "Login cancelled" (the unified channel, design rev5 P3-D).
+						const key = await dialog.prompt(`Enter ${target.name} API key`);
+						if (key === null || key.trim() === "") throw new Error("Login cancelled");
+						await saveApiKey(target.family, key, ctx.authStorePath, { signal: dialog.signal });
+					}
+					if (dialog.signal.aborted) throw new Error("Login cancelled");
+				} catch (err) {
+					// Map cancellation before the shell's teardown aborts the same
+					// signal on errors too. Checking it outside would hide failures.
+					if (dialog.signal.aborted) throw new Error("Login cancelled");
+					throw err;
 				}
 			},
 		});
@@ -1024,7 +1069,7 @@ async function loginViaDialog(ctx: CommandContext, target: LoginTarget): Promise
 		if (outcome === "cancelled") return; // pi parity: silent cancel
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		if (message === "Login cancelled") return; // silent
+		if (message === "Login cancelled") return;
 		ctx.renderer.error(`ink: ${target.name} login failed — ${message}`);
 		return;
 	}
@@ -1035,7 +1080,7 @@ async function loginViaDialog(ctx: CommandContext, target: LoginTarget): Promise
 	} else {
 		ctx.renderer.status(`Saved API key for ${target.name}`); // pi's wording
 	}
-	loginSelectionTail(ctx, target); // #startup-model-resolution D4
+	loginSelectionTail(ctx, target, models);
 }
 function renderNavigateSuccess(
 	ctx: CommandContext,
@@ -1546,10 +1591,16 @@ export const COMMANDS: readonly SlashCommand[] = [
 				void refreshCatalog().catch(() => undefined);
 				const { rows, fallbackNotes } = await buildModelList(ctx.runner.modelReference(), {
 					configured: familyConfigured,
-					discover: discoverModels,
+					discover: (family) =>
+						family === "openai-codex" ? discoverCodexModels({ force: true }) : discoverModels(family),
 					catalogIds: catalogModelIds,
+					cachedCodexIds: cachedCodexModelIds,
 				});
 				for (const note of fallbackNotes) {
+					if (note.startsWith("!codex ")) {
+						ctx.renderer.note(`▪ model list: ${note.slice("!codex ".length)}`);
+						continue;
+					}
 					// #gateway-truth: a redirected endpoint shows NO fallback rows —
 					// the generic suffix would lie. Prefix "!redirect" is stripped
 					// here and swaps the sentence (review P2).
@@ -1619,16 +1670,23 @@ export const COMMANDS: readonly SlashCommand[] = [
 			// pi's /logout lists ONLY stored credentials — an env-configured
 			// provider is not Ink's to remove (interactive-mode.ts
 			// getLogoutProviderOptions reads the credential store).
-			const rows: Array<{ label: string; description: string; act: () => string }> = [];
+			const rows: Array<{
+				label: string;
+				description: string;
+				act: (signal: AbortSignal) => Promise<string>;
+			}> = [];
 			const codexTarget = LOGIN_TARGETS.find((t) => t.family === "openai-codex");
 			if (loadCodexCredential(ctx.authStorePath) !== null) {
 				rows.push({
 					label: codexTarget?.name ?? "OpenAI (ChatGPT plan)",
 					description: "stored token",
-					act: () => {
-						logoutCodex(ctx.authStorePath);
-						ctx.refreshFooter?.(); // #fresh-install-hint (D6/F3): a lost credential may flip the footer back to the /login pointer
-						return `Logged out of ${codexTarget?.name ?? "OpenAI (ChatGPT plan)"}`; // pi's wording
+					act: async (signal) => {
+						const { remoteRevoked } = await logoutCodex(ctx.authStorePath, {
+							authBaseUrl: ctx.codexLogin?.authBaseUrl,
+							signal,
+						});
+						ctx.refreshFooter?.();
+						return logoutNotice(remoteRevoked);
 					},
 				});
 			}
@@ -1637,8 +1695,8 @@ export const COMMANDS: readonly SlashCommand[] = [
 				rows.push({
 					label: target?.name ?? family,
 					description: "stored key",
-					act: () => {
-						clearApiKey(family, ctx.authStorePath);
+					act: async (signal) => {
+						await clearApiKey(family, ctx.authStorePath, { signal });
 						ctx.refreshFooter?.(); // #fresh-install-hint (D6/F3): a lost credential may flip the footer back to the /login pointer
 						// pi's wording, adapted (Ink has no models.json)
 						return `Removed stored API key for ${target?.name ?? family}. Environment variables are unchanged.`;
@@ -1659,7 +1717,20 @@ export const COMMANDS: readonly SlashCommand[] = [
 			}
 			const index = await select({ title: "log out of a provider", items: rows });
 			const picked = index === null ? undefined : rows[index];
-			if (picked !== undefined) ctx.renderer.status(picked.act());
+			if (picked !== undefined) {
+				const controller = new AbortController();
+				ctx.onLongOpAbort?.(controller);
+				ctx.onLongOpLabel?.("logging out…");
+				try {
+					ctx.renderer.status(await picked.act(controller.signal));
+				} catch (err) {
+					if (controller.signal.aborted) return "handled";
+					throw err;
+				} finally {
+					ctx.onLongOpAbort?.(null);
+					ctx.onLongOpLabel?.(null);
+				}
+			}
 			return "handled";
 		},
 	},
@@ -1852,7 +1923,11 @@ export const COMMANDS: readonly SlashCommand[] = [
 					`▪ session ${session.header.id.slice(0, 8)}${name ? ` · ${name}` : ""} · ${stats.messageCount} msgs (active branch)${usagePart}`,
 				);
 			}
-			const contextTokens = estimateContextTokens(runner.history, runner.contextEstimateFloor).tokens;
+			const contextTokens = estimateContextTokens(
+				runner.history,
+				runner.contextEstimateFloor,
+				`${runner.providerName}/${runner.model}`,
+			).tokens;
 			const contextPercent = Math.round((contextTokens / ctx.runner.contextWindow) * 100);
 			ctx.renderer.note(
 				`▪ context ~${formatTokens(contextTokens)} tokens · ${contextPercent}% of window${contextPercent >= 80 ? " — /compact to summarize older turns" : ""}`,

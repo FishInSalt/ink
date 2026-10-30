@@ -22,6 +22,7 @@ import { type AutocompleteSlashCommand, resolveShell, type Terminal } from "../t
 import { copyToClipboard } from "./clipboard-write.js";
 import {
 	COMMANDS,
+	type CodexLoginContextOptions,
 	type CommandContext,
 	dispatchCommand,
 	loginNeedsGuard,
@@ -69,6 +70,8 @@ export interface ReplOptions {
 	transcript?: TranscriptSink;
 	/** Test seam: inject a fake Terminal for the TUI shell. */
 	terminal?: Terminal;
+	/** Explicit login UI/test injection; not a project setting or env override. */
+	codexLogin?: CodexLoginContextOptions;
 	/** Cross-session input history file for the TUI shell (M11 #4); cli.ts
 	 *  resolves the real ~/.ink path, hermetic runs omit it. */
 	inputHistoryPath?: string;
@@ -359,6 +362,7 @@ export class TtyConfirm {
 
 interface ReplMachineOptions {
 	toolSink?: ToolPresentationSink;
+	codexLogin?: CodexLoginContextOptions;
 	runner: Runner;
 	/** Extension commands (M4b): forwarded to dispatchCommand at the single dispatch site. */
 	commands: readonly RegisteredExtensionCommand[];
@@ -442,6 +446,7 @@ class ReplMachine {
 	private receivedLine = false;
 	private readonly runner: Runner;
 	private readonly commands: readonly RegisteredExtensionCommand[];
+	private readonly codexLogin: CodexLoginContextOptions | undefined;
 	private readonly renderer: Renderer;
 	private readonly input: LineInput;
 	private readonly interactive: boolean;
@@ -456,6 +461,7 @@ class ReplMachine {
 		this.runner = options.runner;
 		this.toolSink = options.toolSink;
 		this.commands = options.commands;
+		this.codexLogin = options.codexLogin;
 		this.renderer = options.renderer;
 		this.input = options.input;
 		this.interactive = options.interactive;
@@ -530,7 +536,7 @@ class ReplMachine {
 		if (trimmed === "") return;
 		// #login-dialog: the dialog owns the machine while open — an
 		// extension/skill prompt would start a concurrent turn beside a
-		// live OAuth poll (design §2.2.1, the rev1 P0 counterexample).
+		// pending browser authorization (design §2.2.1).
 		if (this.dialogOpen) {
 			this.renderer.note("▪ /login is open — finish or cancel it first (esc)");
 			return;
@@ -628,18 +634,16 @@ class ReplMachine {
 		// runner.session and runner.history pointing at different sessions).
 		const stateful =
 			((name === "compact" || name === "tree") && this.state === "idle" && this.runner.session !== null) ||
-			// #login-repl batch B: the codex OAuth poll runs up to 15 minutes —
+			// Browser authorization can wait up to 10 minutes —
 			// it needs the guarded state (Ctrl+C cancels, typed lines queue,
 			// /new refuses) exactly like a compaction. #login-dialog: on dialog
 			// shells the predicate is suppressed — the dialog + dialogOpen own
 			// the flow instead (design §2.2, shell-conditional).
-			(name === "login" && this.state === "idle" && loginNeedsGuard(line, this.hasDialogShell()));
-		// #login-dialog: the dialog's machine mutex (design §2.2.1). Set
-		// immediately before the try (after warmup — a warmup throw returns
-		// above and must never leave the flag set); cleared in the
-		// UNCONDITIONAL finally arm below (the stateful-gated arm never runs
-		// for /login on dialog shells — the flag would stick true forever,
-		// rev2 P1-3).
+			(name === "login" && this.state === "idle" && loginNeedsGuard(line, this.hasDialogShell())) ||
+			// Storage/revocation are asynchronous now; no turn may race logout.
+			(name === "logout" && this.state === "idle");
+		// The login dialog owns a separate mutex, released only by the same
+		// dispatch in finally. A concurrent /help must not release it.
 		const authorizedDialog =
 			name === "login" && this.state === "idle" && loginUsesDialog(line, this.hasDialogShell());
 		if (authorizedDialog) this.dialogOpen = true;
@@ -651,7 +655,13 @@ class ReplMachine {
 			// → clearActivity parks it back at idle. The label follows the
 			// command (review P2: /login ≠ compaction text).
 			this.longOpLabel =
-				name === "tree" ? null : name === "login" ? "waiting for login…" : "compacting context…";
+				name === "tree"
+					? null
+					: name === "login"
+						? "waiting for login…"
+						: name === "logout"
+							? "logging out…"
+							: "compacting context…";
 			this.pushActivity();
 		}
 		try {
@@ -667,14 +677,13 @@ class ReplMachine {
 			// Review P1 (batch B): clear ONLY from the dispatch that armed it.
 			// A command typed mid-login (runCommand is unstateful for it) must
 			// not null the controller — that disarmed Ctrl+C and left a double
-			// press force-quitting over a live OAuth poll.
+			// press force-quitting over a pending browser authorization.
 			if (stateful) {
 				this.longOpAbort = null;
 				this.longOpLabel = null;
 			}
-			// #login-dialog: unconditional — the dialog flag cannot outlive its
-			// dispatch (design §2.2.1).
-			this.dialogOpen = false;
+			// Only the dispatch owning the dialog may release its mutex.
+			if (authorizedDialog) this.dialogOpen = false;
 			if (stateful && this.state === "compacting") {
 				this.interruptCount = 0;
 				await this.flushQueue(); // queued lines drain as after a run (§5.2)
@@ -1019,7 +1028,11 @@ class ReplMachine {
 		// point, but never call it from a streaming-delta path. pi's format:
 		// one decimal, the window size, and the auto-compaction tag.
 		const contextPercent =
-			(estimateContextTokens(this.runner.history, this.runner.contextEstimateFloor).tokens /
+			(estimateContextTokens(
+				this.runner.history,
+				this.runner.contextEstimateFloor,
+				`${this.runner.providerName}/${this.runner.model}`,
+			).tokens /
 				this.runner.contextWindow) *
 			100;
 		const contextSegment = `${contextPercent.toFixed(1)}%/${formatTokens(this.runner.contextWindow)}${
@@ -1364,7 +1377,7 @@ class ReplMachine {
 	/** Push the current activity snapshot to the TUI shell (no-op elsewhere). */
 	/** #compaction-ux F2 review P2: the long-op row's label follows the
 	 *  command that armed the guard — "compacting context…" is a lie during
-	 *  a 15-minute /login OAuth poll. */
+	 *  a browser authorization waiting for its callback. */
 	private longOpLabel: string | null = null;
 	/** #login-dialog: the dialog's machine mutex (design §2.2.1). True
 	 *  while a login dialog dispatch is awaited — submitTurn/enqueuePrompt
@@ -1561,6 +1574,7 @@ class ReplMachine {
 			hintState: this.defaultModelHintState, // #startup-model-resolution D5
 			copyText: (text: string) => copyToClipboard(text), // /copy (M16)
 			mcp: this.mcp, // M18: /mcp status
+			codexLogin: this.codexLogin,
 			clearView: this.input.clearConversation?.bind(this.input), // TUI: /new wipes the screen
 			refreshFooter: () => this.refreshFooter(), // /think repaints the level segment
 			abortActive: () => {
@@ -1570,10 +1584,8 @@ class ReplMachine {
 				}
 				return false;
 			},
-			// the guarded /login registers its OAuth controller here so the
-			// compacting-state Ctrl+C path can abort it. A SUPERSEDED flow
-			// (a second /login typed while one polls) cancels first — the old
-			// poll's catch sees "Login cancelled" and stays silent.
+			// Guarded authentication operations register their cancellation
+			// controller here; only their owning dispatch releases the guard.
 			onLongOpAbort: (controller) => {
 				if (controller !== null && this.longOpAbort !== null && this.longOpAbort !== controller) {
 					this.longOpAbort.abort();
@@ -1732,6 +1744,7 @@ export async function runRepl(options: ReplOptions): Promise<number> {
 		toolSink: tuiSink?.toolSink,
 		runner,
 		commands: options.commands ?? [],
+		codexLogin: options.codexLogin,
 		renderer,
 		input,
 		interactive,

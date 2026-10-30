@@ -1,5 +1,8 @@
-import { loadApiKey, resolveApiKey } from "./auth-store.js";
-import { loadCodexCredential } from "./codex-auth.js";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { authFilePath, loadApiKey, resolveApiKey } from "./auth-store.js";
+import { getCodexAccessToken, getCodexRegistrationKey, loadCodexCredential } from "./codex-auth.js";
 import { DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_SEED_MODELS, deepseekApiKey } from "./deepseek.js";
 import {
 	MOONSHOT_CN_DEFAULT_BASE_URL,
@@ -23,10 +26,13 @@ import { ZAI_DEFAULT_BASE_URL, ZAI_SEED_MODELS, zaiApiKey } from "./zai.js";
  *                 Anthropic-compatible standard (verified live against z.ai)
  *   openai        GET {OPENAI_BASE_URL|api.openai.com}/v1}/models — the
  *                 OpenAI-compatible standard
- *   openai-codex  no public listing on the ChatGPT backend — static catalog
+ *   openai-codex  authenticated GET {subscription base}/models — only
+ *                 visibility:list slugs, in server order. Public metadata
+ *                 is never evidence of account availability.
  *
- * Results are cached 5 minutes per (family, baseUrl); requests time out at
- * 2.5s and resolve null (caller falls back to static seeds + a note).
+ * Results are cached 5 minutes per (family, baseUrl); subscription results
+ * also carry the active registration generation and persist separately
+ * from credentials and public metadata. Requests are bounded to 4s.
  */
 
 const CACHE_TTL_MS = 5 * 60_000;
@@ -113,18 +119,9 @@ export function familyConfigured(family: ProviderName): boolean {
 	}
 }
 
-/**
- * The ids an endpoint serves (wire ids, endpoint order), or null when the
- * family is unconfigured or its listing is unreachable.
- *
- * openai-codex: the ChatGPT backend's /codex/models is version-gated to a
- * 3-entry recommended subset (probed live: client_version ≥0.124 required;
- * entries carry minimal_client_version) — NOT the full set. The complete,
- * current catalog comes from pi's public central service
- * (pi.dev/api/models/providers/openai-codex — the same source the reference
- * project fetches; it served gpt-6-astra the day it shipped). Static seeds
- * remain the offline fallback.
- */
+/** The ids an endpoint serves (wire ids, endpoint order), or null when
+ *  unconfigured/unreachable. A subscription's successful empty list is
+ *  authoritative; callers must not substitute metadata or static seeds. */
 export async function discoverModels(family: ProviderName): Promise<string[] | null> {
 	if (!familyConfigured(family)) return null;
 	if (family === "openai-codex") return discoverCodexModels();
@@ -306,8 +303,8 @@ async function fetchPageWithRetry(url: string, headers: Record<string, string>):
 	return null;
 }
 
-/** Un-paged fetch with cache stamping — the zai/openai/codex seam (behavior
- *  identical to the pre-pagination fetchJson/fetchOnce pair). */
+/** Un-paged API-key-family fetch with cache stamping. Subscription
+ *  listings use the separate authenticated, visibility-aware path below. */
 async function fetchJson(
 	url: string,
 	headers: Record<string, string>,
@@ -350,10 +347,239 @@ async function fetchAnthropicModelsPaged(
 	return ids;
 }
 
-/** Codex listing: pi's public catalog service (unauthenticated, fast).
- *  INK_CATALOG_BASE_URL redirects it (tests / mirrors). */
-async function discoverCodexModels(): Promise<string[] | null> {
-	if (!familyConfigured("openai-codex")) return null;
-	const base = (process.env.INK_CATALOG_BASE_URL ?? "https://pi.dev").replace(/\/+$/, "");
-	return fetchJson(`${base}/api/models/providers/openai-codex`, { accept: "application/json" });
+/** The subscription endpoint is independent of OPENAI_BASE_URL/API keys.
+ *  Explicit injection permits loopback HTTP only for offline test servers. */
+function subscriptionBase(injected?: string): string {
+	const url = new URL(injected ?? process.env.OPENAI_CODEX_BASE_URL ?? "https://api.openai.com/v1");
+	const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+	if (
+		url.username !== "" ||
+		url.password !== "" ||
+		url.hash !== "" ||
+		url.search !== "" ||
+		(url.protocol !== "https:" && !(injected !== undefined && loopback && url.protocol === "http:"))
+	) {
+		throw new Error("Invalid subscription base URL: HTTPS without credentials, query or fragment required");
+	}
+	return url.href.replace(/\/+$/, "");
+}
+
+export interface CodexModelDiscoveryOptions {
+	signal?: AbortSignal;
+	/** Login uses force to recheck the newly granted account list. */
+	force?: boolean;
+	/** Test-only endpoint injection; production uses OPENAI_CODEX_BASE_URL. */
+	baseUrl?: string;
+}
+
+interface CodexModelsFile {
+	version: 1;
+	source: "chatgpt-direct-models";
+	entries: Record<string, CacheEntry>;
+}
+
+/** Separate from both the secret store and pi.dev's metadata cache. A
+ *  relocated auth/catalog path also relocates this cache (hermetic tests). */
+export function codexModelsCachePath(): string {
+	const catalog = process.env.INK_CATALOG_PATH;
+	if (catalog !== undefined) return `${catalog}.chatgpt-models.json`;
+	if (process.env.INK_AUTH_PATH !== undefined) return `${authFilePath()}.chatgpt-models.json`;
+	return join(dirname(authFilePath()), "chatgpt-models.json");
+}
+
+function codexCacheKey(base: string): string | null {
+	if (loadCodexCredential() === null) return null;
+	const registration = getCodexRegistrationKey();
+	if (registration === null) return null;
+	// Hash only non-secret identity. Token refresh must not create another
+	// account cache, but login/registration generations must invalidate it.
+	return createHash("sha256")
+		.update(JSON.stringify([authFilePath(), base, registration]))
+		.digest("hex");
+}
+
+function readCodexModelsFile(): CodexModelsFile {
+	const empty: CodexModelsFile = { version: 1, source: "chatgpt-direct-models", entries: {} };
+	try {
+		const raw: unknown = JSON.parse(readFileSync(codexModelsCachePath(), "utf8"));
+		if (typeof raw !== "object" || raw === null) return empty;
+		const file = raw as Partial<CodexModelsFile>;
+		if (
+			file.version !== 1 ||
+			file.source !== empty.source ||
+			typeof file.entries !== "object" ||
+			file.entries === null
+		)
+			return empty;
+		for (const [key, entry] of Object.entries(file.entries)) {
+			if (
+				/^[a-f0-9]{64}$/.test(key) &&
+				typeof entry === "object" &&
+				entry !== null &&
+				typeof entry.at === "number" &&
+				Number.isFinite(entry.at) &&
+				Array.isArray(entry.ids) &&
+				entry.ids.every((id) => typeof id === "string" && id.trim() !== "")
+			)
+				empty.entries[key] = { at: entry.at, ids: [...entry.ids] };
+		}
+	} catch {
+		// Missing/corrupt/unreadable availability is unknown, never seeds.
+	}
+	return empty;
+}
+
+function cachedCodexModelsEntry(): CacheEntry | null {
+	try {
+		const key = codexCacheKey(subscriptionBase());
+		if (key === null) return null;
+		const memoryKey = `chatgpt|${codexModelsCachePath()}|${key}`;
+		return cache.get(memoryKey) ?? readCodexModelsFile().entries[key] ?? null;
+	} catch {
+		return null;
+	}
+}
+
+function codexModelsFresh(entry: CacheEntry): boolean {
+	const age = now() - entry.at;
+	return age >= 0 && age < CACHE_TTL_MS;
+}
+
+/** Account-scoped picker fallback, potentially stale: availability must be
+ *  labeled unverified. Never use this accessor for automatic selection.
+ *  null means unknown; [] is the account's last successful empty list. */
+export function cachedCodexModelIds(): string[] | null {
+	return cachedCodexModelsEntry()?.ids.slice() ?? null;
+}
+
+/** Synchronous automatic-startup candidate list, only within the same
+ *  5-minute freshness window as live discovery. Stale/future timestamps
+ *  resolve to unknown; a fresh empty list remains authoritative. */
+export function freshCachedCodexModelIds(): string[] | null {
+	const entry = cachedCodexModelsEntry();
+	return entry !== null && codexModelsFresh(entry) ? entry.ids.slice() : null;
+}
+
+function persistCodexModels(key: string, entry: CacheEntry): void {
+	const file = readCodexModelsFile();
+	file.entries[key] = { ids: [...entry.ids], at: entry.at };
+	// Bound endpoint/generation history; only one registration is active.
+	file.entries = Object.fromEntries(
+		Object.entries(file.entries)
+			.sort((a, b) => b[1].at - a[1].at)
+			.slice(0, 16),
+	);
+	let pending: string | undefined;
+	try {
+		const path = codexModelsCachePath();
+		mkdirSync(dirname(path), { recursive: true });
+		pending = `${path}.${process.pid}.${randomUUID()}.tmp`;
+		writeFileSync(pending, `${JSON.stringify(file)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+		renameSync(pending, path);
+		pending = undefined;
+	} catch {
+		// Unwritable cache must not prevent this process using a live list.
+	} finally {
+		if (pending !== undefined) {
+			try {
+				unlinkSync(pending);
+			} catch {
+				/* No temporary artifact to retain. */
+			}
+		}
+	}
+}
+
+/** Bounded credential-bearing body read; errors never contain server data. */
+async function readSubscriptionModels(response: Response, signal: AbortSignal): Promise<string[] | null> {
+	if (response.body === null) return null;
+	const reader = response.body.getReader();
+	const abort = () => {
+		void reader.cancel().catch(() => {});
+	};
+	signal.addEventListener("abort", abort, { once: true });
+	const chunks: Uint8Array[] = [];
+	let size = 0;
+	try {
+		if (signal.aborted) return null;
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			size += value.byteLength;
+			if (size > 2 * 1024 * 1024) return null;
+			chunks.push(value);
+		}
+		if (signal.aborted) return null;
+		const json: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+		if (typeof json !== "object" || json === null || !("models" in json) || !Array.isArray(json.models))
+			return null;
+		return json.models.flatMap((model: unknown) => {
+			if (typeof model !== "object" || model === null) return [];
+			const item = model as { visibility?: unknown; slug?: unknown };
+			return item.visibility === "list" && typeof item.slug === "string" && item.slug.trim() !== ""
+				? [item.slug]
+				: [];
+		});
+	} finally {
+		signal.removeEventListener("abort", abort);
+		await reader.cancel().catch(() => {});
+		reader.releaseLock();
+	}
+}
+
+/** Authenticated subscription availability, never pi.dev or API-key
+ *  discovery. Refresh happens through the shared OAuth accessor. */
+export async function discoverCodexModels(
+	options: CodexModelDiscoveryOptions = {},
+): Promise<string[] | null> {
+	if (!familyConfigured("openai-codex") || options.signal?.aborted) return null;
+	const controller = new AbortController();
+	const abort = () => controller.abort();
+	options.signal?.addEventListener("abort", abort, { once: true });
+	const timer = setTimeout(abort, REQUEST_TIMEOUT_MS);
+	timer.unref();
+	try {
+		const base = subscriptionBase(options.baseUrl);
+		const keyBefore = codexCacheKey(base);
+		if (keyBefore === null) return null;
+		const memoryKey = `chatgpt|${codexModelsCachePath()}|${keyBefore}`;
+		const hit = cache.get(memoryKey) ?? readCodexModelsFile().entries[keyBefore];
+		if (!options.force && hit !== undefined && codexModelsFresh(hit)) return [...hit.ids];
+		const auth = await getCodexAccessToken({ signal: controller.signal });
+		// Refresh may advance the credential generation. Use the refreshed
+		// snapshot's cache key, but never attribute an old in-flight token to
+		// a different login which completed while authentication was pending.
+		const current = loadCodexCredential();
+		const key = codexCacheKey(base);
+		if (
+			key === null ||
+			current === null ||
+			controller.signal.aborted ||
+			auth.accessToken !== current.accessToken ||
+			auth.clientId !== current.clientId ||
+			auth.subject !== current.subject
+		)
+			return null;
+		const response = await fetch(`${base}/models`, {
+			method: "GET",
+			headers: { accept: "application/json", authorization: `Bearer ${auth.accessToken}` },
+			redirect: "error",
+			signal: controller.signal,
+		});
+		if (!response.ok) {
+			await response.body?.cancel().catch(() => {});
+			return null;
+		}
+		const ids = await readSubscriptionModels(response, controller.signal);
+		if (ids === null || controller.signal.aborted || codexCacheKey(base) !== key) return null;
+		const entry = { ids: [...ids], at: now() };
+		cache.set(`chatgpt|${codexModelsCachePath()}|${key}`, entry);
+		persistCodexModels(key, entry);
+		return ids;
+	} catch {
+		return null; // quiet discovery; login/inference reports auth failures
+	} finally {
+		clearTimeout(timer);
+		options.signal?.removeEventListener("abort", abort);
+	}
 }

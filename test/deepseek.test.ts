@@ -152,7 +152,7 @@ describe("deepseek provider (#deepseek-provider)", () => {
 		setEnv("DEEPSEEK_API_KEY", "sk-env-ds");
 		setEnv("OPENAI_API_KEY", "sk-env-openai");
 		expect(deepseekApiKey()).toBe("sk-env-ds");
-		saveApiKey("deepseek", "sk-stored-ds", authPath);
+		await saveApiKey("deepseek", "sk-stored-ds", authPath);
 		expect(deepseekApiKey()).toBe("sk-stored-ds"); // stored wins
 		expect(familyConfigured("deepseek")).toBe(true);
 		// the no-key error names the family's own var — the OPENAI_API_KEY
@@ -161,7 +161,7 @@ describe("deepseek provider (#deepseek-provider)", () => {
 		// surface as a WIRE call with the wrong key, not a real-network 401.
 		setEnv("DEEPSEEK_BASE_URL", baseUrl);
 		setEnv("DEEPSEEK_API_KEY", undefined);
-		clearApiKey("deepseek", authPath);
+		await clearApiKey("deepseek", authPath);
 		const provider = createProviderFor("deepseek");
 		await expect(collect(provider.stream(REQ("deepseek-v4-pro")))).rejects.toThrow(/DEEPSEEK_API_KEY/);
 	});

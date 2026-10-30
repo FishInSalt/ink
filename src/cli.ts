@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { runCliLogin, runCliLogout } from "./cli-login.js";
 import { loadMdCommands } from "./core/commands-md.js";
 import { DEFAULT_MAX_TOKENS } from "./core/constants.js";
 import { processFileArguments } from "./core/file-processor.js";
@@ -21,11 +22,10 @@ import { loadDotEnv } from "./env.js";
 import { type LoadedExtensions, loadExtensions, printExtensionDiagnostics } from "./extensions/loader.js";
 import type { ExtensionRegistry } from "./extensions/registry.js";
 import type { ConfirmOptions, RegisteredExtensionCommand } from "./extensions/types.js";
-import { bold, dim, red, VERSION } from "./format.js";
+import { dim, red, VERSION } from "./format.js";
 import { discoverMcpConfig } from "./mcp/config.js";
 import { McpManager } from "./mcp/manager.js";
 import { loadCatalogCache, refreshCatalog } from "./provider/catalog.js";
-import { loginCodex, logoutCodex } from "./provider/codex-auth.js";
 import { LOGIN_TARGETS } from "./provider/login-targets.js";
 import { configuredFamilies, modelAvailability } from "./provider/model-availability.js";
 import { parseModelRef } from "./provider/resolve.js";
@@ -146,7 +146,7 @@ Usage:
                            <file> blocks, images attach to the first message
   ink                     Start an interactive session (REPL)
   ink sessions             List saved sessions for this directory
-  ink login                Log in to OpenAI (ChatGPT plan) — device-code OAuth
+  ink login                Sign in with ChatGPT — browser authorization
   ink logout               Remove the stored OpenAI (ChatGPT plan) credential;
                            keys saved by /login stay
 
@@ -198,9 +198,10 @@ Environment:
   (or /login moonshotai / /login moonshotai-cn in the REPL — a stored key
   wins; both families read MOONSHOT_API_KEY)
 
-  OpenAI ChatGPT (Codex) subscription plan — OAuth login, then:
+  OpenAI ChatGPT subscription plan — browser authorization:
     ink login
-    ink -m openai-codex/gpt-5.5
+    # login suggests the first model listed for your account
+    ink -m openai-codex/<account-listed-model>
 
   OpenAI and OpenAI-compatible providers (model id prefix routes):
     export OPENAI_API_KEY=<key>
@@ -372,32 +373,6 @@ function parseArgs(argv: string[]): CliOptions {
 	return opts;
 }
 
-/** `ink login` — device-code OAuth for the OpenAI (ChatGPT plan) credential. */
-async function runLogin(): Promise<void> {
-	const controller = new AbortController();
-	process.on("SIGINT", () => controller.abort());
-	try {
-		await loginCodex({
-			signal: controller.signal,
-			onDeviceCode: ({ verificationUri, userCode, intervalSeconds }) => {
-				process.stdout.write(
-					`OpenAI (ChatGPT plan) login\n\n` +
-						`  1. open:    ${verificationUri}\n` +
-						`  2. enter code: ${bold(userCode)}\n\n` +
-						`Waiting for you to confirm (polls every ${intervalSeconds}s, Ctrl+C cancels)…\n`,
-				);
-			},
-		});
-		process.stdout.write(
-			`Logged in. The credential is stored in ~/.ink/auth.json\n` +
-				`Use OpenAI models with:  ink -m openai-codex/gpt-5.5\n`,
-		);
-	} catch (err) {
-		process.stderr.write(red(`ink: ${err instanceof Error ? err.message : String(err)}\n`));
-		process.exitCode = 1;
-	}
-}
-
 /** `ink sessions` — list saved sessions for this directory. */
 function printSessionList(): void {
 	const sessions = listSessions(process.cwd());
@@ -442,12 +417,15 @@ async function main(): Promise<void> {
 		return;
 	}
 	if (argv[0] === "login") {
-		await runLogin();
+		process.exitCode = await runCliLogin();
 		return;
 	}
 	if (argv[0] === "logout") {
-		logoutCodex();
-		process.stdout.write("Logged out of OpenAI (ChatGPT plan).\n");
+		try {
+			await runCliLogout();
+		} catch (err) {
+			reportStartupError(err);
+		}
 		return;
 	}
 	const opts = parseArgs(argv);
@@ -860,6 +838,7 @@ function runnerOptions(opts: CliOptions, argv: string[], renderer: Renderer): Ru
 		argv,
 		model: opts.model,
 		modelExplicit: opts.modelExplicit,
+		modelSource: opts.modelSource,
 		// #fresh-install-hint (round-2 review F3): print mode marks itself —
 		// the D2 teaching note is interactive-only (stdout byte contract).
 		thinking: opts.thinking,

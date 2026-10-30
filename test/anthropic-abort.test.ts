@@ -74,11 +74,11 @@ describe("anthropic key resolution (#login-repl review P2)", () => {
 			await drain();
 			expect(captured).toEqual({ authorization: "Bearer tok-env", xApiKey: undefined });
 			// a stored key takes over (x-api-key) even with both envs present
-			saveApiKey("anthropic", "key-stored");
+			await saveApiKey("anthropic", "key-stored");
 			await drain();
 			expect(captured).toEqual({ authorization: undefined, xApiKey: "key-stored" });
 			// and without the stored key, API_KEY alone sends x-api-key
-			clearApiKey("anthropic");
+			await clearApiKey("anthropic");
 			delete process.env.ANTHROPIC_AUTH_TOKEN;
 			await drain();
 			expect(captured).toEqual({ authorization: undefined, xApiKey: "key-env" });

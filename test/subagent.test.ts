@@ -8,6 +8,7 @@ import type { SubagentOutcome } from "../src/core/subagent.js";
 import { CHILD_SUFFIX, childUsageTrailer, finalAssistantText, runSubagent } from "../src/core/subagent.js";
 import type { Tool } from "../src/core/tools/types.js";
 import { loadCatalogCache, resetCatalogForTest } from "../src/provider/catalog.js";
+import { createCodexResponsesProvider } from "../src/provider/codex-responses.js";
 import type { LLMProvider, LLMRequest } from "../src/provider/types.js";
 import { assistant, type Gate, gate, type ScriptStep, scriptedProvider, user } from "./helpers/fakes.js";
 import { mkTempDir } from "./helpers/mktemp.js";
@@ -45,7 +46,7 @@ const echo: Tool = {
 const PARENT_SYSTEM = "You are Ink (test). # Tools\n- bash: …";
 
 describe("finalAssistantText", () => {
-	it("returns the last assistant message's first non-empty text", () => {
+	it("falls back to an earlier assistant when the last one has no text", () => {
 		const messages: AgentMessage[] = [
 			user("go"),
 			assistant([{ type: "text", text: "first" }]),
@@ -63,6 +64,21 @@ describe("finalAssistantText", () => {
 		expect(finalAssistantText(messages)).toBe("first");
 	});
 
+	it("joins every text part of the latest nonempty assistant in order without adding separators", () => {
+		const messages: AgentMessage[] = [
+			assistant([{ type: "text", text: "old answer" }]),
+			assistant([
+				{ type: "text", text: "first" },
+				{ type: "thinking", thinking: "not answer text" },
+				{ type: "text", text: " " },
+				{ type: "toolCall", id: "call", name: "echo", arguments: {} },
+				{ type: "text", text: "second\n" },
+				{ type: "text", text: "third" },
+			]),
+			assistant([{ type: "text", text: " \n" }]),
+		];
+		expect(finalAssistantText(messages)).toBe("first second\nthird");
+	});
 	it("returns undefined when no assistant text exists anywhere", () => {
 		const messages = [user("go"), assistant([{ type: "toolCall", id: "t1", name: "echo", arguments: {} }])];
 		expect(finalAssistantText(messages)).toBeUndefined();
@@ -70,6 +86,43 @@ describe("finalAssistantText", () => {
 });
 
 describe("runSubagent", () => {
+	it("returns the complete ordered multipart Responses answer from the real provider", async () => {
+		const output = [
+			{ type: "reasoning", id: "rs_child", summary: [], encrypted_content: "opaque-only" },
+			{
+				type: "message",
+				id: "msg_child",
+				role: "assistant",
+				status: "completed",
+				phase: "final_answer",
+				content: [
+					{ type: "output_text", text: "first", annotations: [] },
+					{ type: "output_text", text: " ", annotations: [] },
+					{ type: "refusal", refusal: "second\n" },
+					{ type: "output_text", text: "third", annotations: [] },
+				],
+			},
+		];
+		const provider = createCodexResponsesProvider({
+			auth: async () => ({ accessToken: "fake-child" }),
+			fetch: async () =>
+				new Response(
+					`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", output, usage: { input_tokens: 1, output_tokens: 3 } } })}\n\n`,
+					{ headers: { "content-type": "text/event-stream" } },
+				),
+		});
+		const outcome = await runSubagent({
+			provider,
+			model: "gpt-5.5",
+			system: "",
+			tools: [],
+			prompt: "multipart",
+			autoCompact: false,
+		});
+		expect(outcome.status).toBe("completed");
+		expect(outcome.turns).toBe(1);
+		expect(outcome.text).toBe("first second\nthird");
+	});
 	it("gives the child a fresh context: one user message, parent system + CHILD_SUFFIX, tools passed through", async () => {
 		const sink: LLMRequest[] = [];
 		const provider = scriptedProvider([assistant([{ type: "text", text: "done" }])], sink);

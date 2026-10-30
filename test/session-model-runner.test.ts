@@ -3,7 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSession, listSessions } from "../src/core/session/manager.js";
 import { type SessionModel, SessionStore } from "../src/core/session/store.js";
-import { loadCatalogCache, resetCatalogForTest } from "../src/provider/catalog.js";
+import { CODEX_METADATA_SOURCE, loadCatalogCache, resetCatalogForTest } from "../src/provider/catalog.js";
 import { compactionSettingsFor } from "../src/provider/compaction-settings.js";
 import { resetDiscoveredWindowsForTest } from "../src/provider/discover.js";
 import { contextWindowInfoFor } from "../src/provider/models.js";
@@ -76,6 +76,8 @@ beforeEach(() => {
 		"ANTHROPIC_AUTH_TOKEN",
 		"OPENAI_API_KEY",
 		"ZAI_API_KEY",
+		"DEEPSEEK_API_KEY",
+		"MOONSHOT_API_KEY",
 		"INK_MODEL",
 		"INK_THINKING",
 	])
@@ -371,6 +373,179 @@ describe("runner per-session model restoration", () => {
 		expect(snapshot(store)).toEqual(before);
 	});
 
+	it.each(["startup", "slash"])(
+		"%s resume preserves a subscription selection without credentials even when API-key billing is configured",
+		async (mode) => {
+			vi.stubEnv("OPENAI_API_KEY", "api-key-must-not-replace-subscription");
+			const subscription = { provider: "openai-codex", modelId: "account-unlisted-choice" };
+			const store = saved(subscription);
+			const before = snapshot(store);
+			const live = await runner(mode === "startup" ? { resume: store.header.id } : {});
+			if (mode === "slash") live.resumeSession(store.header.id);
+			expect(live.modelReference()).toBe(qualified(subscription));
+			expect(live.providerName).toBe("openai-codex");
+			expect(live.modelSelectionPending()).toBe(false);
+			expect(live.modelUsable()).toBe(false);
+			expect(live.output()).not.toContain("using openai/");
+			expect(snapshot(store)).toEqual(before);
+			expect(calls).toEqual([]);
+			expect(fetch).not.toHaveBeenCalled();
+			await live.runTurn({ userMessage: "still the subscription model" });
+			expect(calls.at(-1)?.family).toBe("openai-codex");
+			expect(calls.at(-1)?.request.model).toBe(subscription.modelId);
+		},
+	);
+
+	it("explicit subscription remains selected when resuming a model-less session", async () => {
+		vi.stubEnv("OPENAI_API_KEY", "must-not-fall-back-to-api-key");
+		const legacy = saved();
+		const live = await runner({
+			model: "openai-codex/explicit-unlisted",
+			modelSource: "global",
+			resume: legacy.header.id,
+		});
+		expect(live.modelReference()).toBe("openai-codex/explicit-unlisted");
+		expect(live.modelSelectionPending()).toBe(false);
+		expect(live.modelUsable()).toBe(false);
+		expect(reopen(legacy).getModel()).toBeUndefined();
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it.each(["cli", "env", "project", "global"] as const)(
+		"fresh deliberate subscription (%s) persists through messages and real-session resume with only an API key",
+		async (modelSource) => {
+			const subscription = { provider: "openai-codex", modelId: "chosen-without-token" };
+			const live = await runner({
+				model: qualified(subscription),
+				modelSource,
+				modelExplicit: modelSource === "cli",
+			});
+			const store = live.session!;
+			expect(live.modelUsable()).toBe(false);
+			expect(live.modelSelectionPending()).toBe(false);
+			expect(store.getModel()).toEqual(subscription);
+			expect(fs.existsSync(store.filePath)).toBe(false); // seeding remains lazy
+			await live.runTurn({ userMessage: "persist my deliberate subscription choice" });
+			expect(reopen(store).getModel()).toEqual(subscription);
+			expect(JSON.parse(snapshot(store).bytes.split("\n")[0]!).model).toEqual(subscription);
+			vi.stubEnv("OPENAI_API_KEY", "api-key-must-not-replace-subscription");
+			const resumed = await runner({
+				resume: store.header.id,
+				model: "claude-sonnet-4-5",
+				modelSource: "builtin",
+			});
+			expect(resumed.providerName).toBe("openai-codex");
+			expect(resumed.modelReference()).toBe(qualified(subscription));
+			expect(resumed.modelUsable()).toBe(false);
+			expect(resumed.modelSelectionPending()).toBe(false);
+			await resumed.runTurn({ userMessage: "continue without changing billing provider" });
+			expect(calls.map(({ family, request }) => [family, request.model])).toEqual([
+				["openai-codex", subscription.modelId],
+				["openai-codex", subscription.modelId],
+			]);
+			expect(fetch).not.toHaveBeenCalled();
+		},
+	);
+
+	it("model-less restored history records a deliberate retained subscription on the next message", async () => {
+		vi.stubEnv("OPENAI_API_KEY", "api-key-must-not-replace-subscription");
+		const legacy = saved();
+		const subscription = { provider: "openai-codex", modelId: "configured-without-token" };
+		const live = await runner({
+			model: qualified(subscription),
+			modelSource: "global",
+			resume: legacy.header.id,
+		});
+		// No rewrite on merely opening old history; selection is appended
+		// with its next message, even without an intervening setModel call.
+		expect(reopen(legacy).getModel()).toBeUndefined();
+		expect(live.modelSelectionPending()).toBe(false);
+		await live.runTurn({ userMessage: "record the retained selection" });
+		expect(reopen(legacy).getModel()).toEqual(subscription);
+		expect(snapshot(legacy).bytes).toContain('"type":"session_model","provider":"openai-codex"');
+		const resumed = await runner({
+			resume: legacy.header.id,
+			model: "claude-sonnet-4-5",
+			modelSource: "builtin",
+		});
+		expect(resumed.modelReference()).toBe(qualified(subscription));
+		expect(resumed.modelUsable()).toBe(false);
+		expect(fetch).not.toHaveBeenCalled();
+	});
+
+	it("/new retains deliberate subscription identity without credentials and persists it lazily", async () => {
+		vi.stubEnv("OPENAI_API_KEY", "api-key-must-not-replace-subscription");
+		const live = await runner({
+			model: "openai-codex/new-without-token",
+			modelSource: "cli",
+			modelExplicit: true,
+		});
+		live.newSession();
+		const store = live.session!;
+		expect(fs.existsSync(store.filePath)).toBe(false);
+		await live.runTurn({ userMessage: "keep subscription for this new session" });
+		expect(reopen(store).getModel()).toEqual({ provider: "openai-codex", modelId: "new-without-token" });
+		const resumed = await runner({
+			continueRecent: true,
+			model: "claude-sonnet-4-5",
+			modelSource: "builtin",
+		});
+		expect(resumed.modelReference()).toBe("openai-codex/new-without-token");
+	});
+
+	it.each(["claude-sonnet-4-5", "openai-codex/unselected-placeholder"])(
+		"unselected builtin placeholder %s is still absent from persisted session identity",
+		async (model) => {
+			const live = await runner({ model, modelSource: "builtin" });
+			expect(live.modelSelectionPending()).toBe(true);
+			expect(live.session?.getModel()).toBeUndefined();
+			await live.runTurn({ userMessage: "unselected builtin must not become a choice" });
+			expect(reopen(live.session!).getModel()).toBeUndefined();
+			expect(snapshot(live.session!).bytes).not.toContain('"type":"session_model"');
+		},
+	);
+
+	it("slash resume recomputes unselected intent from that session instead of the prior session's selection", async () => {
+		const subscription = saved({ provider: "openai-codex", modelId: "saved-subscription" });
+		const legacy = saved();
+		const live = await runner({
+			model: "claude-sonnet-4-5",
+			modelSource: "builtin",
+			resume: subscription.header.id,
+		});
+		expect(live.modelSelectionPending()).toBe(false);
+		live.resumeSession(legacy.header.id);
+		expect(live.modelSelectionPending()).toBe(true);
+		live.resumeSession(subscription.header.id);
+		expect(live.modelReference()).toBe("openai-codex/saved-subscription");
+		expect(live.modelSelectionPending()).toBe(false);
+	});
+
+	it.each(["cli", "env", "project", "global"] as const)(
+		"configured subscription startup intent (%s) is separate from credential availability",
+		async (modelSource) => {
+			const live = await runner({
+				model: "openai-codex/account-unlisted-choice",
+				modelSource,
+				noSession: true,
+			});
+			expect(live.modelSelectionPending()).toBe(false);
+			expect(live.modelUsable()).toBe(false);
+			live.newSession();
+			expect(live.modelReference()).toBe("openai-codex/account-unlisted-choice");
+			expect(live.modelSelectionPending()).toBe(false);
+		},
+	);
+
+	it("only a builtin unselected model permits login-time selection; /model records intent even without credentials", async () => {
+		const live = await runner({ model: "claude-sonnet-4-5", modelSource: "builtin", noSession: true });
+		expect(live.modelSelectionPending()).toBe(true);
+		live.setModel("openai-codex/not-in-account-list");
+		expect(live.modelSelectionPending()).toBe(false);
+		expect(live.modelSelectedExplicitly()).toBe(true);
+		expect(live.modelUsable()).toBe(false);
+	});
+
 	it("setModel persistence failure leaves provider, model, thinking, history and session unchanged", async () => {
 		const store = saved(initial);
 		const live = await runner({ resume: store.header.id, thinking: "high" });
@@ -408,10 +583,14 @@ describe("runner context window provider identity", () => {
 		const providers = Object.fromEntries(
 			Object.entries(windows).map(([provider, contextWindow]) => [
 				provider,
-				{ models: { [modelId]: { id: modelId, contextWindow } }, checkedAt: 1 },
+				{
+					models: { [modelId]: { id: modelId, contextWindow } },
+					checkedAt: 1,
+					...(provider === "openai-codex" ? { source: CODEX_METADATA_SOURCE } : {}),
+				},
 			]),
 		);
-		fs.writeFileSync(process.env.INK_CATALOG_PATH!, JSON.stringify({ version: 1, providers }));
+		fs.writeFileSync(process.env.INK_CATALOG_PATH!, JSON.stringify({ version: 2, providers }));
 		resetCatalogForTest();
 		expect(loadCatalogCache()).toBe(true);
 	}

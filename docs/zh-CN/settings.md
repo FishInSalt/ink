@@ -39,8 +39,9 @@
 
 | 路径 | 用途 |
 |---|---|
-| `~/.ink/auth.json` | 来自 `/login` 的凭据（0600）；存储的密钥优先于环境变量 |
-| `~/.ink/models-catalog.json` | 模型目录磁盘缓存（4 小时刷新窗口） |
+| `~/.ink/auth.json` | 凭据、订阅注册及随机安装标识（0600）；存储的密钥优先于环境变量 |
+| `~/.ink/models-catalog.json` | 模型元数据磁盘缓存（4 小时刷新窗口） |
+| `~/.ink/chatgpt-models.json` | 账户专属订阅模型列表（5 分钟有效窗口） |
 | `~/.ink/commands/` | Markdown 快捷命令（`/<filename>`） |
 | `~/.ink/extensions/` | 全局扩展 |
 | `~/.ink/agents/` | 全局具名 agent |

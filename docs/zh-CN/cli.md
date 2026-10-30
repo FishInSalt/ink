@@ -31,7 +31,8 @@ prefix（先运行 `npm config get prefix`，再按 npm 文档修复权限），
 （默认安全）；可以用 `ink --trust` 预先批准，每个项目一次。
 
 用 `/login` 登录——提供商选择器会把 API key 存到 `~/.ink/auth.json`（0600），
-优先于环境变量；ChatGPT 套餐通过 OAuth 设备码登录。或者在启动前设置环境变量：
+优先于环境变量；ChatGPT 套餐通过浏览器 OAuth 授权。旧设备码用户需要运行一次
+`ink login` 授权新连接，无需先退出登录。或者在启动前设置环境变量：
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -78,8 +79,8 @@ echo "fix the typo" | ink   # piped: one turn, exits at EOF (empty pipe: help + 
 | 命令 | 说明 |
 |---|---|
 | `ink sessions` | 列出本目录保存的会话 |
-| `ink login` | OpenAI（ChatGPT 套餐）设备码 OAuth |
-| `ink logout` | 移除存储的 ChatGPT 套餐凭据（`/login` 保存的 key 保留） |
+| `ink login` | 在浏览器中授权 ChatGPT 订阅；交互式回调 URL 输入不回显 |
+| `ink logout` | 撤销并清除 ChatGPT 套餐 token；若远端撤销未确认则提示（其他 key 保留） |
 
 ## 环境变量
 
@@ -88,6 +89,7 @@ echo "fix the typo" | ink   # piped: one turn, exits at EOF (empty pipe: help + 
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | Anthropic key / Bearer token |
 | `ANTHROPIC_BASE_URL` | 覆盖 Anthropic 兼容服务的端点 |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI key / 端点覆盖（任何 OpenAI 兼容服务） |
+| `OPENAI_CODEX_BASE_URL` | ChatGPT 订阅 API 基址（默认 `https://api.openai.com/v1`，仅 HTTPS） |
 | `ZAI_API_KEY` | Z.ai key（GLM Coding Plan） |
 | `DEEPSEEK_API_KEY` | DeepSeek key |
 | `MOONSHOT_API_KEY` | Moonshot/Kimi key（两个家族） |

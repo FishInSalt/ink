@@ -80,7 +80,7 @@ import {
 	qualifiedReference,
 	resolveModel,
 } from "./provider/resolve.js";
-import { resolveStartupModelFallback } from "./provider/startup-model.js";
+import { type ModelSource, resolveStartupModelFallback } from "./provider/startup-model.js";
 import {
 	clampThinkingLevel,
 	THINKING_LEVELS,
@@ -138,6 +138,8 @@ export interface RunnerOptions {
 	model: string;
 	/** Only an explicit startup -m/--model overrides a saved session model. */
 	modelExplicit?: boolean;
+	/** Preserve selection intent independently of current credentials. */
+	modelSource?: ModelSource;
 	maxTokens: number;
 	/** #output-truncation D3: true only when --max-tokens was passed
 	 *  explicitly — an explicit value beats the model catalog limit. */
@@ -301,6 +303,10 @@ export interface Runner {
 	 *  surfaces that mirror "what is in use" (banner/footer) keep the /login
 	 *  pointer until a credential exists. */
 	modelSelectedExplicitly(): boolean;
+	/** True only for an unselected/builtin startup, never configured,
+	 *  explicit or restored session selections. Login may select a first
+	 *  discovered model only in this state, not merely when unusable. */
+	modelSelectionPending(): boolean;
 	/** The renderer all status output flows through (shared with the REPL). */
 	readonly renderer: Renderer;
 	runTurn(options: RunTurnOptions): Promise<RunAgentLoopResult>;
@@ -411,6 +417,8 @@ class RunnerImpl implements Runner {
 	/** #fresh-install-hint (round-2 review F5): an explicit -m or /model pick —
 	 *  see modelSelectedExplicitly(). */
 	private modelExplicitPick: boolean;
+	private modelSelectionHasIntent: boolean;
+	private readonly startupModelHasIntent: boolean;
 	providerName: ProviderName; // implements Runner's public readonly tell
 	/** The live tool table (M18: public — the MCP manager splices its bridged
 	 *  tools in at run boundaries; the array identity is stable for the loop's
@@ -507,6 +515,14 @@ class RunnerImpl implements Runner {
 			projectAllowed: this.options.projectSettingsAllowed === true,
 			globalPath: this.options.settingsPath,
 		});
+		this.modelSelectionHasIntent =
+			options.modelExplicit === true ||
+			(options.modelSource !== undefined
+				? options.modelSource !== "builtin"
+				: options.model !== "claude-sonnet-4-5" ||
+					process.env.INK_MODEL !== undefined ||
+					this.effective.defaultModel !== undefined);
+		this.startupModelHasIntent = this.modelSelectionHasIntent;
 		this.lastRunModel = initialModel;
 		// #thinking-levels: startup level (--thinking / INK_THINKING) > the
 		// settings default (persisted by setThinkingLevel) > pi's
@@ -680,7 +696,11 @@ class RunnerImpl implements Runner {
 					this.estimateFloor = loaded.compactionBoundary; // already built — no rebuild
 					this.restoreThinkingFromSession(resumed); // --resume/-c restore the branch's level too
 					const stats = resumed.stats();
-					const est = estimateContextTokens(this.history, this.estimateFloor);
+					const est = estimateContextTokens(
+						this.history,
+						this.estimateFloor,
+						qualifiedReference(this.providerName, this.model),
+					);
 					// #fresh-install-hint (D1, round-2 N3): the resumed note never
 					// renders a model whose family holds no credential as in use.
 					// #startup-model-resolution (D6): the copy distinguishes
@@ -696,12 +716,9 @@ class RunnerImpl implements Runner {
 				}
 			}
 			this.sessionStore ??= createSession(options.cwd, options.sessionBaseDir);
-			// #fresh-install-hint (D4, round-1 F2 — site 1/3): never persist a
-			// model whose family holds no credential; the session stays
-			// model-less until the user picks/logs in. resume keeps working —
-			// restoreModelFromSession's `saved ? … : options.model` chain
-			// resolves the startup default without a stored row.
-			if (this.modelUsable())
+			// Deliberate subscription choices survive missing credentials;
+			// unselected builtin placeholders still must not enter sessions.
+			if (this.modelCanBeSeeded())
 				this.sessionStore.seedModel({ provider: this.providerName, modelId: this.model });
 		}
 		this.noteModelCredential(`${this.providerName}/${this.model}`, this.providerName);
@@ -875,9 +892,9 @@ class RunnerImpl implements Runner {
 		const previous = this.sessionStore;
 		if (previous) {
 			this.sessionStore = createSession(this.options.cwd, this.options.sessionBaseDir);
-			// #fresh-install-hint (D4, round-1 F2 — site 2/3): /new must not
-			// resurrect the dead default on a fresh install.
-			if (this.modelUsable())
+			// Keep a deliberate subscription choice through /new, without
+			// resurrecting an unselected dead builtin on a fresh install.
+			if (this.modelCanBeSeeded())
 				this.sessionStore.seedModel({ provider: this.providerName, modelId: this.model });
 			const id8 = this.sessionStore.header.id.slice(0, 8);
 			const old8 = previous.header.id.slice(0, 8);
@@ -1215,19 +1232,21 @@ class RunnerImpl implements Runner {
 		let prepared = this.prepareModel(
 			!explicit && saved ? `${saved.provider}/${saved.modelId}` : this.options.model,
 		);
-		// #startup-model-resolution (D3/OPEN-1): a restored model whose family
-		// lost its credential resolves to the unique credential-source family
-		// — the same "no usable model" predicate as D2, in memory only. The
-		// recorded row is deliberately NOT rewritten (divergence contract,
-		// round-1 A-F2): each startup re-derives deterministically, and the
-		// row keeps recording what the session actually used. An explicit -m
-		// never enters this branch (P5) — including the interactive /resume
-		// fallback where -m is the only reference (round-2 impl review F3).
+		// Missing subscription credentials must never change the selected
+		// model/provider (in particular, never to API-key billing). Keep the
+		// existing non-subscription restore behavior, but use account-list
+		// defaults only for a truly unselected/model-less startup.
 		const mayResolve =
-			!explicit && !this.providerIsTestFake && (saved !== undefined || this.options.modelExplicit !== true);
+			!explicit &&
+			!this.providerIsTestFake &&
+			prepared.ref.provider !== "openai-codex" &&
+			(saved !== undefined || this.options.modelExplicit !== true);
 		if (mayResolve && !modelAvailability(prepared.ref.provider).usable) {
 			const fallback = resolveStartupModelFallback();
-			if (fallback !== undefined) {
+			if (
+				fallback !== undefined &&
+				(fallback.family !== "openai-codex" || (saved === undefined && !this.startupModelHasIntent))
+			) {
 				// "restored model" only when a row was actually restored; the no-row
 				// fallback names the dead reference plainly (user review finding 6).
 				const subject = saved !== undefined ? `restored model ${prepared.reference}` : prepared.reference;
@@ -1238,28 +1257,25 @@ class RunnerImpl implements Runner {
 			}
 		}
 		if (explicit) store.setModel(prepared.ref);
-		// #fresh-install-hint (D4, round-1 F2 — site 3/3): the resume path must
-		// not re-seed a dead default either — this is the line that made the
-		// warmup gate pointless one `ink -c` later. The in-memory model still
-		// applies (the turn can run and fail with the provider's key error);
-		// only the PERSISTENCE is gated. Round-2 review F2: probe the model
-		// BEING PERSISTED (prepared.ref.provider), not the pre-switch live
-		// family — a /resume after switching families seeded the OLD family's
-		// usability verdict into the NEW session otherwise.
-		else if (this.providerIsTestFake || modelAvailability(prepared.ref.provider).usable)
+		// Probe the restored pair, not the previous session's family. A
+		// deliberate subscription default must also survive model-less
+		// history without a token; builtin placeholders remain unseeded.
+		else if (this.modelCanBeSeeded(prepared.ref.provider, saved !== undefined || this.startupModelHasIntent))
 			store.seedModel(prepared.ref);
 		const level = startup
 			? (this.options.thinking ?? this.effectiveSettings().defaultThinkingLevel ?? "medium")
 			: this.level;
 		this.applyModel(prepared, level);
+		this.modelSelectionHasIntent = saved !== undefined || this.startupModelHasIntent;
 		if (!startup) this.noteMissingZaiCredential(prepared.reference, prepared.ref.provider);
 	}
 
 	setModel(reference: string): void {
 		const prepared = this.prepareModel(reference);
-		this.modelExplicitPick = true; // F5: a /model pick is the user's explicit choice
 		this.sessionStore?.setModel(prepared.ref);
 		this.applyModel(prepared);
+		this.modelExplicitPick = true;
+		this.modelSelectionHasIntent = true;
 		this.noteMissingZaiCredential(prepared.reference, prepared.ref.provider);
 	}
 
@@ -1280,6 +1296,16 @@ class RunnerImpl implements Runner {
 		return modelAvailability(this.providerName).usable;
 	}
 
+	/** Selection intent is durable even when OAuth is absent/expired. This
+	 *  predicate controls only session identity, never inference permission. */
+	private modelCanBeSeeded(provider = this.providerName, hasIntent = this.modelSelectionHasIntent): boolean {
+		return (
+			(provider === "openai-codex" && hasIntent) ||
+			this.providerIsTestFake ||
+			modelAvailability(provider).usable
+		);
+	}
+
 	/** #startup-model-resolution (D6): see the Runner interface. */
 	hasConfiguredProviders(): boolean {
 		return modelAvailability(this.providerName).configuredFamilies.length > 0;
@@ -1287,6 +1313,10 @@ class RunnerImpl implements Runner {
 
 	modelSelectedExplicitly(): boolean {
 		return this.modelExplicitPick;
+	}
+
+	modelSelectionPending(): boolean {
+		return !this.modelSelectionHasIntent;
 	}
 
 	get contextWindow(): number {
@@ -1306,6 +1336,11 @@ class RunnerImpl implements Runner {
 		// in this run's compaction seam or overflow retry.
 		const model = this.model;
 		const session = this.sessionStore;
+		// Login may retain the current deliberate selection rather than
+		// call setModel. Seed automatically before the first message write,
+		// including model-less resumed history, without a UI persistence hook.
+		if (this.providerName === "openai-codex" && this.modelCanBeSeeded())
+			session?.seedModel({ provider: this.providerName, modelId: model });
 		const context: RunContext = {
 			model,
 			provider: this.provider,
@@ -1389,11 +1424,21 @@ class RunnerImpl implements Runner {
 			} catch (compactErr) {
 				const compactCause = compactErr instanceof Error ? compactErr.message : String(compactErr);
 				this.logger.log("run_error", { source: "compaction", message: compactCause });
-				throw new Error(overflowGuidance(estimateContextTokens(this.history).tokens, settings, compactCause));
+				throw new Error(
+					overflowGuidance(
+						estimateContextTokens(this.history, this.estimateFloor, modelReference).tokens,
+						settings,
+						compactCause,
+					),
+				);
 			}
 			if (!compacted) {
 				throw new Error(
-					overflowGuidance(estimateContextTokens(this.history).tokens, settings, "nothing safe to compact"),
+					overflowGuidance(
+						estimateContextTokens(this.history, this.estimateFloor, modelReference).tokens,
+						settings,
+						"nothing safe to compact",
+					),
 				);
 			}
 			// retry over the existing history (user message already appended).
@@ -1417,7 +1462,7 @@ class RunnerImpl implements Runner {
 						// #compaction-ux F1: the splice above invalidated prior
 						// anchors — pass the floor or the guidance quotes the
 						// pre-compaction size (review P3-1).
-						estimateContextTokens(this.history, this.estimateFloor).tokens,
+						estimateContextTokens(this.history, this.estimateFloor, modelReference).tokens,
 						settings,
 						"still over the window after one compaction",
 					),
@@ -1488,7 +1533,7 @@ class RunnerImpl implements Runner {
 							// #compaction-ux F1: the floor keeps pre-compaction tail
 							// usage from anchoring — without it a just-compacted
 							// session re-triggers on the stale ~window-sized reading.
-							const est = estimateContextTokens(history, this.estimateFloor);
+							const est = estimateContextTokens(history, this.estimateFloor, modelReference);
 							if (!shouldCompact(est.tokens, settings)) return;
 							this.options.renderer.note(`▪ context ~${formatTokens(est.tokens)} tokens — compacting…`);
 							// #overflow-grace: a failed pre-prompt compaction must not surface
