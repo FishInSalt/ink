@@ -4,11 +4,10 @@ Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/desig
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
 The selected package/version is **`ink-agent@0.5.0`**, with the sole `ink`
-executable. This version is prepared locally; publication is pending.
-The dated `0.5.0` CHANGELOG section contains candidate notes, not evidence of
-publication; its date must be checked when publishing. The preparation record is
-[`docs/design/release-0.5.0-preparation.md`](docs/design/release-0.5.0-preparation.md).
-The latest recorded published version remains `0.4.4`.
+executable. Version `0.5.0` is published; npm `latest` selects it.
+The dated `0.5.0` CHANGELOG section contains the release notes; publication and
+verification evidence is recorded in
+[`docs/design/release-0.5.0-preparation.md`](docs/design/release-0.5.0-preparation.md#publication).
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -37,7 +36,7 @@ require their ordinary approvals. Preserve historical tags/workflow files and
 [`docs/design/publishing-design.md`](docs/design/publishing-design.md) is an archival design,
 not the current release procedure.
 
-## OIDC publication is live (through `0.4.4`)
+## OIDC publication is live (through `0.5.0`)
 
 `ink-agent@0.2.0` was published manually from the reviewed artifact (no
 provenance); the trusted publisher is bound; the repository is
@@ -149,6 +148,22 @@ published to the transparency log (index 3463928943). No further `0.4.4`
 publication action is pending. A global installation remains a separate
 operator action; future releases require the same separate approvals.
 
+`ink-agent@0.5.0` is published from merge commit `8bc00e6`. Annotated tag
+`v0.5.0` was pushed on 2026-10-30 after supported-Node CI passed. npm `latest`
+selects `0.5.0` with `gitHead` `8bc00e6` and integrity
+`sha512-yfml321lA4fQkN2VBnf7EQWeriHNTcg3UuQBJI0OuONQeLTshi6IaMurFH7e71btfyInsJtw+WTjj0+ZbQ4RTw==`.
+[Release run `41073919492`](https://github.com/FishInSalt/ink/actions/runs/41073919492)
+passed its gate and real npm publish, but failed the final 180-second registry
+visibility check. The package became visible afterward and was independently
+verified: all 427 packed files match the reviewed artifact, isolated installed
+help/version pass, and registry signatures plus publication/provenance
+attestations pass cryptographic verification. The provenance transparency-log
+index is `3595620334`. The non-prerelease
+[GitHub Release](https://github.com/FishInSalt/ink/releases/tag/v0.5.0) is published
+from the dated CHANGELOG section. Do not rerun the workflow or reuse its tag or
+version; no npm publication remains pending. Global installation was not
+performed and remains a separate operator action.
+
 The binding must match `release.yml`: GitHub Actions, repository
 `FishInSalt/ink`, workflow filename `release.yml`, no environment. Ownership and
 publishability of `ink-agent` are established (registry presence is not
@@ -218,7 +233,7 @@ tests, design docs, or unexpected artifacts. Top-level English and zh-CN
 user documentation is intentionally shipped. It installs locally in a private
 temporary prefix with temporary HOME/cache, no credentials, no install
 scripts, and no network. It executes help and exact `Ink 0.5.0` version
-(for this candidate), then checks npm-exec's single-bin inference against the
+(for this release), then checks npm-exec's single-bin inference against the
 **local tarball from a neutral cwd**. It never invokes `npx ink` or modifies
 shared dependencies. The optional cache source is read-only; missing cached
 dependencies fail instead of fetching. Scratch paths are printed for

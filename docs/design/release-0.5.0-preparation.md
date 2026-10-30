@@ -1,7 +1,7 @@
 # Ink 0.5.0 local release preparation
 
 Date: 2026-10-30
-Status: local candidate validated and independently approved; unpublished.
+Status: published from `8bc00e6`; see [Publication](#publication) for the final outcome.
 Independent adversarial plan review `16eb303e`: PASS before implementation.
 Branch: `release/0.5.0`
 Base: `cd0535d` (clean local main); previous release `v0.4.4` / `e6d9194`.
@@ -132,3 +132,56 @@ Integrated local results (macOS arm64 / Node 25.5.0):
   closed for new response admission, not retroactive cleanup. The other three
   residual findings remain deferred. New supported-Node CI, tag and publication
   await the external-action confirmation; version 0.5.0 remains unpublished.
+
+## Publication
+
+Published 2026-10-30. This final outcome supersedes the earlier pending
+permission, CI and publication statements, which describe preparation stages.
+The owner explicitly confirmed the main/Pages push, matching tag/npm publication,
+GitHub Release creation and record push. Record-plan review `c0aef568`: PASS
+before this documentation-only batch on `docs/release-0.5.0-publication`;
+final independent evidence/diff review: APPROVE. Lint, diff checks and explicit
+validation of 14 relative links / 3 anchors passed.
+
+- Release commit: `8bc00e69911727985597ab8d4688b51693985356`.
+  Annotated tag object: `3abdc53ec64323e079f03d5be69fd7cec2695afe`;
+  `v0.5.0^{commit}` resolves to that release commit, not the later record merge.
+- [CI `41071632874`](https://github.com/FishInSalt/ink/actions/runs/41071632874)
+  passed on Linux Node 22.19.0 and 24.22.1: each had 157 test files / 4,104 tests
+  passed, 1 macOS-only clipboard test skipped, and a 427-file artifact smoke.
+  [Pages `41071632967`](https://github.com/FishInSalt/ink/actions/runs/41071632967)
+  passed; the public provider page contains the missing/empty-output rule.
+- [Release `41073919492`](https://github.com/FishInSalt/ink/actions/runs/41073919492),
+  attempt 1: the Node 24.22.1 gate passed with the same test/file/smoke counts.
+  The real npm publish succeeded at 14:44:42Z, but its final registry-visibility
+  check failed at 14:47:45Z after 12 probes / nominal 180 seconds. npm reported
+  processing in progress; individual probe errors were suppressed, so no deeper
+  per-probe cause is asserted. No workflow rerun or second publish was attempted.
+- Registry metadata reports publication at `2026-10-30T14:48:50.251Z`; independent
+  polling first observed HTTP 200 at 14:48:53Z. npm `latest` selects `0.5.0`, with
+  the release commit as `gitHead`. Published integrity:
+  `sha512-yfml321lA4fQkN2VBnf7EQWeriHNTcg3UuQBJI0OuONQeLTshi6IaMurFH7e71btfyInsJtw+WTjj0+ZbQ4RTw==`.
+  SHA-1: `79d6d6c93bc4fd5d0bbddc81787a8e47602728a0` (matches the publish log).
+  The registry tarball is 816,766 bytes; its 427 packed files, bytes and modes
+  exactly match the reviewed local artifact. Compressed archive bytes differ;
+  the local smoke integrity above is not the registry integrity.
+- Independent verification used existing npm Sigstore libraries and refreshed
+  TUF-authenticated trust data. Registry signatures, the npm publish attestation,
+  SLSA provenance, certificate identity and transparency-log inclusion passed
+  cryptographic verification. Artifact digest and signed repository/workflow/
+  tag/commit agree; provenance log index `3595620334`. Four tampering/identity
+  negative controls were rejected. This is not an independent rebuild or a
+  security audit of the workflow itself.
+- An isolated offline install of the downloaded registry tarball passed exact
+  `Ink 0.5.0` and help checks; all 427 installed files match, with no network
+  attempts. No global installation, account configuration or live inference ran.
+- [GitHub Release `v0.5.0`](https://github.com/FishInSalt/ink/releases/tag/v0.5.0)
+  was published at `2026-10-30T15:05:55Z`, not draft or prerelease. Its body exactly
+  matches the approved dated CHANGELOG notes plus the full-comparison link.
+- Evidence: `/tmp/ink-ci-41071632874.dCarnI/`,
+  `/tmp/ink-release-41073919492.bkmj8R/`,
+  `/tmp/ink-publication-verify.q5MLJV/`, and
+  `/tmp/ink-responses-release.kaKnDx/github-release-0.5.0.json`.
+
+No further npm/tag publication remains pending. Do not rerun the release workflow
+or replace the tag/version. The three deferred findings above are unchanged.
