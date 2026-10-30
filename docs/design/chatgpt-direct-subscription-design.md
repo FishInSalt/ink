@@ -5,6 +5,12 @@ user acceptance confirmed on feat/chatgpt-direct-subscription (not merged).
 Follow-up scope cleanup implemented and independently reviewed on
 feat/chatgpt-direct-subscription-cleanup; offline verification complete (not merged).
 
+Metadata-source update (2026-10-30):
+[codex-catalog-source-fix.md](codex-catalog-source-fix.md) supersedes this record's
+choice of ordinary OpenAI public metadata. Subscription metadata now uses the
+public `openai-codex` catalog with a new cache-source marker. OAuth, account
+availability and public Responses transport remain unchanged.
+
 ## Goal and boundaries
 
 Replace the sole `openai-codex` subscription implementation with OpenAI's

@@ -165,11 +165,21 @@ ChatGPT 订阅的**可用模型**来自使用同一 OAuth 凭据访问的 `/v1/m
 当前已可用的内置或自动选择模型不会因登录其他提供商而被替换，只提示可手动使用
 `/model` 切换。已有配置和恢复的模型选择不变，即使凭据缺失。
 
-`openai-codex` 元数据现在读取 pi.dev 的 `openai` 条目，内部身份不变；旧 Codex
-元数据缓存被忽略。状态栏和 `/status` 按提供商与模型共同查询上下文窗口。
-`INK_CONTEXT_WINDOW` 优先；API key 家族没有目录数据时尝试运行期数据、静态表
-及 131,072 默认值。新的订阅家族不使用旧 Codex 的发现数据或静态窗口，缺少目录
-元数据时使用 131,072，除非显式覆盖。
+`openai-codex` 使用的全部元数据来自该家族自己的公开目录
+`https://pi.dev/api/models/providers/openai-codex`，包括上下文窗口、输出上限、
+费用估算、思考档位映射和视觉能力。普通 `openai` 继续使用独立目录。例如，
+GPT-6.1 Sol 当前的订阅窗口为 500,000 tokens；普通 OpenAI 目录的 272,000 是
+为避免 API 长上下文加价而采用的默认值。更换元数据来源不会改变认证、账户
+可用模型列表或 `https://api.openai.com/v1/responses` 推理端点。
+
+之前从普通 OpenAI 目录生成的订阅缓存及其 ETag 会被忽略。下次启动或打开
+`/model` 刷新时会请求订阅目录，即使旧缓存生成尚不足 4 小时。成功缓存的新来源
+数据仍可离线使用；首次成功获取之前，仍采用缺少元数据时的保守回退值。
+
+状态栏和 `/status` 按提供商与模型共同查询上下文窗口。加载有效缓存后，无需
+先打开 `/model` 即可显示该提供商的窗口。`INK_CONTEXT_WINDOW` 优先；API key
+家族没有目录窗口时尝试运行期数据、静态表及 131,072 默认值。订阅家族不使用
+旧 Codex 的发现数据或静态窗口，缺少目录元数据时使用 131,072，除非显式覆盖。
 
 ```bash
 INK_CATALOG_BASE_URL=https://mirror.example   # redirect the catalog source

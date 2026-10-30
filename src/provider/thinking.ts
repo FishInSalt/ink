@@ -4,7 +4,7 @@
  * pi's model of the world:
  *  - a 7-level ladder (off/minimal/low/medium/high/xhigh/max);
  *  - per-model metadata (pi's generated catalog: packages/ai/src/providers/
- *    data/*.json, and pi.dev/openai for direct subscriptions): `reasoning`
+ *    data/*.json, and pi.dev/openai-codex for subscriptions): `reasoning`
  *    (has a knob at all), `thinkingLevelMap` (level → wire value, where
  *    null = the model cannot do that level), and `compat` flags
  *    (forceAdaptiveThinking for Claude ≥4.6, supportsReasoningEffort for
@@ -396,8 +396,8 @@ const MODEL_RULES: ReadonlyArray<{ provider: string; prefix: string; meta: Model
 		meta: { style: "glm-openai", supportsEffort: true, levelMap: GLM_52_MAP },
 	},
 	{ provider: "zai", prefix: "glm-", meta: { style: "glm-openai" } },
-	// Direct subscriptions use ordinary OpenAI metadata/rules, not
-	// the former ChatGPT backend's Codex-specific thinking ladders.
+	// Direct subscriptions use their own catalog's thinking maps when present;
+	// the offline fallback shares the frozen OpenAI rules below.
 ];
 
 /** M14 (#model-catalog): the pi.dev catalog entry for this exact id, mapped

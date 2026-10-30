@@ -49,8 +49,8 @@ Cleanup changes no production code: remove the redundant loop direction,
 move the session receipt explanation beside history metadata and shorten it
 to one sentence per language, and compress this record.
 
-Verification on macOS arm64 / Node 25.5.0: 4,069 tests passed across 157 files;
-typecheck, lint and diff checks passed. Build and offline package smoke
-(427 allowed files) passed before the test/doc-only cleanup. Tests used isolated
-HOME and the network blocker; no real auth/model calls, main merge, publication
-or version bump.
+Integration with main `be0adf1` passed independent review `29f39c3a`.
+On macOS arm64 / Node 25.5.0, 4,073 tests passed across 157 files; typecheck,
+lint, build, diff/identity checks and offline package smoke (427 allowed files)
+passed. Tests used isolated HOME and the network blocker; no real auth/model
+calls, publication or version bump.

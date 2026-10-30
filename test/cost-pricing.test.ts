@@ -38,8 +38,8 @@ describe("SA-05 round 2: costFor is provider-scoped and fully-qualified only", (
 			cacheWrite: 0,
 			subscription: true,
 		});
-		// Direct subscription pricing uses the current OpenAI metadata catalog,
-		// never the retired backend's frozen Codex prices.
+		// Direct subscription pricing uses the current openai-codex catalog,
+		// never the frozen Codex price table when metadata is unavailable.
 		expect(costFor("openai-codex/gpt-5.4")).toBeUndefined();
 	});
 
