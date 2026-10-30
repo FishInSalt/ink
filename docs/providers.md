@@ -104,10 +104,12 @@ Responses reasoning summaries stream as thinking blocks. Final encrypted
 reasoning, message IDs, content-part boundaries and message phases are saved
 as optional replay metadata. They are replayed only to this provider with the
 same model; other providers, model changes and summaries never receive the
-ciphertext. Old sessions still work without that metadata. If the terminal
-response has an empty `output` array, normally completed items already finalized
-by `output_item.done` remain authoritative; unfinished items still fail and
-nonempty final snapshots must be complete and consistent.
+ciphertext. Old sessions still work without that metadata. On normal completion,
+a missing or empty terminal `output` requires every streamed item to be finalized
+by `output_item.done` with an omitted or `completed` status. Otherwise Ink reports
+a protocol error without saving that assistant reply or executing its tools.
+Nonempty final snapshots must remain complete and consistent. Existing session
+files are not rewritten.
 
 If the response stream closes mid-answer, Ink reports a stream interruption
 instead of a bare `terminated`; it does not automatically replay partial

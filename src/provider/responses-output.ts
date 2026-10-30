@@ -365,9 +365,9 @@ export class CodexOutput {
 	/** Terminal text/reasoning snapshots are authoritative. Function snapshots
 	 * only verify already closed calls: they never create, close or repair one. */
 	*reconcile(value: unknown, incomplete: boolean): Generator<LLMEvent> {
-		if (value === undefined) return;
+		if (value === undefined) value = [];
 		if (!Array.isArray(value)) throw protocolError("terminal", undefined, "expected output array");
-		// The direct endpoint can send output:[] after complete per-item events.
+		// Missing and empty aggregates both require complete per-item events.
 		// Only finalized items can replace an absent aggregate on a normal turn;
 		// explicit truncation remains non-executable and preserves partial data.
 		if (value.length === 0) {
@@ -377,7 +377,11 @@ export class CodexOutput {
 					(slot) => !slot.done || (slot.finalStatus !== undefined && slot.finalStatus !== "completed"),
 				)
 			) {
-				throw protocolError("terminal", undefined, "empty final output requires finalized streamed items");
+				throw protocolError(
+					"terminal",
+					undefined,
+					"missing or empty final output requires finalized streamed items",
+				);
 			}
 			return;
 		}

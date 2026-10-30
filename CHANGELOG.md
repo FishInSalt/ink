@@ -52,6 +52,10 @@ their original release identity.
 
 ### Fixed
 
+- **Responses completion checks.** Apply the same per-item finalization check
+  when terminal output is omitted or empty. Reject unfinished text, refusal and
+  reasoning before assistant-history admission or tool execution, while retaining
+  finalized output and explicit output-token-limit truncation behavior.
 - **Large edit receipts.** Avoid an argument-count overflow while rendering
   large insertion/deletion diffs, so an edit that already wrote the file is
   not incorrectly reported as failed.

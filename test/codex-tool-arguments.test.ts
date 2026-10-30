@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { type AgentEvent, runAgentLoop } from "../src/core/loop.js";
 import type { AgentMessage, AssistantMessage } from "../src/core/messages.js";
 import type { Tool } from "../src/core/tools/types.js";
-import { createCodexResponsesProvider } from "../src/provider/codex-responses.js";
+import { CodexResponseError, createCodexResponsesProvider } from "../src/provider/codex-responses.js";
 import type { LLMEvent, LLMRequest } from "../src/provider/types.js";
 
 /** Offline wire regressions for docs/design/codex-tool-arguments-design.md.
@@ -29,6 +29,10 @@ const PREFIX = '{"path":"文档/';
 const WRONG = '{"path":"incorrect';
 const USAGE = { input_tokens: 33, output_tokens: 13, input_tokens_details: { cached_tokens: 8 } };
 const NORMALIZED_USAGE = { inputTokens: 25, outputTokens: 13, cacheReadTokens: 8 };
+const terminalOutputs = [
+	{ aggregate: "omitted", output: undefined },
+	{ aggregate: "empty", output: [] },
+];
 
 function wire(event: string, data: Fields): WireEvent {
 	return { event, data };
@@ -956,44 +960,82 @@ describe("Codex tool arguments", () => {
 	});
 
 	describe("real agent-loop integration", () => {
-		it.each([
-			{ name: "unfinalized tool", invalid: [added(1), delta(RAW, 1)] },
-			{ name: "arguments.done only", invalid: [added(1), argsDone(RAW, 1)] },
-			{ name: "missing arguments", invalid: [added(1), done(1)] },
-			{ name: "malformed arguments", invalid: [added(1), delta("PRIVATE_ARG_SECRET:not-json", 1), done(1)] },
-			{ name: "in_progress tool", invalid: [added(1), delta(RAW, 1), done(1, { status: "in_progress" })] },
-			{ name: "incomplete tool", invalid: [added(1), delta(RAW, 1), done(1, { status: "incomplete" })] },
-			...(["message", "reasoning"] as const).flatMap((type) => [
-				{ name: `unfinalized ${type}`, invalid: [itemEvent("added", 1, { type, id: "peer" })] },
-				...(["in_progress", "incomplete"] as const).map((status) => ({
-					name: `${status} ${type}`,
-					invalid: [
-						itemEvent("added", 1, { type, id: "peer" }),
-						itemEvent("done", 1, { type, id: "peer", status }),
-					],
-				})),
-			]),
-		])("empty terminal output with $name refuses even an earlier valid call", async ({ invalid }) => {
-			const seen: Executed[] = [];
-			const events: AgentEvent[] = [];
-			const history: AgentMessage[] = [];
-			enqueue([...fromSource("delta", RAW, 0), ...invalid, completed({ output: [] })]);
-			await expect(
-				runAgentLoop(
-					loopOptions(
-						[recordingTool("read", Type.Object({ path: Type.Optional(Type.String()) }), seen)],
-						history,
-						events,
-					),
-				),
-			).rejects.toThrow();
-			expect(seen).toEqual([]);
-			expect(events.filter((event) => event.type === "message_end" || event.type === "tool_start")).toEqual(
-				[],
-			);
-			expect(history.map((entry) => entry.role)).toEqual(["user"]);
-			expect(captured).toHaveLength(1);
-		});
+		it.each(
+			terminalOutputs.flatMap((terminal) =>
+				[
+					{ name: "unfinalized tool", invalid: [added(1), delta(RAW, 1)] },
+					{ name: "arguments.done only", invalid: [added(1), argsDone(RAW, 1)] },
+					{ name: "missing arguments", invalid: [added(1), done(1)] },
+					{
+						name: "malformed arguments",
+						invalid: [added(1), delta("PRIVATE_ARG_SECRET:not-json", 1), done(1)],
+					},
+					{
+						name: "in_progress tool",
+						invalid: [added(1), delta(RAW, 1), done(1, { status: "in_progress" })],
+					},
+					{ name: "incomplete tool", invalid: [added(1), delta(RAW, 1), done(1, { status: "incomplete" })] },
+					...(["text", "refusal", "reasoning"] as const).flatMap((kind) => {
+						const item =
+							kind === "reasoning"
+								? {
+										type: "reasoning",
+										id: "peer",
+										summary: [{ type: "summary_text", text: "partial reasoning" }],
+									}
+								: {
+										type: "message",
+										id: "peer",
+										content: [
+											kind === "text"
+												? { type: "output_text", text: "partial text" }
+												: { type: "refusal", refusal: "partial refusal" },
+										],
+									};
+						return [
+							{ name: `unfinalized ${kind}`, invalid: [itemEvent("added", 1, item)] },
+							...(["in_progress", "incomplete"] as const).map((status) => ({
+								name: `${status} ${kind}`,
+								invalid: [
+									itemEvent("added", 1, item),
+									itemEvent("done", 1, {
+										...item,
+										status,
+										...(kind === "reasoning" && { encrypted_content: "UNFINISHED_CIPHER" }),
+									}),
+								],
+							})),
+						];
+					}),
+				].map((fixture) => ({ ...terminal, ...fixture })),
+			),
+		)(
+			"$aggregate terminal output with $name refuses even an earlier valid call",
+			async ({ invalid, output }) => {
+				const seen: Executed[] = [];
+				const events: AgentEvent[] = [];
+				const history: AgentMessage[] = [];
+				enqueue([...fromSource("delta", RAW, 0), ...invalid, completed({ output })]);
+				enqueue(textTurn()); // A broken adapter must not pass by exhausting the fixture queue.
+				await expect
+					.soft(
+						runAgentLoop(
+							loopOptions(
+								[recordingTool("read", Type.Object({ path: Type.Optional(Type.String()) }), seen)],
+								history,
+								events,
+							),
+						),
+					)
+					.rejects.toBeInstanceOf(CodexResponseError);
+				expect.soft(seen).toEqual([]);
+				expect
+					.soft(events.filter((event) => event.type === "message_end" || event.type === "tool_start"))
+					.toEqual([]);
+				expect.soft(history.map((entry) => entry.role)).toEqual(["user"]);
+				expect.soft(captured).toHaveLength(1);
+			},
+		);
 
 		it("empty output in a nonempty aggregate still cannot omit a finalized peer", async () => {
 			const seen: Executed[] = [];
@@ -1013,9 +1055,13 @@ describe("Codex tool arguments", () => {
 			expect(captured).toHaveLength(1);
 		});
 
-		it.each(["response.incomplete", "response.completed"])(
-			"empty output on %s with max_output_tokens refuses the entire tool batch",
-			async (type) => {
+		it.each(
+			terminalOutputs.flatMap((terminal) =>
+				["response.incomplete", "response.completed"].map((type) => ({ ...terminal, type })),
+			),
+		)(
+			"$aggregate output on $type with max_output_tokens refuses the entire tool batch",
+			async ({ type, output }) => {
 				const seen: Executed[] = [];
 				const events: AgentEvent[] = [];
 				const history: AgentMessage[] = [];
@@ -1027,7 +1073,7 @@ describe("Codex tool arguments", () => {
 						response: {
 							status: "incomplete",
 							incomplete_details: { reason: "max_output_tokens" },
-							output: [],
+							output,
 						},
 					}),
 				]);
