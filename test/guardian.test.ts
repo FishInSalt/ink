@@ -475,6 +475,30 @@ describe("guardian tool scoping", () => {
 		expect(blockOf(await w.gate(fileCall("write", "./secrets/key.pem"))).block).toBe(true);
 	});
 
+	it("normalizes ~, leading @, and Unicode-space targets like resolveToCwd", async () => {
+		const w = await boot({
+			config: {
+				deny: [
+					{ tool: "edit", pattern: `${fakeHome}/.ssh/` },
+					{ tool: "edit", pattern: `${fakeHome}/.s sh/` },
+					{ tool: "edit", pattern: "/tmp/project/se crets.txt" },
+					{ tool: "write", pattern: "/tmp/project/at.txt" },
+				],
+			},
+		});
+		expect(blockOf(await w.gate(fileCall("edit", "~/.ssh/id_ed25519"))).block).toBe(true);
+		expect(blockOf(await w.gate(fileCall("edit", `@${fakeHome}/.ssh/id_ed25519`))).block).toBe(true);
+		expect(blockOf(await w.gate(fileCall("edit", "~/.s\u00A0sh/id"))).block).toBe(true);
+		expect(blockOf(await w.gate(fileCall("edit", "se\u00A0crets.txt"))).block).toBe(true);
+		expect(blockOf(await w.gate(fileCall("write", "@at.txt"))).block).toBe(true);
+		expect(auditBodies().some((line) => line.includes(`${fakeHome}/.s sh/id`))).toBe(true);
+	});
+
+	it("a literal leading @ can still be addressed with ./", async () => {
+		const w = await boot({ config: { deny: [{ tool: "write", pattern: "/@literal.txt" }] } });
+		expect(blockOf(await w.gate(fileCall("write", "./@literal.txt"))).block).toBe(true);
+	});
+
 	it("an event.cwd different from api.cwd wins the resolution", async () => {
 		const w = await boot({ config: { deny: [{ tool: "write", pattern: "/tmp/other/" }] }, cwd: "/base" });
 		expect(blockOf(await w.gate(fileCall("write", "x.txt", { cwd: "/tmp/other" }))).block).toBe(true);

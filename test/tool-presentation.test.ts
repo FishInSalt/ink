@@ -268,7 +268,7 @@ describe("semantic tool presentation", () => {
 		expect(diff.kind).toBe("diff");
 		const fold = new ToolBlockFold(diff);
 		fold.setExpanded(true);
-		expect(plain(fold, 10).match(/^ {4}3 /gm)).toHaveLength(1);
+		expect(plain(fold, 10).match(/^ {4}3 /gm)).toHaveLength(2);
 		expect(
 			new ToolBlockFold(outputBlock(result("+ ordinary\n- ordinary\n@@"))).render(80).join(""),
 		).not.toContain("\x1b[32m");

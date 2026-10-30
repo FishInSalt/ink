@@ -661,8 +661,13 @@ async function executeToolBatchInner(
 }
 
 /** A plan is either an immediate result (validation/gate refusal — no execution)
- *  or an approved, unstarted execution. */
-type ChunkPlan = { run: (signal: AbortSignal | undefined) => Promise<ToolResult> } | { result: ToolResult };
+ *  or an approved, unstarted execution carrying the prepared argument record. */
+type ChunkPlan =
+	| {
+			prepared: Record<string, unknown>;
+			run: (signal: AbortSignal | undefined) => Promise<ToolResult>;
+	  }
+	| { result: ToolResult };
 
 /** A chunk is the WHOLE maximal run of consecutive concurrency-safe calls
  *  (#sliding-window; waves retired). Three phases:
@@ -712,7 +717,7 @@ async function executeChunk(
 		const decision = await onToolCall?.({
 			toolCallId: call.id,
 			name: call.name,
-			args: call.arguments as Record<string, unknown>,
+			args: prepared.prepared,
 		});
 		if (decision?.block) {
 			plans.push({
@@ -814,9 +819,32 @@ function persistableResult(result: ToolResult): ToolResult {
 	return rest;
 }
 
-/** Validation without side effects: unknown tool / non-object args / schema
- *  check → immediate error result; otherwise a deferred execution. Shared by
- *  the serial path (executeToolCall) and chunk planning. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	try {
+		if (typeof value !== "object" || value === null) return false;
+		if (Array.isArray(value)) return false;
+		if (typeof (value as { then?: unknown }).then === "function") return false;
+		const proto = Object.getPrototypeOf(value);
+		return proto === Object.prototype || proto === null;
+	} catch {
+		return false;
+	}
+}
+
+function hookErrorMessage(err: unknown): string {
+	try {
+		const raw = err instanceof Error ? err.message : String(err);
+		const first = raw.split("\n")[0]?.trim() ?? "";
+		return first === "" ? "unknown error" : first.slice(0, 200);
+	} catch {
+		return "unknown error";
+	}
+}
+
+/** Validation without side effects: unknown tool / non-object args /
+ *  prepareArguments failure / schema check → immediate error result;
+ *  otherwise a deferred execution. Shared by the serial path
+ *  (executeToolCall) and chunk planning. */
 function prepareToolCall(call: ToolCallRef, toolMap: Map<string, Tool>): ChunkPlan {
 	const tool = toolMap.get(call.name);
 	if (!tool) {
@@ -840,8 +868,33 @@ function prepareToolCall(call: ToolCallRef, toolMap: Map<string, Tool>): ChunkPl
 			},
 		};
 	}
-	if (!Value.Check(tool.parameters, record)) {
-		const issues = [...Value.Errors(tool.parameters, record)]
+	let prepared = record;
+	if (tool.prepareArguments) {
+		try {
+			prepared = tool.prepareArguments(record);
+		} catch (err) {
+			return {
+				result: {
+					toolCallId: call.id,
+					toolName: call.name,
+					content: `Error: prepareArguments failed for ${tool.name} — ${hookErrorMessage(err)}`,
+					isError: true,
+				},
+			};
+		}
+		if (!isPlainObject(prepared)) {
+			return {
+				result: {
+					toolCallId: call.id,
+					toolName: call.name,
+					content: `Error: prepareArguments failed for ${tool.name} — the hook must return a plain object.`,
+					isError: true,
+				},
+			};
+		}
+	}
+	if (!Value.Check(tool.parameters, prepared)) {
+		const issues = [...Value.Errors(tool.parameters, prepared)]
 			.slice(0, 5)
 			.map((e) => `${(e as { instancePath?: string }).instancePath || "(root)"}: ${e.message}`)
 			.join("; ");
@@ -855,7 +908,8 @@ function prepareToolCall(call: ToolCallRef, toolMap: Map<string, Tool>): ChunkPl
 		};
 	}
 	return {
-		run: (signal: AbortSignal | undefined) => runTool(call, tool, record, signal),
+		prepared,
+		run: (signal: AbortSignal | undefined) => runTool(call, tool, prepared, signal),
 	};
 }
 
@@ -908,7 +962,7 @@ async function executeToolCall(
 	// exactly what the tool will see. A block is a normal error result — it flows
 	// through results.push → onMessage → session persistence, so the refusal is
 	// resumable history and the run continues.
-	const decision = await onToolCall?.({ toolCallId: id, name, args: args as Record<string, unknown> });
+	const decision = await onToolCall?.({ toolCallId: id, name, args: prepared.prepared });
 	if (decision?.block) {
 		return {
 			toolCallId: id,

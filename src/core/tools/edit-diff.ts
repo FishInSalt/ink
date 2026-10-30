@@ -1,9 +1,10 @@
 /**
  * Exact-match multi-edit machinery for the edit tool.
  *
- * Semantics (inherited from pi): every edits[].oldText is matched against the
- * ORIGINAL file content — not incrementally. Each must match exactly once and
- * must not overlap any other edit. Either all edits apply or none do.
+ * Core multi-edit semantics match pi's exact-match path: every edits[].oldText
+ * is matched against the ORIGINAL file content — not incrementally. Each must
+ * match exactly once and must not overlap any other edit. Either all edits
+ * apply or none do. pi's fuzzy fallback is intentionally not ported.
  */
 
 export interface Edit {
@@ -19,6 +20,8 @@ export interface AppliedEdit {
 	end: number;
 	/** 1-indexed line of `start` in the original content. */
 	line: number;
+	/** 1-indexed line of the replacement start in the NEW content. */
+	newLine: number;
 }
 
 export type ApplyResult =
@@ -63,7 +66,7 @@ export function applyEdits(original: string, edits: Edit[]): ApplyResult {
 		}
 		const start = original.indexOf(oldText);
 		const line = original.slice(0, start).split("\n").length;
-		applied.push({ oldText, newText, start, end: start + oldText.length, line });
+		applied.push({ oldText, newText, start, end: start + oldText.length, line, newLine: line });
 	}
 
 	// Overlap check (sorted by start, adjacent pairs).
@@ -82,6 +85,13 @@ export function applyEdits(original: string, edits: Edit[]): ApplyResult {
 	}
 
 	// Rebuild the file from the original plus non-overlapping sorted ranges.
+	// New-file starts account for every earlier edit's line-count delta.
+	let lineDelta = 0;
+	for (const edit of applied) {
+		edit.newLine = edit.line + lineDelta;
+		lineDelta += lineCount(edit.newText) - lineCount(edit.oldText);
+	}
+
 	let content = "";
 	let cursor = 0;
 	for (const edit of applied) {
@@ -93,13 +103,30 @@ export function applyEdits(original: string, edits: Edit[]): ApplyResult {
 	return { ok: true, content, applied };
 }
 
-/** Simple line diff (LCS) between two small text fragments. */
-export function diffLines(before: string, after: string): string {
+export interface DiffLineNumbers {
+	oldLine: number;
+	newLine: number;
+}
+
+function lineCount(text: string): number {
+	return text.split("\n").length;
+}
+
+/**
+ * Simple line diff (LCS) between two small text fragments. Without `numbers`
+ * this emits only changed lines, preserving the pre-header display contract.
+ * With `numbers`, each contiguous changed block gets an Ink-specific header:
+ * `@@ old <oldStart> new <newStart> @@`, where the starts are computed from
+ * zero-based indices into the split fragments. An elided fragment emits the
+ * unparseable `@@ diff elided @@` reset marker so renderers turn numbering off.
+ */
+export function diffLines(before: string, after: string, numbers?: DiffLineNumbers): string {
 	const a = before.split("\n");
 	const b = after.split("\n");
 	// LCS table. Edit fragments are small; for pathological sizes, degrade gracefully.
 	if (a.length * b.length > 1_000_000) {
-		return `- ${a.length} lines\n+ ${b.length} lines (diff elided)`;
+		const summary = `- ${a.length} lines\n+ ${b.length} lines (diff elided)`;
+		return numbers ? `@@ diff elided @@\n${summary}` : summary;
 	}
 	const table: number[][] = Array.from({ length: a.length + 1 }, () =>
 		new Array<number>(b.length + 1).fill(0),
@@ -110,24 +137,43 @@ export function diffLines(before: string, after: string): string {
 				a[i] === b[j] ? table[i + 1]![j + 1]! + 1 : Math.max(table[i + 1]![j]!, table[i]![j + 1]!);
 		}
 	}
-	const lines: string[] = [];
+
+	const out: string[] = [];
+	let block: { oldStart: number; newStart: number; lines: string[] } | null = null;
+	const flush = (): void => {
+		if (block === null) return;
+		if (numbers) {
+			out.push(`@@ old ${numbers.oldLine + block.oldStart} new ${numbers.newLine + block.newStart} @@`);
+		}
+		out.push(...block.lines);
+		block = null;
+	};
+
 	let i = 0;
 	let j = 0;
 	while (i < a.length && j < b.length) {
 		if (a[i] === b[j]) {
+			flush();
 			i++;
 			j++;
-		} else if (table[i + 1]![j]! >= table[i]![j + 1]!) {
-			lines.push(`- ${a[i] ?? ""}`);
-			i++;
 		} else {
-			lines.push(`+ ${b[j] ?? ""}`);
-			j++;
+			block ??= { oldStart: i, newStart: j, lines: [] };
+			if (table[i + 1]![j]! >= table[i]![j + 1]!) {
+				block.lines.push(`- ${a[i] ?? ""}`);
+				i++;
+			} else {
+				block.lines.push(`+ ${b[j] ?? ""}`);
+				j++;
+			}
 		}
 	}
-	while (i < a.length) lines.push(`- ${a[i++] ?? ""}`);
-	while (j < b.length) lines.push(`+ ${b[j++] ?? ""}`);
-	return lines.join("\n");
+	if (i < a.length || j < b.length) {
+		block ??= { oldStart: i, newStart: j, lines: [] };
+		while (i < a.length) block.lines.push(`- ${a[i++] ?? ""}`);
+		while (j < b.length) block.lines.push(`+ ${b[j++] ?? ""}`);
+	}
+	flush();
+	return out.join("\n");
 }
 
 /** BOM helpers: strip for processing, restore on write. */

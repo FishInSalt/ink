@@ -1,12 +1,16 @@
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "../src/core/loop.js";
 import { runAgentLoop } from "../src/core/loop.js";
 import type { AgentMessage, AssistantMessage, ToolResultMessage } from "../src/core/messages.js";
 import { contentText } from "../src/core/messages.js";
+import { createEditTool } from "../src/core/tools/edit.js";
 import type { Tool } from "../src/core/tools/types.js";
 import { createAttemptUsage } from "../src/core/usage-ledger.js";
 import type { LLMProvider } from "../src/provider/types.js";
+import { mkTempDirAsync } from "./helpers/mktemp.js";
 
 function assistant(
 	blocks: AssistantMessage["blocks"],
@@ -119,6 +123,251 @@ describe("agent loop", () => {
 		const toolResult = history[2] as Extract<AgentMessage, { role: "toolResult" }>;
 		expect(toolResult.results[0]?.isError).toBe(true);
 		expect(toolResult.results[0]?.content).toContain("invalid arguments");
+	});
+
+	it("runs prepareArguments before validation and gives the gate the prepared record", async () => {
+		const seen: unknown[] = [];
+		const gateArgs: unknown[] = [];
+		const preparedTool: Tool = {
+			name: "prepared_tool",
+			description: "prepares its argument",
+			parameters: Type.Object({ message: Type.String() }),
+			prepareArguments(args) {
+				return { message: `${String(args.message)}!` };
+			},
+			async execute(args) {
+				seen.push(args);
+				return { output: String(args.message) };
+			},
+		};
+		const provider = scriptedProvider([
+			assistant(
+				[{ type: "toolCall", id: "p1", name: "prepared_tool", arguments: { message: "hi" } }],
+				"tool_use",
+			),
+			assistant([{ type: "text", text: "done" }]),
+		]);
+		const history: AgentMessage[] = [];
+		await runAgentLoop({
+			provider,
+			model: "mock",
+			system: "",
+			tools: [preparedTool],
+			history,
+			userMessage: "go",
+			onToolCall: ({ args }) => {
+				gateArgs.push(args);
+			},
+		});
+		expect(gateArgs).toEqual([{ message: "hi!" }]);
+		expect(seen).toEqual([{ message: "hi!" }]);
+		expect(gateArgs[0]).toBe(seen[0]);
+		const assistantMessage = history[1] as AssistantMessage;
+		const toolCall = assistantMessage.blocks.find((block) => block.type === "toolCall");
+		expect(toolCall).toMatchObject({ arguments: { message: "hi" } });
+	});
+
+	it("passes prepared args to gates in the concurrency-safe chunk path", async () => {
+		const gateArgs: unknown[] = [];
+		const preparedTool: Tool = {
+			name: "prepared_safe",
+			description: "prepares its argument",
+			parameters: Type.Object({ message: Type.String() }),
+			concurrencySafe: true,
+			prepareArguments(args) {
+				return { message: `${String(args.message)}!` };
+			},
+			async execute(args) {
+				return { output: String(args.message) };
+			},
+		};
+		const provider = scriptedProvider([
+			assistant(
+				[
+					{ type: "toolCall", id: "c1", name: "prepared_safe", arguments: { message: "a" } },
+					{ type: "toolCall", id: "c2", name: "prepared_safe", arguments: { message: "b" } },
+				],
+				"tool_use",
+			),
+			assistant([{ type: "text", text: "done" }]),
+		]);
+		await runAgentLoop({
+			provider,
+			model: "mock",
+			system: "",
+			tools: [preparedTool],
+			history: [],
+			userMessage: "go",
+			onToolCall: ({ args }) => {
+				gateArgs.push(args);
+			},
+		});
+		expect(gateArgs).toEqual([{ message: "a!" }, { message: "b!" }]);
+	});
+
+	it("rejects a throwing or non-plain prepareArguments result without executing", async () => {
+		for (const prepareArguments of [
+			() => {
+				throw new Error("hook exploded");
+			},
+			() => {
+				throw new Error("");
+			},
+			() => new Date() as unknown as Record<string, unknown>,
+			() => null as unknown as Record<string, unknown>,
+			() => [] as unknown as Record<string, unknown>,
+			() => Promise.resolve({}) as unknown as Record<string, unknown>,
+			// biome-ignore lint/suspicious/noThenProperty: the hook contract rejects thenables
+			() => ({ then: () => {} }) as Record<string, unknown>,
+			() => new (class Custom {})() as unknown as Record<string, unknown>,
+			() => {
+				const { proxy, revoke } = Proxy.revocable({}, {});
+				revoke();
+				return proxy as unknown as Record<string, unknown>;
+			},
+		] as Array<(args: Record<string, unknown>) => Record<string, unknown>>) {
+			let executed = 0;
+			const broken: Tool = {
+				name: "broken_prepare",
+				description: "bad hook",
+				parameters: Type.Object({ message: Type.String() }),
+				prepareArguments,
+				async execute() {
+					executed++;
+					return { output: "should not run" };
+				},
+			};
+			const provider = scriptedProvider([
+				assistant(
+					[{ type: "toolCall", id: "b1", name: "broken_prepare", arguments: { message: "x" } }],
+					"tool_use",
+				),
+				assistant([{ type: "text", text: "done" }]),
+			]);
+			const history: AgentMessage[] = [];
+			await runAgentLoop({
+				provider,
+				model: "mock",
+				system: "",
+				tools: [broken],
+				history,
+				userMessage: "go",
+			});
+			const result = history[2] as Extract<AgentMessage, { role: "toolResult" }>;
+			expect(result.results[0]?.isError).toBe(true);
+			expect(result.results[0]?.content).toContain("prepareArguments failed");
+			expect(executed).toBe(0);
+		}
+	});
+
+	describe("edit prepareArguments integration", () => {
+		const shapes = [
+			[
+				"stringified",
+				(file: string) => ({ path: file, edits: JSON.stringify([{ oldText: "one", newText: "ONE" }]) }),
+			],
+			["single object", (file: string) => ({ path: file, edits: { oldText: "one", newText: "ONE" } })],
+			["legacy pair", (file: string) => ({ path: file, oldText: "one", newText: "ONE" })],
+		] as const;
+
+		it.each(shapes)("accepts %s through the real edit tool", async (_name, buildArgs) => {
+			const dir = await mkTempDirAsync("ink-edit-hook-");
+			const file = path.join(dir, "f.txt");
+			await writeFile(file, "one\ntwo\n");
+			const rawArgs = buildArgs(file);
+			const gateArgs: unknown[] = [];
+			const provider = scriptedProvider([
+				assistant([{ type: "toolCall", id: "e1", name: "edit", arguments: rawArgs }], "tool_use"),
+				assistant([{ type: "text", text: "done" }]),
+			]);
+			const history: AgentMessage[] = [];
+			await runAgentLoop({
+				provider,
+				model: "mock",
+				system: "",
+				tools: [createEditTool({ cwd: dir })],
+				history,
+				userMessage: "go",
+				onToolCall: ({ args }) => {
+					gateArgs.push(args);
+				},
+			});
+			expect(await readFile(file, "utf8")).toBe("ONE\ntwo\n");
+			expect(gateArgs[0]).toEqual({ path: file, edits: [{ oldText: "one", newText: "ONE" }] });
+			const call = (history[1] as AssistantMessage).blocks.find((block) => block.type === "toolCall");
+			expect(call).toMatchObject({ arguments: rawArgs });
+		});
+
+		it("keeps the raw @ path in the gate and history while editing the stripped file", async () => {
+			const dir = await mkTempDirAsync("ink-edit-hook-at-");
+			const file = path.join(dir, "f.txt");
+			await writeFile(file, "one\n");
+			const rawArgs = { path: "@f.txt", edits: [{ oldText: "one", newText: "ONE" }] };
+			const gateArgs: Record<string, unknown>[] = [];
+			const provider = scriptedProvider([
+				assistant([{ type: "toolCall", id: "e1", name: "edit", arguments: rawArgs }], "tool_use"),
+				assistant([{ type: "text", text: "done" }]),
+			]);
+			const history: AgentMessage[] = [];
+			await runAgentLoop({
+				provider,
+				model: "mock",
+				system: "",
+				tools: [createEditTool({ cwd: dir })],
+				history,
+				userMessage: "go",
+				onToolCall: ({ args }) => {
+					gateArgs.push(args);
+				},
+			});
+			expect(await readFile(file, "utf8")).toBe("ONE\n");
+			expect(gateArgs[0]?.path).toBe("@f.txt");
+			const call = (history[1] as AssistantMessage).blocks.find((block) => block.type === "toolCall");
+			expect(call).toMatchObject({ arguments: rawArgs });
+		});
+
+		it("rejects a partial legacy pair instead of silently dropping it", async () => {
+			const dir = await mkTempDirAsync("ink-edit-hook-partial-");
+			const file = path.join(dir, "f.txt");
+			await writeFile(file, "one\ntwo\n");
+			const gateArgs: unknown[] = [];
+			const provider = scriptedProvider([
+				assistant(
+					[
+						{
+							type: "toolCall",
+							id: "e1",
+							name: "edit",
+							arguments: {
+								path: file,
+								edits: [{ oldText: "one", newText: "ONE" }],
+								oldText: "two",
+								newText: null,
+							},
+						},
+					],
+					"tool_use",
+				),
+				assistant([{ type: "text", text: "done" }]),
+			]);
+			const history: AgentMessage[] = [];
+			await runAgentLoop({
+				provider,
+				model: "mock",
+				system: "",
+				tools: [createEditTool({ cwd: dir })],
+				history,
+				userMessage: "go",
+				onToolCall: ({ args }) => {
+					gateArgs.push(args);
+				},
+			});
+			expect(await readFile(file, "utf8")).toBe("one\ntwo\n");
+			expect(gateArgs).toEqual([]);
+			const result = history[2] as Extract<AgentMessage, { role: "toolResult" }>;
+			expect(result.results[0]?.isError).toBe(true);
+			expect(result.results[0]?.content).toContain("invalid arguments");
+		});
 	});
 
 	it("converts thrown tool errors into error results", async () => {

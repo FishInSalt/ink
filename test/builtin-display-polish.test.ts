@@ -100,6 +100,14 @@ describe("builtin display polish", () => {
 	it.each([0, -1, Infinity, "5", null])("rejects invalid bash timeout %s", (timeout) => {
 		expect(prepare("bash", { command: "true", timeout }, bashPresentation).callSemantic).toBeUndefined();
 	});
+	it("falls back to a generic header when a legacy top-level pair is present", () => {
+		const record = prepare(
+			"edit",
+			{ path: "f", edits: [{ oldText: "a", newText: "b" }], oldText: "c", newText: "d" },
+			editPresentation,
+		);
+		expect(record.callSemantic).toBeUndefined();
+	});
 	it("owns complete edit array atomically and retains unknown top-level arguments", () => {
 		const edits = [
 			{ oldText: "", newText: '""' },

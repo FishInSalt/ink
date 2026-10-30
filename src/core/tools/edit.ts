@@ -1,5 +1,4 @@
 import { readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { Type } from "typebox";
 import {
 	applyEdits,
@@ -10,6 +9,7 @@ import {
 	stripBom,
 } from "./edit-diff.js";
 import { withFileLock } from "./file-lock.js";
+import { resolveToCwd } from "./path-resolve.js";
 import { editPresentation } from "./presentation.js";
 import type { Tool } from "./types.js";
 
@@ -21,17 +21,53 @@ const replaceEditSchema = Type.Object({
 	newText: Type.String({ description: "Replacement text." }),
 });
 
-const editSchema = Type.Object({
-	path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
-	edits: Type.Array(replaceEditSchema, {
-		description:
-			"One or more targeted replacements, all matched against the ORIGINAL file (not incrementally). " +
-			"Each oldText must be unique and must not overlap another edit; merge nearby changes into one edit instead.",
-	}),
-});
+const editSchema = Type.Object(
+	{
+		path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
+		edits: Type.Array(replaceEditSchema, {
+			description:
+				"One or more targeted replacements, all matched against the ORIGINAL file (not incrementally). " +
+				"Each oldText must be unique and must not overlap another edit; merge nearby changes into one edit instead.",
+		}),
+	},
+	{ additionalProperties: false },
+);
 
 export interface EditToolOptions {
 	cwd?: string;
+}
+
+type SingleEditInput = { oldText: string; newText: string };
+
+function isSingleEditInput(value: unknown): value is SingleEditInput {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const edit = value as Record<string, unknown>;
+	return typeof edit.oldText === "string" && typeof edit.newText === "string";
+}
+
+/** Compatibility shim for model-emitted shapes pi also accepts. */
+export function prepareEditArguments(args: Record<string, unknown>): Record<string, unknown> {
+	let edits = args.edits;
+	if (typeof edits === "string") {
+		try {
+			const parsed = JSON.parse(edits);
+			if (Array.isArray(parsed)) edits = parsed;
+			else if (isSingleEditInput(parsed)) edits = [parsed];
+		} catch {}
+	} else if (isSingleEditInput(edits)) {
+		edits = [edits];
+	}
+
+	const oldText = args.oldText;
+	const newText = args.newText;
+	if (typeof oldText !== "string" || typeof newText !== "string") {
+		return edits === args.edits ? args : { ...args, edits };
+	}
+
+	const list = Array.isArray(edits) ? [...edits] : [];
+	list.push({ oldText, newText });
+	const { oldText: _oldText, newText: _newText, ...rest } = args;
+	return { ...rest, edits: list };
 }
 
 export function createEditTool(options: EditToolOptions = {}): Tool {
@@ -43,17 +79,18 @@ export function createEditTool(options: EditToolOptions = {}): Tool {
 		description:
 			"Edit a file with exact text replacement. Each edits[].oldText must match a unique, non-overlapping " +
 			"region of the original file — include enough surrounding lines to make it unique. Read the file first and " +
-			"copy text exactly (indentation matters). All edits apply atomically: if any oldText is not found or " +
-			"matches more than once, nothing is written and the error tells you how to fix it. " +
+			"copy text exactly (indentation matters). All edits are validated before a single write: if any oldText is " +
+			"not found or matches more than once, nothing is written and the error tells you how to fix it. " +
 			"Prefer several small precise edits over one huge replacement.",
 		parameters: editSchema,
+		prepareArguments: prepareEditArguments,
 		async execute(args, signal) {
 			const requested = String(args.path ?? "");
 			const edits = (args.edits ?? []) as Edit[];
 			if (edits.length === 0) {
 				return { output: "Error: edits must contain at least one replacement.", isError: true };
 			}
-			const absolute = path.resolve(cwd, requested);
+			const absolute = resolveToCwd(requested, cwd);
 
 			return withFileLock(absolute, async () => {
 				if (signal.aborted) return { output: "Error: aborted before edit", isError: true };
@@ -93,10 +130,10 @@ export function createEditTool(options: EditToolOptions = {}): Tool {
 				const plural = count > 1 ? "s" : "";
 				// prompt-audit P1: the model wrote oldText/newText and an exact
 				// match means the outcome is fully known to it — the diff is a
-				// zero-information restatement. Model gets one line; the diff
-				// stays display-only (⎿/fold keep today's shape).
-				const sections = result.applied.map(
-					(e) => `@@ line ${e.line} @@\n${diffLines(e.oldText, e.newText)}`,
+				// zero-information restatement. The model gets one line; the diff
+				// stays display-only and the fold owns its two-sided numbering.
+				const sections = result.applied.map((e) =>
+					diffLines(e.oldText, e.newText, { oldLine: e.line, newLine: e.newLine }),
 				);
 				const displayText = `Edited ${requested} (${count} edit${plural} applied):\n${sections.join("\n")}`;
 				return {

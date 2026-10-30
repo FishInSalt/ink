@@ -184,7 +184,9 @@ export interface ToolCallEvent {
 	type: "tool_call";
 	toolCallId: string;
 	name: string;
-	/** Schema-validated arguments (the same object execute() will receive). */
+	/** Prepared, schema-validated arguments: the same object `execute()`
+	 *  receives. A handler that mutates this object affects execution, matching
+	 *  the existing gate contract. */
 	args: Record<string, unknown>;
 
 	/** True when the call comes from a subagent (task tool child), not the

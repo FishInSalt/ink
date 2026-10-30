@@ -2,6 +2,7 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Type } from "typebox";
 import { withFileLock } from "./file-lock.js";
+import { resolveToCwd } from "./path-resolve.js";
 import { writePresentation } from "./presentation.js";
 import type { Tool } from "./types.js";
 
@@ -27,7 +28,7 @@ export function createWriteTool(options: WriteToolOptions = {}): Tool {
 		async execute(args, signal) {
 			const requested = String(args.path ?? "");
 			const content = String(args.content ?? "");
-			const absolute = path.resolve(cwd, requested);
+			const absolute = resolveToCwd(requested, cwd);
 
 			return withFileLock(absolute, async () => {
 				if (signal.aborted) return { output: "Error: aborted before write", isError: true };

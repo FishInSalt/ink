@@ -123,15 +123,76 @@ describe("minimal tool display colors", () => {
 			lines: ["@@ line 7 @@", "- old", "+ new", "  same"],
 		};
 		const rows = new ToolBlockFold(block).render(40);
-		expect(plain(rows)).toEqual(["  ⎿ @@ line 7 @@", "    - old", "    7 + new", "    8   same"]);
+		expect(plain(rows)).toEqual(["  ⎿ @@ line 7 @@", "    7 - old", "    7 + new", "    8   same"]);
 		expect(rows).toEqual([
 			`  ${dim}⎿${reset}\x1b[36m @@ line 7 @@${reset}`,
-			`${red}    - old${reset}`,
+			`${red}    7 - old${reset}`,
 			`\x1b[32m    7 + new${reset}`,
 			`${dim}    8   same${reset}`,
 		]);
 		block.lines = ["+ new"];
 		expect(new ToolBlockFold(block).render(40)[0]).toBe(`  ${dim}⎿${reset}\x1b[32m + new${reset}`);
+	});
+
+	it("numbers both sides of a two-sided hunk header, including deletion-only rows", () => {
+		const block: ToolBlock = {
+			...result(""),
+			kind: "diff",
+			sections: [],
+			lines: ["@@ old 5 new 7 @@", "- old", "+ new", "  same"],
+		};
+		const rows = new ToolBlockFold(block).render(40);
+		expect(plain(rows)).toEqual(["  ⎿ @@ old 5 new 7 @@", "    5 - old", "    7 + new", "    8   same"]);
+
+		block.lines = ["@@ old 5 new 5 @@", "- gone"];
+		expect(plain(new ToolBlockFold(block).render(40))).toEqual(["  ⎿ @@ old 5 new 5 @@", "    5 - gone"]);
+	});
+
+	it("keeps a long removed line numbered and inside narrow and wide width budgets", () => {
+		const block: ToolBlock = {
+			...result(""),
+			kind: "diff",
+			sections: [],
+			lines: ["@@ old 123 new 456 @@", `- ${"x".repeat(160)}`, "+ y", "  same"],
+		};
+		for (const width of [20, 80]) {
+			const collapsed = new ToolBlockFold(block).render(width);
+			for (const row of collapsed) expect(visibleWidth(row)).toBeLessThanOrEqual(width);
+			expect(plain(collapsed).join("\n")).toContain("123 - ");
+
+			const expandedFold = new ToolBlockFold(block);
+			expandedFold.setExpanded(true);
+			const expanded = expandedFold.render(width);
+			for (const row of expanded) expect(visibleWidth(row)).toBeLessThanOrEqual(width);
+			expect(plain(expanded).join("\n")).toContain("123 - ");
+			expect(plain(expanded).join("\n")).toContain("456 + ");
+		}
+	});
+
+	it("the elided marker resets numbering in collapsed and expanded layouts", () => {
+		const block: ToolBlock = {
+			...result(""),
+			kind: "diff",
+			sections: [],
+			lines: [
+				"@@ old 1 new 1 @@",
+				"- head",
+				"+ HEAD",
+				"@@ diff elided @@",
+				"- 1001 lines",
+				"+ 1001 lines (diff elided)",
+			],
+		};
+		for (const expanded of [false, true]) {
+			const fold = new ToolBlockFold(block);
+			fold.setExpanded(expanded);
+			const text = plain(fold.render(80)).join("\n");
+			expect(text).toContain("1 - head");
+			expect(text).toContain("1 + HEAD");
+			expect(text).toContain("@@ diff elided @@");
+			expect(text).not.toContain("2 - 1001 lines");
+			expect(text).not.toContain("2 + 1001 lines");
+		}
 	});
 });
 

@@ -226,7 +226,7 @@ function replacements(value: ToolPresentationValue): string {
 		})
 		.join("\n");
 }
-export const editPresentation = presentation(
+const editPresentationBase = presentation(
 	[
 		requiredPath,
 		{
@@ -252,6 +252,21 @@ export const editPresentation = presentation(
 	(a) =>
 		`${(a.edits as readonly Args[]).length} replacement${(a.edits as readonly Args[]).length === 1 ? "" : "s"}`,
 );
+
+export const editPresentation: ToolPresentationHooks = {
+	call(context) {
+		if (
+			context.argsAvailable &&
+			context.args &&
+			typeof context.args === "object" &&
+			!Array.isArray(context.args) &&
+			(Object.hasOwn(context.args, "oldText") || Object.hasOwn(context.args, "newText"))
+		) {
+			return undefined;
+		}
+		return editPresentationBase.call?.(context);
+	},
+};
 
 /** Private host association: captured function identity, never a tool-name heuristic. */
 export function builtinCallName(call: ToolPresentationHooks["call"]): string | undefined {

@@ -85,8 +85,9 @@ export interface ToolExecuteResult {
 }
 
 /**
- * A tool is pure data + one async function. No hidden coupling to the loop,
- * the provider, or the UI. AbortSignal must be honored (Ctrl+C kills tools).
+ * A tool is pure data plus optional presentation/argument hooks and one async
+ * function. No hidden coupling to the loop, the provider, or the UI.
+ * AbortSignal must be honored (Ctrl+C kills tools).
  */
 export interface Tool {
 	name: string;
@@ -108,6 +109,14 @@ export interface Tool {
 	concurrencySafe?: boolean;
 	parameters: TSchema;
 	presentation?: ToolPresentationHooks;
+	/**
+	 * Optional synchronous compatibility shim for raw model arguments, run
+	 * after the JSON-object check and before schema validation. It must return
+	 * a plain object and must not mutate its input; the original call
+	 * arguments stay unchanged in history. The returned object is what the
+	 * gate and `execute` receive.
+	 */
+	prepareArguments?: (args: Record<string, unknown>) => Record<string, unknown>;
 	/** Ephemeral invocation identity; never part of model arguments or history. */
 	execute(
 		args: Record<string, unknown>,
