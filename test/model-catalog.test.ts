@@ -14,6 +14,7 @@ import {
 	catalogEntryFor,
 	catalogModelIds,
 	loadCatalogCache,
+	modelMaxTokensFor,
 	refreshCatalog,
 	resetCatalogForTest,
 	setCatalogClockForTest,
@@ -21,7 +22,7 @@ import {
 } from "../src/provider/catalog.js";
 import { registerDiscoveredContextWindows, resetDiscoveredWindowsForTest } from "../src/provider/discover.js";
 import { contextWindowFor, costFor } from "../src/provider/models.js";
-import { supportedThinkingLevels, thinkingMetaFor } from "../src/provider/thinking.js";
+import { effortFor, supportedThinkingLevels, thinkingMetaFor } from "../src/provider/thinking.js";
 import { modelSupportsVision } from "../src/provider/vision.js";
 import { mkTempDir } from "./helpers/mktemp.js";
 
@@ -88,7 +89,24 @@ function fixtureFetcher(
 // Only the injected fetcher handles these URLs; no network requests are made.
 const catalogBaseUrl = "https://catalog.example";
 const piZaiUrl = `${catalogBaseUrl}/api/models/providers/zai`;
-const piCodexUrl = `${catalogBaseUrl}/api/models/providers/openai`;
+const piOpenAiUrl = `${catalogBaseUrl}/api/models/providers/openai`;
+const piCodexUrl = `${catalogBaseUrl}/api/models/providers/openai-codex`;
+const solId = "gpt-6.1-sol";
+const codexSolCatalog = {
+	[solId]: {
+		id: solId,
+		name: "GPT-6.1 Sol",
+		api: "openai-codex-responses",
+		baseUrl: "https://chatgpt.com/backend-api",
+		contextWindow: 500_000,
+		maxTokens: 128_000,
+		input: ["text", "image"],
+		reasoning: true,
+		thinkingLevelMap: { off: null, minimal: "low", low: "low", medium: null, high: "high" },
+		cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+		compat: { supportsReasoningEffort: true },
+	},
+};
 
 describe("M14 catalog refresh", () => {
 	let tmpDir: string;
@@ -141,40 +159,157 @@ describe("M14 catalog refresh", () => {
 		expect(catalogModelIds("openai-codex")).toEqual(["gpt-5.5"]);
 	});
 
-	it("direct subscription metadata uses OpenAI source under Ink's stable identity", async () => {
+	it("uses each provider's complete metadata catalog without importing its transport", async () => {
+		const openAiSol = {
+			id: solId,
+			contextWindow: 272_000,
+			maxTokens: 64_000,
+			input: ["text"],
+			reasoning: true,
+			thinkingLevelMap: { off: null, minimal: null, low: null, medium: null, high: "high" },
+			cost: { input: 3, output: 12, cacheRead: 0.3, cacheWrite: 3 },
+		};
 		const { fetcher, logs } = fixtureFetcher({
-			[piCodexUrl]: jsonResponse(200, {
-				"gpt-direct": {
-					id: "gpt-direct",
-					contextWindow: 800_000,
-					input: ["text", "image"],
-					reasoning: true,
-					thinkingLevelMap: { off: null, minimal: null, low: "low", medium: null, high: "high" },
-					cost: { input: 2, output: 8, cacheRead: 0.2, cacheWrite: 0 },
-				},
-			}),
+			[piOpenAiUrl]: jsonResponse(200, { [solId]: openAiSol }),
+			[piCodexUrl]: jsonResponse(200, codexSolCatalog),
 		});
 		setCatalogFetcherForTest(fetcher);
-		await refreshCatalog({ families: ["openai-codex"], force: true });
-		expect(logs.map((log) => log.url)).toEqual([piCodexUrl]);
-		expect(catalogEntryFor("openai", "gpt-direct")).toBeNull();
-		expect(contextWindowFor("openai-codex/gpt-direct")).toBe(800_000);
-		expect(modelSupportsVision("openai-codex", "gpt-direct")).toBe(true);
-		expect(supportedThinkingLevels(thinkingMetaFor("openai-codex", "gpt-direct"))).toEqual(["low", "high"]);
-		expect(costFor("openai-codex/gpt-direct")).toEqual({
-			input: 2,
-			output: 8,
-			cacheRead: 0.2,
-			cacheWrite: 0,
-			subscription: true,
-		});
+		await refreshCatalog({ families: ["openai", "openai-codex"], force: true });
+		expect(logs.map((log) => log.url)).toEqual([piOpenAiUrl, piCodexUrl]);
+		const subscription = `openai-codex/${solId}`;
+		const apiKey = `openai/${solId}`;
+		expect(contextWindowFor(subscription)).toBe(500_000);
+		expect(contextWindowFor(apiKey)).toBe(272_000);
+		expect(modelMaxTokensFor(subscription)).toBe(128_000);
+		expect(modelMaxTokensFor(apiKey)).toBe(64_000);
+		expect(modelSupportsVision("openai-codex", solId)).toBe(true);
+		expect(modelSupportsVision("openai", solId)).toBe(false);
+		const subscriptionThinking = thinkingMetaFor("openai-codex", solId);
+		expect(supportedThinkingLevels(subscriptionThinking)).toEqual(["minimal", "low", "high"]);
+		expect(effortFor(subscriptionThinking, "minimal")).toBe("low");
+		expect(supportedThinkingLevels(thinkingMetaFor("openai", solId))).toEqual(["high"]);
+		expect(costFor(subscription)).toEqual({ ...codexSolCatalog[solId].cost, subscription: true });
+		expect(costFor(apiKey)).toEqual(openAiSol.cost);
+		const entry = catalogEntryFor("openai-codex", solId);
+		expect(entry?.compat).toEqual({ supportsReasoningEffort: true });
+		expect(entry).not.toHaveProperty("api");
+		expect(entry).not.toHaveProperty("baseUrl");
 		const file = JSON.parse(readFileSync(process.env.INK_CATALOG_PATH!, "utf8"));
 		expect(file.version).toBe(2);
 		expect(file.providers["openai-codex"].source).toBe(CODEX_METADATA_SOURCE);
 		resetCatalogForTest();
 		expect(loadCatalogCache()).toBe(true);
-		expect(contextWindowFor("openai-codex/gpt-direct")).toBe(800_000);
+		expect(contextWindowFor(subscription)).toBe(500_000);
+		expect(contextWindowFor(apiKey)).toBe(272_000);
+		expect(modelMaxTokensFor(subscription)).toBe(128_000);
+		expect(costFor(subscription)?.input).toBe(2);
+		expect(effortFor(thinkingMetaFor("openai-codex", solId), "minimal")).toBe("low");
+		expect(modelSupportsVision("openai-codex", solId)).toBe(true);
 	});
+
+	it("replaces a fresh OpenAI-derived subscription cache without reusing its body or ETag", async () => {
+		writeFileSync(
+			process.env.INK_CATALOG_PATH!,
+			JSON.stringify({
+				version: 2,
+				providers: {
+					"openai-codex": {
+						source: "openai:chatgpt-direct-v1",
+						models: { [solId]: { id: solId, contextWindow: 272_000 } },
+						checkedAt: clockMs,
+						etag: '"old-openai"',
+					},
+					openai: {
+						models: { [solId]: { id: solId, contextWindow: 272_000 } },
+						checkedAt: clockMs,
+						etag: '"api-key"',
+					},
+				},
+			}),
+		);
+		expect(loadCatalogCache()).toBe(true);
+		expect(catalogEntryFor("openai-codex", solId)).toBeNull();
+		expect(contextWindowFor(`openai-codex/${solId}`)).toBe(131_072);
+		expect(contextWindowFor(`openai/${solId}`)).toBe(272_000);
+		const { fetcher, logs } = fixtureFetcher({
+			[piCodexUrl]: jsonResponse(200, codexSolCatalog, { etag: '"codex"' }),
+		});
+		setCatalogFetcherForTest(fetcher);
+		const summary = await refreshCatalog({ families: ["openai", "openai-codex"] });
+		expect(summary.fetched).toEqual(["openai-codex"]);
+		expect(summary.skippedFresh).toEqual(["openai"]);
+		expect(logs.map((log) => log.url)).toEqual([piCodexUrl]);
+		expect(logs[0]?.headers["if-none-match"]).toBeUndefined();
+		const file = JSON.parse(readFileSync(process.env.INK_CATALOG_PATH!, "utf8"));
+		expect(file.providers["openai-codex"].source).toBe("openai-codex:chatgpt-direct-v2");
+		expect(file.providers["openai-codex"].etag).toBe('"codex"');
+		expect(file.providers.openai.etag).toBe('"api-key"');
+		resetCatalogForTest();
+		expect(loadCatalogCache()).toBe(true);
+		expect(contextWindowFor(`openai-codex/${solId}`)).toBe(500_000);
+		expect(contextWindowFor(`openai/${solId}`)).toBe(272_000);
+	});
+
+	it("does not revive an OpenAI-derived subscription window when the new source is offline", async () => {
+		writeFileSync(
+			process.env.INK_CATALOG_PATH!,
+			JSON.stringify({
+				version: 2,
+				providers: {
+					"openai-codex": {
+						source: "openai:chatgpt-direct-v1",
+						models: { [solId]: { id: solId, contextWindow: 272_000 } },
+						checkedAt: clockMs,
+						etag: '"old-openai"',
+					},
+				},
+			}),
+		);
+		expect(loadCatalogCache()).toBe(true);
+		setCatalogFetcherForTest(async () => {
+			throw new Error("offline");
+		});
+		expect((await refreshCatalog({ families: ["openai-codex"] })).failed).toEqual(["openai-codex"]);
+		expect(catalogEntryFor("openai-codex", solId)).toBeNull();
+		expect(contextWindowFor(`openai-codex/${solId}`)).toBe(131_072);
+		resetCatalogForTest();
+		expect(loadCatalogCache()).toBe(true);
+		expect(catalogEntryFor("openai-codex", solId)).toBeNull();
+	});
+
+	it.each([304, "network"] as const)(
+		"preserves valid Codex-source metadata after revalidation returns %s",
+		async (status) => {
+			const initial = fixtureFetcher({
+				[piCodexUrl]: jsonResponse(200, codexSolCatalog, { etag: '"codex"' }),
+			});
+			setCatalogFetcherForTest(initial.fetcher);
+			await refreshCatalog({ families: ["openai-codex"] });
+			resetCatalogForTest();
+			expect(loadCatalogCache()).toBe(true);
+			clockMs += CATALOG_FRESH_WINDOW_MS + 1;
+			const logs: FetchLog[] = [];
+			setCatalogFetcherForTest(async (url, headers) => {
+				logs.push({ url, headers });
+				if (status === "network") throw new Error("offline");
+				return jsonResponse(status, {});
+			});
+			const summary = await refreshCatalog({ families: ["openai-codex"] });
+			expect(status === 304 ? summary.skippedFresh : summary.failed).toEqual(["openai-codex"]);
+			expect(logs).toHaveLength(1);
+			for (const log of logs) {
+				expect(log.url).toBe(piCodexUrl);
+				expect(log.headers["if-none-match"]).toBe('"codex"');
+			}
+			expect(contextWindowFor(`openai-codex/${solId}`)).toBe(500_000);
+			const file = JSON.parse(readFileSync(process.env.INK_CATALOG_PATH!, "utf8"));
+			expect(file.providers["openai-codex"].source).toBe(CODEX_METADATA_SOURCE);
+			if (status === 304) expect(file.providers["openai-codex"].checkedAt).toBe(clockMs);
+			resetCatalogForTest();
+			expect(loadCatalogCache()).toBe(true);
+			expect(contextWindowFor(`openai-codex/${solId}`)).toBe(500_000);
+		},
+	);
 
 	it.each([
 		{ version: 1, source: undefined },
