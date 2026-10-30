@@ -2,6 +2,11 @@
 
 Status: design approved (including the D1 delta); implementation complete on `fix/search-tools-alignment`. Full tests, typecheck, lint, and docs-site build pass; independent code review approved.
 
+Amendment: `release-small-regression-fixes.md` supersedes only the lexical
+`resolvedPath` construction and shared-helper tilde expansion in D3/D5 and
+§5.1, preserving filesystem traversal through `symlink/..` and trailing
+separators for both preflight and the child process.
+
 Worktree: `/Users/z/Z/Agent_demo/ink/.worktrees/ink-search-tools`
 
 Branch: `design/search-tools-alignment`

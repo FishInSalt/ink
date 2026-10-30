@@ -26,6 +26,16 @@ their original release identity.
 
 ### Fixed
 
+- **Large edit receipts.** Avoid an argument-count overflow while rendering
+  large insertion/deletion diffs, so an edit that already wrote the file is
+  not incorrectly reported as failed.
+- **ChatGPT login cancellation.** The final credential write now observes
+  cancellation until the atomic file replacement is submitted, preserving
+  previously stored credentials. Refresh and logout behavior are unchanged.
+- **Search paths through symlinks.** `grep` and `find` preflight now follows
+  the same filesystem navigation as the search for `symlink/..`, including
+  home-expanded paths, and preserves trailing path separators.
+
 - **Edit/write path and argument robustness.** `edit` and `write` now
   normalize `~`, one leading `@`, and Unicode-space path variants like
   `read`. `edit` also accepts stringified `edits`, a single edit object, and

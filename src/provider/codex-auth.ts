@@ -245,7 +245,7 @@ async function persistLogin(
 				);
 			locked.store.codex = next;
 			locked.store.codexRevision = randomUUID();
-			await locked.write();
+			await locked.write({ signal });
 			return snapshot(locked.store);
 		},
 		{ signal },

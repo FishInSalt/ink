@@ -119,6 +119,22 @@ describe("diffLines (pure)", () => {
 		);
 	});
 
+	it.each(["deletion", "insertion"] as const)(
+		"renders a large one-sided %s below the LCS cell guard",
+		(direction) => {
+			const many = "old\n".repeat(150_000);
+			const [before, after] = direction === "deletion" ? [many, "new\n"] : ["new\n", many];
+			const lines = diffLines(before, after, { oldLine: 3, newLine: 5 }).split("\n");
+			expect(lines[0]).toBe("@@ old 3 new 5 @@");
+			expect(lines.filter((line) => line.startsWith("- "))).toHaveLength(
+				direction === "deletion" ? 150_000 : 1,
+			);
+			expect(lines.filter((line) => line.startsWith("+ "))).toHaveLength(
+				direction === "insertion" ? 150_000 : 1,
+			);
+		},
+	);
+
 	it("elided fragments emit a non-numbered reset marker", () => {
 		const before = Array.from({ length: 1001 }, () => "a").join("\n");
 		const after = Array.from({ length: 1001 }, () => "b").join("\n");
@@ -250,6 +266,25 @@ describe("path resolution", () => {
 });
 
 describe("edit tool", () => {
+	it.each(["deletion", "insertion"] as const)(
+		"reports success after writing a large %s",
+		async (direction) => {
+			const dir = await tmp();
+			const file = path.join(dir, "many.txt");
+			const many = "old\n".repeat(150_000);
+			const [oldText, newText] = direction === "deletion" ? [many, "new\n"] : ["new\n", many];
+			await writeFile(file, oldText);
+			const result = await createEditTool({ cwd: dir }).execute(
+				{ path: "many.txt", edits: [{ oldText, newText }] },
+				signal,
+			);
+			expect(await readFile(file, "utf8")).toBe(newText);
+			expect(result.isError).toBeFalsy();
+			expect(contentText(result.content ?? result.output)).toBe("Edited many.txt: 1 edit applied.");
+			expect(result.display).toContain("@@ old 1 new 1 @@");
+		},
+	);
+
 	it("edits a file and returns a diff with line numbers", async () => {
 		const dir = await tmp();
 		const file = path.join(dir, "one.ts");

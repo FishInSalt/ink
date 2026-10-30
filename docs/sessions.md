@@ -39,6 +39,9 @@ Compaction preserves metadata on retained messages and discards it from summary
 prompts. Resuming a selected subscription model without a usable credential
 requests login; it never silently switches the session to API-key billing.
 
+Large `edit` insertions and deletions retain a short success receipt in model
+history, while the detailed diff is display-only.
+
 The interactive status bar's `↑` (ordinary input), `↓` (output), `R` (cache
 read), and `W` (cache write) counts are cumulative across the whole session,
 including all branches, subagent attempts, and summarization. Zero `R`/`W`

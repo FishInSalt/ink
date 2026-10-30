@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as authStorage from "../src/provider/auth-storage.js";
 import { loadApiKey, saveApiKey } from "../src/provider/auth-store.js";
 import {
 	type CodexLoginOptions,
@@ -466,6 +467,50 @@ describe("callback lifecycle and cancellation", () => {
 			await new Promise<void>((resolve) => occupied.close(() => resolve()));
 		}
 	});
+
+	it.each([false, true])(
+		"cancels the final login write before rename (reauthorization: %s)",
+		async (reauthorize) => {
+			await saveApiKey("openai", "unrelated-key");
+			if (reauthorize) await login();
+			const previousCredential = loadCodexCredential(file);
+			const controller = new AbortController();
+			const withRealLock = authStorage.withAuthStoreLock;
+			let beforeCommit: string | undefined;
+			const spy = vi.spyOn(authStorage, "withAuthStoreLock").mockImplementation((authPath, work, options) =>
+				withRealLock(
+					authPath,
+					(locked) =>
+						work({
+							store: locked.store,
+							write(writeOptions) {
+								const next = locked.store.codex as { accessToken?: string } | undefined;
+								if (next?.accessToken && !controller.signal.aborted) {
+									beforeCommit = readFileSync(file, "utf8");
+									const writing = locked.write(writeOptions);
+									// The real write is awaiting temp-file creation, before rename.
+									controller.abort();
+									return writing;
+								}
+								return locked.write(writeOptions);
+							},
+						}),
+					options,
+				),
+			);
+			await expect(login({ signal: controller.signal })).rejects.toThrow(/cancelled/);
+			expect(beforeCommit).toBeTypeOf("string");
+			expect(readFileSync(file, "utf8")).toBe(beforeCommit);
+			expect(loadCodexCredential(file)).toEqual(previousCredential);
+			expect(loadApiKey("openai")).toBe("unrelated-key");
+			expect(readdirSync(path.dirname(file))).toEqual(["auth.json"]);
+			spy.mockRestore();
+			await saveApiKey("anthropic", "later-key");
+			expect(loadApiKey("anthropic")).toBe("later-key");
+			expect(loadApiKey("openai")).toBe("unrelated-key");
+			expect(readdirSync(path.dirname(file))).toEqual(["auth.json"]);
+		},
+	);
 
 	it("enforces the ten-minute overall login timeout and cancels manual interaction", async () => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

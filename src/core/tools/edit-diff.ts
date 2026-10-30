@@ -145,7 +145,7 @@ export function diffLines(before: string, after: string, numbers?: DiffLineNumbe
 		if (numbers) {
 			out.push(`@@ old ${numbers.oldLine + block.oldStart} new ${numbers.newLine + block.newStart} @@`);
 		}
-		out.push(...block.lines);
+		for (const line of block.lines) out.push(line);
 		block = null;
 	};
 
