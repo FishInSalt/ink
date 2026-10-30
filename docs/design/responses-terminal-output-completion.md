@@ -1,10 +1,10 @@
 # Responses missing terminal output: completion check
 
 Date: 2026-10-30
-Status: implemented and locally verified; external release actions pending.
+Status: implemented, independently reviewed and published in `ink-agent@0.5.0`.
 Design review `6d142385`: PASS before implementation.
 Branch: `fix/responses-terminal-output-0.5.0`
-Base: `cb4f610`; target: unpublished `ink-agent@0.5.0`.
+Base: `cb4f610`; released as `ink-agent@0.5.0` from `8bc00e6`.
 
 ## Scope
 
@@ -77,3 +77,8 @@ passed; full suite: 157 files / 4,105 tests passed. The local full run used
 unchanged `cb4f610`, with no unrelated implementation/test edits. Typecheck,
 lint, build, docs and offline package gates passed. Detailed artifact evidence
 and the initial failed run are recorded in the release preparation record.
+
+Publication, supported-Node CI and independent registry-artifact/provenance
+verification are complete; see the [final publication record](release-0.5.0-preparation.md#publication).
+The release workflow's post-publish visibility timeout is recorded there and
+was not retried. Existing-session limitations and deferred findings are unchanged.
