@@ -262,6 +262,7 @@ class ScreenTerminal implements Terminal {
 	}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 }
 
 async function screenEventually(terminal: ScreenTerminal, check: (lines: string[]) => void): Promise<void> {

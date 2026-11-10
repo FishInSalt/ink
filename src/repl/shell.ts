@@ -556,11 +556,10 @@ export class TuiShell implements LineInput {
 			this.options.onEof();
 		};
 		process.stdin.on("end", this.onStdinEnd);
-		// Force-exit (process.exit) never runs close(): restore the terminal
-		// from the exit hook instead of leaving raw mode + hidden cursor on
-		// the user's shell (M9 review P2). Registered for the process
-		// lifetime; stopTerminal() is idempotent.
-		process.on("exit", () => this.stopTerminal());
+		// pi-tui owns the synchronous process-exit restore (raw mode, cursor
+		// and keyboard protocol); our TUI boundary adds the title reset. Do not
+		// register another stop-on-exit hook: it would pop the Kitty stack a
+		// second time. Normal close() still uses stopTerminal()/whenSettled().
 		this.updatePlaceholder(); // idle + empty editor: the hint row starts visible
 	}
 
@@ -1408,7 +1407,7 @@ export class TuiShell implements LineInput {
 		if (this.options.transcript.callSuffixResolver === this.boundSuffixResolver) {
 			this.options.transcript.callSuffixResolver = null;
 		}
-		this.terminal?.write("\x1b]2;\x07"); // hand the window its own title back
+		// TUI's stop lifecycle also clears the title on upstream-initiated errors.
 		this.terminal = null;
 		this.tui?.stop();
 		this.tui = null;

@@ -101,6 +101,38 @@ Branch summaries (from `/tree` jumps) are separate: they record an abandoned
 branch in one entry. Both preserve the original entries — the tree is never
 pruned.
 
+## Multi-line input and terminal behavior
+
+Enter submits the editor. **Shift+Enter** or **Ctrl+J** inserts a newline;
+backslash immediately before Enter is another newline alternative.
+
+In local macOS Terminal.app sessions, Ink checks native Shift state when the
+terminal sends plain Return or ESC+Return. With Shift held, both insert a
+newline; without Shift, ESC+Return keeps its Alt+Enter behavior. This is
+best-effort local detection, not a change to macOS shortcuts. It cannot inspect
+the keyboard on another machine over SSH; use Ctrl+J there if necessary.
+
+Ink stays on the regular terminal screen with native scrollback. The editor uses
+the hardware cursor for input-method positioning, without a second inverse-video
+cursor. PageUp/PageDown page through pickers and open completion menus;
+Ctrl+PageUp/Ctrl+PageDown remain available for editor movement. The renderer no
+longer reads the upstream `PI_HARDWARE_CURSOR` or `PI_CLEAR_ON_SHRINK` defaults;
+Ink explicitly enables the hardware cursor and leaves clear-on-shrink off.
+
+A rendering-width error can save rendered conversation text in a private
+`ink-renderer-logs-*` directory under the OS temporary directory. The error names the
+file; the directory is created lazily, reused within the process, and retained
+for diagnosis. Upstream `PI_TUI_DEBUG_REDRAW=1` logs use the same private
+directory. Treat those files as conversation data. Separate upstream opt-ins
+are not redirected or covered by this private default: `PI_TUI_DEBUG=1` writes
+to upstream `/tmp/tui`, and `PI_TUI_WRITE_LOG` writes to the chosen path.
+
+Ink checks the default directory's identity and private permissions before
+rendering and again before logging. If it detects a missing or unsafe directory,
+it stops with an error; restart Ink. These checks are not atomic against
+concurrent external filesystem changes and cannot undo exposure of saved files
+if their permissions are changed externally.
+
 ## Steering and follow-ups (interactive)
 
 Lines typed while Ink is working are queued, never dropped:
@@ -122,6 +154,15 @@ fallback; Alt+Enter does not).
 
 ## Known limits
 
+- A recognized terminal response that never finishes can retain subsequent raw
+  keyboard bytes, including Ctrl+C/Ctrl+D. This does not mean an unsupported
+  query with no reply blocks input. A later terminator or new escape sequence
+  can restore input; try an arrow key followed by Ctrl+C again. Earlier buffered
+  keys are not replayed, and one Escape or repeated raw Ctrl+C is not reliable.
+  OS signals still bypass this parser. `PI_PROGRAM_STATUS=0` optionally disables
+  the upstream startup status query, but not responses caused by displayed
+  content or unsolicited terminal input. Ink does not change this upstream
+  policy or disable the query by default.
 - The `/resume` picker's type-to-filter consumes committed text only — IME
   composition windows emit no keys mid-composition (kitty protocol), so CJK
   input filters once committed. A pasted block takes its first line.

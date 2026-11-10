@@ -11,6 +11,8 @@ const EXCLUDE = new Set([
   "ink-lease-s1-abc", "ink-wt-base-123",
   "imp-",
 ]);
+// Production diagnostics are retained, never stale test-fixture roots.
+const PRODUCTION_PREFIXES = ["ink-renderer-logs-"];
 const MANUAL = ["ink-grace-base-", "ink-package-smoke-", "ink-isolation-static-", "ink-output-"];
 const INV = "test/helpers/fixture-prefixes.ts";
 
@@ -24,7 +26,7 @@ for (const f of files) {
     for (const m of src.matchAll(rx)) lits.add(m[1]);
   }
 }
-const post = [...new Set([...lits].filter((p) => !EXCLUDE.has(p)).map((p) => (p.startsWith("imp-") ? "ink-" + p.slice(4) : p)).concat(MANUAL))].sort();
+const post = [...new Set([...lits].filter((p) => !EXCLUDE.has(p)).map((p) => (p.startsWith("imp-") ? "ink-" + p.slice(4) : p)).filter((p) => !PRODUCTION_PREFIXES.some((prefix) => p.startsWith(prefix))).concat(MANUAL))].sort();
 
 const hdr = `/**
  * Test-fixture tmpdir prefix inventory — GENERATED, do not hand-edit.
@@ -36,6 +38,10 @@ const hdr = `/**
  * this file (self-reference), then imp→ink rename mapping (this batch
  * renamed every repo-written imp- prefix), then audited exclusions,
  * then audited manual adds.
+ *
+ * Production exclusion: ink-renderer-logs- and all descendant literals.
+ * Renderer diagnostics are not fixtures and must not be swept. The sweep
+ * regression also rejects ancestor prefixes that would overlap this namespace.
  *
  * Excluded (audited): package identity ("imp-agent"/"ink-agent");
  * legacy-name test payloads (imp-worktree-historical, imp-worktree-task-*);

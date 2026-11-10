@@ -28,13 +28,18 @@ describe("esc semantics: clean-abort case", () => {
 		// A faithful hold: like the real SDK fetch, the stream ENDS (cleanly,
 		// no message_end) when the request signal aborts — unlike fakes.ts's
 		// streamingProvider whose gate never listens to the signal.
+		let aborted = false;
 		const provider = {
 			name: "mock-hold-abort-aware",
 			async *stream(request: never) {
 				const sig = (request as { signal?: AbortSignal }).signal;
 				const held = new Promise<void>((resolve) => {
-					if (sig?.aborted) resolve();
-					else sig?.addEventListener("abort", () => resolve(), { once: true });
+					const release = () => {
+						aborted = true;
+						resolve();
+					};
+					if (sig?.aborted) release();
+					else sig?.addEventListener("abort", release, { once: true });
 				});
 				yield { type: "text_delta", text: "partial" } as never;
 				await held; // the abort releases the hold; clean end, no message_end
@@ -55,7 +60,7 @@ describe("esc semantics: clean-abort case", () => {
 			provider,
 			deferInit: false,
 		});
-		runRepl({
+		const repl = runRepl({
 			runner,
 			commands: [],
 			shell: "tui",
@@ -73,17 +78,18 @@ describe("esc semantics: clean-abort case", () => {
 		// esc1: interrupt — the stream aborts cleanly and the machine settles to idle
 		terminal.data("\x1b");
 		const markAfterEsc1 = terminal.writes.length;
-		// the abort lands and the machine settles to idle: the esc-hint row
-		// disappears (it only renders while active)
+		// Observe a positive idle frame: accumulated writes can retain an
+		// active frame painted before the buffered Esc was dispatched.
 		let backToIdle = false;
 		for (let i = 0; i < 40; i++) {
 			await settle(50);
-			if (!terminal.frameSince(markAfterEsc1).includes("(esc to interrupt")) {
+			if (terminal.frameSince(markAfterEsc1).includes("(/ for commands")) {
 				backToIdle = true;
 				break;
 			}
 		}
 		expect(backToIdle).toBe(true);
+		expect(aborted).toBe(true);
 		expect(exitCodes).toEqual([]);
 		// esc2: state is IDLE now — this is the FIRST idle interrupt: a note only
 		await settle(200); // let the settle path fully finish before the next press
@@ -110,6 +116,7 @@ describe("esc semantics: clean-abort case", () => {
 			}
 		}
 		expect(sawBye).toBe(true);
+		await repl;
 		expect(exitCodes).toEqual([]); // graceful, not forced
 	}, 20000);
 });

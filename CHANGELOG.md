@@ -8,6 +8,29 @@ their original release identity.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Apple Terminal Shift+Enter.** Upgrade `@earendil-works/pi-tui` from 0.82.0
+  to 1.5.1 so ESC+Return with native Shift held inserts a newline, while genuine
+  Alt+Enter retains its submit/follow-up behavior. Ctrl+J remains available.
+- **Terminal exit restoration.** Use the upstream synchronous exit handler
+  once, including Ink's window-title reset, instead of popping the Kitty
+  keyboard protocol stack twice on direct process exit. Upstream-initiated
+  renderer stops also clear Ink's window title.
+
+### Changed
+
+- Adapt the TUI boundary to the regular-screen renderer, preserving native
+  scrollback and hardware-cursor input-method positioning. The editor no longer
+  draws a duplicate inverse-video cursor; pickers and completion menus gain
+  PageUp/PageDown navigation.
+- Keep renderer crash diagnostics in a lazy private process-local temporary
+  directory rather than a shared fixed temporary file. Detect missing or unsafe
+  default directories before logging and exclude them from fixture cleanup;
+  external filesystem changes are not atomically prevented. Upstream explicit debug
+  and write-log destinations remain separate. Document the upstream incomplete
+  terminal-response limitation; status negotiation remains enabled by default.
+
 ## [0.5.0] - 2026-10-30
 
 ### Upgrade
