@@ -1,7 +1,7 @@
 # Ink 0.5.1 patch-release preparation
 
 Date: 2026-11-10
-Status: local candidate verified; independent design and final candidate/artifact reviews APPROVED; publication pending.
+Status: published from `717bc88`; see [Publication](#publication) for the verified outcome.
 Branch: `release/0.5.1`
 Base: `67a06302dd51f32ece344722c5d461ea42f73750` (clean local main).
 Previous published version: `ink-agent@0.5.0`, tag `v0.5.0`.
@@ -211,3 +211,102 @@ At review closure no release commit/tag, remote push, CI/Pages deployment,
 npm/GitHub publication or global installation had been performed. Local commit
 and --no-ff merge follow this record; supported-Linux CI and all external
 publication operations remain gated as described above.
+
+## Publication
+
+Published 2026-11-10. This verified outcome supersedes earlier pending statements,
+which describe preparation stages. The owner separately approved the main push
+(CI/Pages), the version-tag push and resulting npm publication, and creation of
+the formal GitHub Release page. No rerun or second publication was attempted.
+
+- Candidate commit: `8075d406124b238274f258bb8c2891ad21e5faf7`.
+  Release merge: `717bc889f24c58e39f1f5b5c40e26bd46a40537f`, integrated with
+  --no-ff; its tree equals the reviewed candidate. The fix's earlier --no-ff
+  integration is `67a0630`.
+- Annotated tag object: `34e6198bca66c01cd41b97fb0fa0b1e5d40aacac`.
+  Both local and remote `v0.5.1^{commit}` resolve to the release merge, not a
+  later publication-record commit. Do not move or recreate this tag.
+- [CI `42779344878`](https://github.com/FishInSalt/ink/actions/runs/42779344878)
+  passed on Linux Node 22.19.0 / npm 10.9.3 and Node 24.22.2 / npm 11.19.1.
+  Each had 158 test files, 4,145 tests passed and 2 Darwin-only tests skipped
+  (the named-pasteboard JXA integration and real Darwin native-helper load).
+  Both 427-file artifact smokes passed. These are additional to, not substitutes
+  for, the local macOS results recorded above.
+- [Pages `42779344862`](https://github.com/FishInSalt/ink/actions/runs/42779344862)
+  built and deployed successfully for the exact release commit. Both published
+  sessions pages were read and confirmed to contain the new terminal guidance,
+  private diagnostics namespace and redraw-log explanation. A direct Python
+  request timed out during TLS; the separate URL-reading tool verified both
+  deployed pages. No workflow rerun was used to recover a status-query error.
+- [Release `42781370264`](https://github.com/FishInSalt/ink/actions/runs/42781370264),
+  attempt 1, completed successfully. Node 24.22.2 / npm 11.19.1 gate results:
+  158 test files, 4,145 tests passed / 2 Darwin-only skips, 427-file artifact
+  smoke. The publish job repeated artifact checks before real publication.
+  Real npm publish passed at 08:18:53Z; the registry-visibility check also
+  passed, completing at 08:21:42Z. This run did not have the previous release's
+  failed visibility tail.
+- Registry publication timestamp: `2026-11-10T08:21:30.705Z`. npm `latest` selects
+  `0.5.1`; metadata `gitHead` is the release merge. Published integrity:
+  `sha512-CxqeZynVBcUw4dXDi47knUcNow1Ps4210CZQusY/8YQiX9Pj+eH6pit2nsWhr/DZxESAPymDyJ1G4h6A45xSFA==`.
+  SHA-1: `ffd9aa583e81b5da5e316c3d4881f08ea6fc3daf` (matches the publish log).
+  SHA-256: `c69a1c9f0a6b232699cb7868fd6d430269f0e884361ec4e544f36c951057fbac`.
+  The registry archive is 820,929 bytes. All 427 packed file bodies and modes
+  exactly match the reviewed 819,888-byte local candidate. Compressed archive
+  digests differ; the local candidate integrity above is not registry integrity.
+- Post-publication cryptographic verification used the existing npm Sigstore
+  libraries read-only and refreshed TUF-authenticated trust data in task scratch.
+  Both registry signatures, the npm publish attestation, SLSA provenance,
+  certificate identity/issuer and transparency-log inclusion proofs passed
+  cryptographic verification. Signed artifact digest, repository, workflow,
+  version tag, commit and run/attempt match the release. Provenance log index:
+  `3781925029`; npm publish-attestation index: `3781980016`. Five negative
+  controls rejected a changed signed payload, wrong workflow identity, wrong
+  OIDC issuer, wrong artifact digest and wrong source commit. This is not a
+  workflow security audit or a separate post-publication source rebuild.
+- A private offline installation of the actual downloaded registry tarball
+  matched all 427 file bodies/modes and resolved pi-tui 1.5.1. Exact Ink 0.5.1
+  and help passed on local Node 22.19.0, 24.22.1 and 25.5.0; neutral-cwd local
+  npm-exec passed. The real registry installation additionally passed all 75
+  TUI/native/privacy/PTY cases. There were no unexpected network attempts or
+  install lifecycle scripts. An initial verification-script assertion confused
+  macOS /tmp and /private/tmp aliases; normalizing both paths and rerunning in
+  a new private prefix passed. The original failure log is retained; no
+  application code, published archive or test deadline was changed.
+- [GitHub Release `v0.5.1`](https://github.com/FishInSalt/ink/releases/tag/v0.5.1)
+  was published at `2026-11-10T08:41:49Z` (id `440117447`), is neither draft nor
+  prerelease, and is the latest GitHub release. Its body matches only the
+  approved dated CHANGELOG notes, with line-ending/trailing-newline normalization.
+
+Publication evidence is under `/tmp/ink-release-0.5.1.aRJ55W/logs/`:
+github-{ci,pages,release}.json and .log, release-tag.json,
+registry-{metadata,latest,attestations,keys}.json,
+registry-artifact-identity.json, registry-publication-time.json,
+registry-crypto-verification.json, registry-crypto.log,
+registry-install-verification.json, registry-install-verified.log,
+registry-tui-checks.json and .log, github-release-page.json and
+github-latest-release.json. The downloaded archive and verification scripts are
+retained under the release scratch root; TUF data is under tuf-cache/.
+
+This two-file documentation record follows section 4.5 of the design approved
+before release implementation and is prepared on the dedicated
+`docs/release-0.5.1-publication` branch from the release merge. Final reviewer
+a70ccde9 returned APPROVE for this publication-evidence/documentation follow-up
+in the same second authorized review round. The reviewer independently fetched
+fresh registry evidence, matched all 427 archive/installed files and modes,
+refreshed TUF trust and verified both signatures and attestations, reproduced
+the five original negative controls and rejected four additional inclusion-hash/
+checkpoint corruption controls. The 75 installed cases and CLI version/help
+were independently rerun. GitHub/Pages claims were checked against the retained
+detailed API/log evidence rather than freshly queried or rerun.
+
+The record passed 12 relative-link / 3 anchor checks, lint across 297 files and
+git diff --check; older release history and all 427 packed files remain unchanged.
+Follow-up evidence: review-publication-{artifact,crypto,evidence-audit,lint,
+registry-get,registry-tui,final-state}.log and review-publication-doc-checks-final.log
+under the release logs directory. Local commit and --no-ff integration follow
+this approval; a record push still requires its own confirmation.
+
+No further npm/tag/GitHub Release publication is pending. The accepted parser
+buffer policy and non-atomic filesystem limitation remain unchanged. No global
+installation update, account configuration or live provider inference was
+performed as part of release verification.
