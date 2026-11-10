@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { firstLine } from "../../format.js";
 import type { ProviderName } from "../../provider/resolve.js";
 import type { ThinkingLevel } from "../../provider/thinking.js";
-import type { LLMProvider } from "../../provider/types.js";
+import type { LLMProvider, ModelSpeed } from "../../provider/types.js";
 import type { AgentDefinition } from "../agents/registry.js";
 import { canonicalJson } from "../canonical.js";
 import {
@@ -106,6 +106,8 @@ export interface TaskToolOptions {
 	 *  (the real runner always wires it). The getModel() fallback is a
 	 *  documented approximation — SA-02 design D1. */
 	getModelReference?: () => string;
+	/** Live speed read synchronously with provider/model at dispatch; absent = normal. */
+	getSpeed?: () => ModelSpeed | undefined;
 	/** SA-09: the parent session's live thinking level, read at spawn for the
 	 *  inherit fallback (agent frontmatter `thinking:` wins). The real runner
 	 *  always wires it (getModelReference pattern); absent → children pass no
@@ -624,6 +626,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
 						provider: liveProvider,
 						model: launch.model.wireModelId,
 						modelReference: launch.model.reference,
+						...(launch.speed === undefined ? {} : { speed: launch.speed }),
 						...(resumeThinking !== undefined && { thinking: resumeThinking }),
 						system: options.getSystem(),
 						extraSystem: resumeAgent?.system,
@@ -726,21 +729,24 @@ export function createTaskTool(options: TaskToolOptions): Tool {
 			// synchronous step — /model can swap provider+family while this
 			// spawn awaits (worktree creation), and the attempt must use the
 			// pair that was recorded, not a later swap (design §8). These two
-			// reads must stay FIRST and ADJACENT: nothing that can yield may
-			// precede them, and nothing may be inserted between them.
+			// reads plus speed must stay ADJACENT and synchronous: nothing that
+			// can yield may precede them. Children intentionally snapshot the
+			// LIVE selection, not the parent's top-level run-entry selection.
 			const parentReference = options.getModelReference?.() ?? options.getModel();
 			const provider = options.getProvider();
+			const parentSpeed = options.getSpeed?.();
 			// SA-09: pinned with the pair above — read here, before the worktree
 			// awaits below, never at the runSubagent assembly site.
 			const spawnThinking = agent?.thinking ?? options.getThinkingLevel?.();
 			const resolution = resolveChildModel({
 				parentReference,
+				parentSpeed,
 				override: agent?.model,
 				agentName: agent?.name,
 			});
 			if (!resolution.ok)
 				return finish({ output: resolution.error, isError: true }, rejectTerminal(resolution.error));
-			const binding = resolution.binding;
+			const { binding, speed } = resolution;
 			rec.binding = binding;
 
 			// Tools narrowing first (review B1): it can only reject, never touch
@@ -838,6 +844,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
 								? {}
 								: { agent: { name: agent.name, system: agent.system, source: agent.source } }),
 							model: binding,
+							...(speed === undefined ? {} : { speed }),
 							cwd: childCwd,
 							...(wt === undefined || repo === undefined
 								? {}
@@ -872,6 +879,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
 					provider,
 					model: binding.wireModelId,
 					modelReference: binding.reference,
+					...(speed === undefined ? {} : { speed }),
 					...(spawnThinking !== undefined && { thinking: spawnThinking }),
 					system: options.getSystem(),
 					extraSystem: agent?.system,

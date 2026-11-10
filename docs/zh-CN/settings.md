@@ -22,7 +22,7 @@
 
 | 键 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `defaultModel` | string | — | 缺少 `-m`/`INK_MODEL` 时的启动模型 |
+| `defaultModel` | string | — | 缺少 `-m`/`INK_MODEL` 时的启动模型；Codex 订阅接受 `·fast` |
 | `defaultThinkingLevel` | string | `medium` | 启动思考档位（模型须支持该调节项） |
 | `hideThinkingBlock` | boolean | `false` | 将推理轨迹隐藏在 `Thinking...` 标签之后（Ctrl+T 切换） |
 | `autoCompact` | boolean | `true` | 自动压缩门控（`INK_AUTOCOMPACT=0` 优先） |
@@ -35,13 +35,31 @@
 | `treeFilterMode` | `default` \| `no-tools` \| `user-only` \| `labeled-only` \| `all` | `default` | 树形选择器打开时的默认过滤器 |
 | `branchSummary.skipPrompt` | boolean | `false` | 在 `/tree` 跳转时跳过“摘要左分支吗？”的询问 |
 
+## 默认模型选择
+
+`defaultModel` 接受与 `/model` 和 `-m` 相同的选择引用，包括 ChatGPT 订阅
+提供商的精确 `·fast` 后缀：
+
+```json
+{
+  "defaultModel": "openai-codex/gpt-6.1-sol·fast",
+  "defaultThinkingLevel": "high"
+}
+```
+
+也可使用 `/settings defaultModel openai-codex/gpt-6.1-sol·fast`。不带后缀的
+普通引用选择普通处理；Fast 不是独立的设置键或全局开关。思考档位独立，
+启动和恢复优先级不变。Fast 请求可能消耗更多额度；可用性和账户权限仍未经
+确认。API key `openai` 不在此功能范围内。能力规则和错误处理见
+[提供商](providers.md)。
+
 ## ~/.ink 中的相关文件
 
 | 路径 | 用途 |
 |---|---|
 | `~/.ink/auth.json` | 凭据、订阅注册及随机安装标识（0600）；存储的密钥优先于环境变量 |
 | `~/.ink/models-catalog.json` | 模型元数据磁盘缓存（4 小时刷新窗口） |
-| `~/.ink/chatgpt-models.json` | 账户专属订阅模型列表（5 分钟有效窗口） |
+| `~/.ink/chatgpt-models.json` | 账户专属订阅模型列表和可选的 Fast 能力提示（5 分钟有效窗口） |
 | `~/.ink/commands/` | Markdown 快捷命令（`/<filename>`） |
 | `~/.ink/extensions/` | 全局扩展 |
 | `~/.ink/agents/` | 全局具名 agent |

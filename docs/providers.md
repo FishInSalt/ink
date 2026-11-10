@@ -181,6 +181,62 @@ Thinking: k2.6 toggles off/on; k2.7-code and k3 always think (k3 takes
   some models cannot turn thinking off (gpt-5 base, o3, gpt-6), newer ones
   expose `xhigh`/`max`.
 
+## Codex Fast requests
+
+Fast is a per-model request mode for the ChatGPT subscription provider
+(`openai-codex`), not API-key `openai`, Ultrafast, or a global speed toggle.
+`/model` (Ctrl+L) offers the base model followed by a `·fast` variant for
+**every Fast-capable Codex model in the account listing**, not only Sol.
+For example:
+
+```text
+/model openai-codex/gpt-6.1-sol·fast
+/model openai-codex/gpt-6.1-sol
+```
+
+The second command selects normal processing and clears Fast. The suffix also
+works with `-m` / `--model`, `INK_MODEL`, and settings `defaultModel`. The footer,
+`/status`, and model-switch notes show it. Automatic startup/login suggestions
+remain normal and do not replace a deliberate Fast choice.
+
+Optional account-list capability hints take precedence over Ink's bundled,
+pinned snapshot of the official Codex model catalog, including explicit
+negative hints. `service_tiers` with `id:"priority"` or `id:"fast"`, or legacy
+`additional_speed_tiers` containing `"fast"`, advertise capability. Either
+positive field suffices; otherwise a valid array with no Fast entry (including
+`[]`) is negative evidence. Missing/malformed fields alone mean unknown and use
+the snapshot. If support is still unknown or negative, no Fast row is added.
+Neither the snapshot nor pi.dev metadata adds an unlisted account model; model
+names do not establish capability. Offline variants retain the base listing's
+stale/unverified notice.
+
+A deliberate, well-formed `openai-codex/<id>·fast` selection remains a valid
+request even for a custom, unknown, or negatively advertised model, including
+when resumed from a session. Capability changes do not erase it. The server
+can reject unsupported requests; local acceptance is not proof of access.
+
+The picker says `Fast requested; higher usage; availability unverified`.
+Fast may consume more subscription allowance or incur additional cost. Catalog
+estimates remain base-model estimates, not actual subscription charges or a
+verified Fast multiplier. Listing and capability do not verify account
+entitlement or guarantee faster responses. The only live Fast subscription probe,
+on 2026-11-10 with `service_tier:"fast"`, returned **HTTP 400**; its diagnostic
+reason was not retained. This was not successful Fast verification and does
+not establish whether Fast is supported.
+
+Ink sends the unchanged base model ID with `service_tier:"priority"`, the
+Fast-equivalent value used by official Codex. Normal requests omit the tier
+field. `·fast` is selection/display syntax, not a new model: context, vision,
+pricing metadata and replay identity stay base-only. Thinking remains independent
+(`/think`, `--thinking`); selecting Fast does not lower it.
+
+Errors preserve the selection and show recovery guidance: explicitly choose
+the normal model before retrying normally. Retries keep Fast; there is no silent
+normal retry, model substitution, credential/billing switch, or legacy-backend
+fallback. If a terminal response explicitly reports `default`, `standard`, or
+`flex`, Ink rejects it without saving that reply or executing its tools. An
+omitted or unknown reported tier is not confirmation that Fast was delivered.
+
 ## Model catalog (pi.dev)
 
 Model metadata — context windows, cost rates, thinking ladders, vision

@@ -64,12 +64,30 @@ Ink's built-in CLI/TUI messages, including error recovery hints, are in
 English. Model responses, tool output, upstream error details, and content
 supplied by users or extensions are not translated.
 
+## Fast model selection
+
+Append the exact `·fast` suffix (middle dot, not a period) to a ChatGPT
+subscription model reference to request Fast:
+
+```bash
+ink -m 'openai-codex/gpt-6.1-sol·fast' --thinking high
+INK_MODEL='openai-codex/gpt-6.1-terra·fast' ink
+```
+
+`--model`, `INK_MODEL`, and settings `defaultModel` accept the same syntax as
+`/model`. Select the plain reference without the suffix to clear Fast. Startup
+and resume precedence is unchanged; thinking is independent. This requests
+Fast on the same base model, not verified entitlement or guaranteed speed;
+higher usage may apply. Only `openai-codex` supports this request mode, not
+API-key `openai`. Errors remain visible without a normal-mode or billing-route
+fallback. See [providers.md](providers.md) for capability and verification limits.
+
 ## Options
 
 | Flag | Description |
 |---|---|
 | `-p`, `--print <prompt>` | Prompt to run, then exit |
-| `-m`, `--model <id>` | Model id (default: `$INK_MODEL` or `claude-sonnet-4-5`) |
+| `-m`, `--model <id>` | Model reference; Codex subscription accepts `·fast` (default: `$INK_MODEL` or `claude-sonnet-4-5`) |
 | `--thinking <level>` | `off` `minimal` `low` `medium` `high` `xhigh` `max` |
 | `--max-tokens <n>` | Max output tokens per turn (default: model catalog limit) |
 | `--max-turns <n>` | Max agent turns per run |
@@ -103,7 +121,7 @@ supplied by users or extensions are not translated.
 | `ZAI_API_KEY` | Z.ai key (GLM Coding Plan) |
 | `DEEPSEEK_API_KEY` | DeepSeek key |
 | `MOONSHOT_API_KEY` | Moonshot/Kimi key (both families) |
-| `INK_MODEL` | Default model id |
+| `INK_MODEL` | Default model reference; Codex subscription accepts `·fast` |
 | `INK_THINKING` | Default thinking level (invalid values: notice + ignore) |
 | `INK_CONTEXT_WINDOW` | Context window for auto-compaction (default 131072) |
 | `INK_AUTOCOMPACT=0` | Disable auto-compaction |

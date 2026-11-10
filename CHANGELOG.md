@@ -8,6 +8,17 @@ their original release identity.
 
 ## [Unreleased]
 
+### Added
+
+- **Codex Fast requests.** Offer `·fast` selections for all account-listed Codex
+  models with positive capability evidence, using account tier hints before a
+  pinned official catalog fallback. Send the base model with
+  `service_tier: "priority"`, independently of thinking. Preserve speed across
+  sessions, children and summaries; reject explicit processing downgrades and
+  never silently select normal processing or API-key billing. Fast may consume
+  more allowance; subscription-tier access and acceleration remain unverified
+  after an inconclusive HTTP 400 live probe.
+
 ## [0.5.1] - 2026-11-10
 
 ### Fixed

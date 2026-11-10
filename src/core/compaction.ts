@@ -6,7 +6,7 @@ import {
 	type ThinkingLevel,
 	thinkingMetaFor,
 } from "../provider/thinking.js";
-import type { LLMProvider } from "../provider/types.js";
+import type { LLMProvider, ModelSpeed } from "../provider/types.js";
 import {
 	type AgentMessage,
 	type AssistantMessage,
@@ -494,6 +494,7 @@ interface SummarizerRun {
 async function runSummarizer(args: {
 	provider: LLMProvider;
 	model: string;
+	speed?: ModelSpeed;
 	system: string;
 	userContent: string;
 	maxTokens: number;
@@ -516,6 +517,7 @@ async function runSummarizer(args: {
 			messages: [{ role: "user", content: args.userContent }],
 			tools: [],
 			model: args.model,
+			...(args.speed === undefined ? {} : { speed: args.speed }),
 			maxTokens: args.maxTokens,
 			signal: args.signal,
 			thinking: args.thinking !== undefined && args.thinking !== "off" ? args.thinking : undefined,
@@ -569,6 +571,7 @@ function levelRank(level: ThinkingLevel | undefined): number {
 async function summarizeWithRetry(args: {
 	provider: LLMProvider;
 	model: string;
+	speed?: ModelSpeed;
 	system: string;
 	userContent: string;
 	maxTokens: number;
@@ -613,6 +616,7 @@ export async function summarizeBranchSegment(args: {
 	messages: AgentMessage[];
 	provider: LLMProvider;
 	model: string;
+	speed?: ModelSpeed;
 	signal?: AbortSignal;
 	/** #derived-budget: model-side cap source — the runner resolves the
 	 *  model reference's maxTokens (catalog, else the thinking table) and
@@ -634,6 +638,7 @@ export async function summarizeBranchSegment(args: {
 	const run = await summarizeWithRetry({
 		provider: args.provider,
 		model: args.model,
+		speed: args.speed,
 		system: SUMMARIZATION_SYSTEM_PROMPT,
 		userContent: wellFormed(`${transcript}\n\n---\n\n${BRANCH_SUMMARY_PROMPT}${suffix}`),
 		// Half the derived budget: branch segments are shorter than full
@@ -694,6 +699,7 @@ export async function compactHistory(args: {
 	messages: AgentMessage[];
 	provider: LLMProvider;
 	model: string;
+	speed?: ModelSpeed;
 	/** Qualified active target; absent derives an estimation-only reference
 	 * from this concrete provider/model, never a persisted pricing identity. */
 	modelReference?: string;
@@ -751,6 +757,7 @@ export async function compactHistory(args: {
 	const run = await summarizeWithRetry({
 		provider: args.provider,
 		model: args.model,
+		speed: args.speed,
 		system: SUMMARIZATION_SYSTEM_PROMPT,
 		userContent,
 		maxTokens: summarizerMaxTokens(settings.reserveTokens, args.modelMaxTokens),
@@ -797,6 +804,7 @@ export async function compactSession(args: {
 	session: SessionStore;
 	provider: LLMProvider;
 	model: string;
+	speed?: ModelSpeed;
 	signal?: AbortSignal;
 	settings?: CompactionSettings;
 	/** #derived-budget: passed through to compactHistory (see there). */
@@ -815,6 +823,7 @@ export async function compactSession(args: {
 		messages,
 		provider: args.provider,
 		model: args.model,
+		speed: args.speed,
 		modelReference: args.modelReference,
 		minAnchorIndex: compactionBoundary,
 		signal: args.signal,

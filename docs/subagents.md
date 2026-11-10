@@ -18,6 +18,16 @@ and on screen each call owns its own entry: a live overview under its own
 `● task` header while running, its result landing under that header the
 moment it settles, with its own duration.
 
+A new child captures the live provider, model, and requested speed together at
+dispatch, before asynchronous setup. This deliberately differs from the main
+loop's run-entry snapshot: changing the selection during a run can affect a
+newly dispatched child without changing the active main-loop requests. Once
+started, the child keeps its own resolved speed through tool follow-ups,
+auto-compaction and overflow summaries, including summarizer thinking retries.
+In Fast mode, a failed summary is reported immediately as a child failure; the
+child does not silently continue uncompressed or retry at later tool boundaries.
+Normal mode retains its existing summarizer-failure tolerance.
+
 ## Loop health
 
 A shared loop-health monitor (same signals for the main loop and children)
@@ -30,6 +40,9 @@ a child.
 
 - Every child transcript is persisted as a session file in a `children/`
   directory next to the parent's (`INK_CHILD_SESSIONS=0` opts out).
+- Child launch records save optional Fast speed separately from the base model
+  binding. Continuing a child uses its recorded speed, not the parent's current
+  choice. Old records without speed mean normal.
 - Wall-clock: no clock in the REPL (Ctrl+C is the backstop); a 60-minute
   hang guard in print/headless runs. A call's `timeoutMs` or an agent
   file's `timeout:` (seconds) always wins.
@@ -61,12 +74,19 @@ You are a code scout. Go broad before deep.
   **current provider only**: a bare id, or a `provider/id` prefix naming
   the same provider (the prefix is stripped). A cross-provider reference is
   rejected before the child starts, with an error that names the
-  workaround. Omit to inherit the session's model; a blank `model:` is a
-  configuration error (rejected the same way).
+  workaround. Omit to inherit the session's model **and speed at dispatch**;
+  a blank `model:` is a configuration error (rejected the same way).
+  An explicit plain override selects normal processing, even if it names the
+  parent's base model. On `openai-codex`, an explicit `·fast` override such as
+  `model: gpt-6.1-terra·fast` requests Fast; bare IDs still use the parent's
+  provider. The same-provider restriction remains, and no API-key Fast mode is
+  added. A valid explicit Fast request can still be rejected by the server;
+  there is no silent normal-speed fallback.
 - `thinking:` sets the level for that agent's children. Omit to inherit the
   session's current level at spawn; a blank value is a configuration error
   (the file is skipped with a startup warning). The level is clamped to
-  what the child's model supports.
+  what the child's model supports. Thinking and Fast speed are independent;
+  requesting Fast does not lower the thinking level.
 - Registered agents are advertised to the model in the system prompt's
   `<advertised_agents>` block; `task(agent: "scout", prompt: …)` runs one.
 

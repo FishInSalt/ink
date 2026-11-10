@@ -134,6 +134,7 @@ describe("codex-responses provider", () => {
 		expect(msg.stopReason).toBe("end_turn");
 
 		const body = captured.at(-1)?.body as Record<string, unknown>;
+		expect(body).not.toHaveProperty("service_tier");
 		expect(body.instructions).toBe("sys-instructions");
 		expect(body.store).toBe(false);
 		// the ChatGPT backend rejects max_output_tokens with a 400 — the wire
@@ -147,6 +148,44 @@ describe("codex-responses provider", () => {
 		expect(headers).not.toHaveProperty("openai-beta");
 		expect(body.include).toEqual(["reasoning.encrypted_content"]);
 	});
+
+	it.each(["gpt-5.5", "gpt-6-astra", "gpt-6.1-sol", "future-codex-custom"])(
+		"Fast for %s changes only service_tier, not thinking, session affinity, or provenance",
+		async (model) => {
+			script = {
+				status: 200,
+				chunks: [
+					sse("response.completed", {
+						response: { status: "completed", service_tier: "priority" },
+					}),
+				],
+			};
+			const p = provider();
+			const req = {
+				...REQ(model, [{ role: "user", content: "hi" }]),
+				thinking: "high" as const,
+				sessionId: "same-base-normal-and-fast",
+			};
+			const normal = await collect(p.stream(req));
+			const normalWire = captured.at(-1)!;
+			const fast = await collect(p.stream({ ...req, speed: "fast" }));
+			const fastWire = captured.at(-1)!;
+			expect(normalWire.body).not.toHaveProperty("service_tier");
+			expect(fastWire.body).toEqual({ ...normalWire.body, service_tier: "priority" });
+			expect(fastWire.headers).toEqual({
+				...normalWire.headers,
+				"content-length": String(Buffer.byteLength(JSON.stringify(fastWire.body))),
+			});
+			expect(fast).toEqual(normal);
+			expect(fast.at(-1)).toMatchObject({
+				type: "message_end",
+				message: { provenance: { version: 1, provider: "openai-codex", model } },
+			});
+			// The same provider does not retain Fast as mutable state.
+			await collect(p.stream(req));
+			expect(captured.at(-1)?.body).toEqual(normalWire.body);
+		},
+	);
 
 	it("hashes a full Unicode/CRLF session ID; only the three affinity fields change", async () => {
 		script = {

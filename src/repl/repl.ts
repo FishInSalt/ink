@@ -15,6 +15,7 @@ import type { ConfirmOptions, RegisteredExtensionCommand } from "../extensions/t
 import { dim, formatTokens, shorten, summarizeResult, usageMoneySegment, VERSION } from "../format.js";
 import type { McpManager } from "../mcp/manager.js";
 import { costFor } from "../provider/models.js";
+import { formatModelSelection } from "../provider/resolve.js";
 import { supportedThinkingLevels, thinkingMetaFor } from "../provider/thinking.js";
 import { imageSuffix, type Renderer } from "../render.js";
 import { type AgentEventInfo, noModelText, type Runner } from "../runner.js";
@@ -978,7 +979,9 @@ class ReplMachine {
 		// knob for a model that cannot run; it returns once usable).
 		const usable = this.runner.modelUsable();
 		const parts: string[] = [
-			usable ? this.runner.modelReference() : noModelText(this.runner.hasConfiguredProviders(), true),
+			usable
+				? formatModelSelection(this.runner.modelReference(), this.runner.speed)
+				: noModelText(this.runner.hasConfiguredProviders(), true),
 		];
 		// pi parity (#thinking-levels): the level segment sits beside the
 		// model whenever the model HAS a knob — "off" included, so the
@@ -1775,7 +1778,9 @@ export async function runRepl(options: ReplOptions): Promise<number> {
 			// instead (welcomeLines' third arg is the DISPLAY segment).
 			const welcome = welcomeLines(
 				session.header.id.slice(0, 8),
-				runner.modelUsable() ? runner.modelReference() : noModelText(runner.hasConfiguredProviders()),
+				runner.modelUsable()
+					? formatModelSelection(runner.modelReference(), runner.speed)
+					: noModelText(runner.hasConfiguredProviders()),
 				renderer.ansiEnabled,
 			);
 			for (const line of welcome.slice(0, -1)) renderer.writeLine(line);
@@ -1792,7 +1797,7 @@ export async function runRepl(options: ReplOptions): Promise<number> {
 			// line — /login when nothing is configured, /model when a configured
 			// model merely was not selected.
 			const modelSegment = runner.modelUsable()
-				? runner.model
+				? formatModelSelection(runner.model, runner.speed)
 				: noModelText(runner.hasConfiguredProviders(), true);
 			renderer.note(`▪ session ${session.header.id.slice(0, 8)} · model ${modelSegment}`);
 			// Replay the resumed history so the user sees what the model sees

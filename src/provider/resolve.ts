@@ -1,10 +1,13 @@
 import { createAnthropicProvider } from "./anthropic.js";
 import { createCodexResponsesProvider } from "./codex-responses.js";
 import { createDeepSeekProvider } from "./deepseek.js";
+import { canRequestFastMode, type ModelSpeed } from "./model-speed.js";
 import { createMoonshotCnProvider, createMoonshotProvider } from "./moonshotai.js";
 import { createOpenAICompletionsProvider } from "./openai-completions.js";
 import type { LLMProvider } from "./types.js";
 import { createZaiProvider } from "./zai.js";
+
+export { canRequestFastMode } from "./model-speed.js";
 
 /**
  * Model reference parsing + provider routing (#multi-provider).
@@ -90,6 +93,26 @@ export function parseModelRef(reference: string): ModelRef {
 	return { provider: "anthropic", modelId: reference };
 }
 
+export interface ModelSelection extends ModelRef {
+	speed?: ModelSpeed;
+}
+
+/** Parse UI/CLI selection syntax without changing canonical model routing. */
+export function parseModelSelection(reference: string): ModelSelection {
+	const trimmed = reference.trim();
+	if (!trimmed.endsWith("·fast")) return parseModelRef(reference);
+	const ref = parseModelRef(trimmed.slice(0, -"·fast".length));
+	if (!canRequestFastMode(ref.provider, ref.modelId)) {
+		throw new Error("Fast requests require an undecorated model ID on the openai-codex provider.");
+	}
+	return { ...ref, speed: "fast" };
+}
+
+/** Display/selection reference only; metadata and wire IDs stay undecorated. */
+export function formatModelSelection(reference: string, speed?: ModelSpeed): string {
+	return speed === "fast" ? `${reference}·fast` : reference;
+}
+
 /** SA-05: the FULLY QUALIFIED canonical reference for a producer identity —
  *  always `provider/modelId`, anthropic included. This is the persisted
  *  pricing identity; it is intentionally distinct from the display/routing
@@ -123,7 +146,15 @@ export function createProviderFor(provider: ProviderName): LLMProvider {
 }
 
 /** Resolve a model reference into (provider, wire model id). */
-export function resolveModel(reference: string): { provider: LLMProvider; modelId: string } {
-	const ref = parseModelRef(reference);
-	return { provider: createProviderFor(ref.provider), modelId: ref.modelId };
+export function resolveModel(reference: string): {
+	provider: LLMProvider;
+	modelId: string;
+	speed?: ModelSpeed;
+} {
+	const ref = parseModelSelection(reference);
+	return {
+		provider: createProviderFor(ref.provider),
+		modelId: ref.modelId,
+		...(ref.speed === undefined ? {} : { speed: ref.speed }),
+	};
 }

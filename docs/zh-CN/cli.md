@@ -54,12 +54,29 @@ echo "fix the typo" | ink   # piped: one turn, exits at EOF (empty pipe: help + 
 打印/管道运行默认 `--max-turns 100`；交互式 TTY 会话不设上限（显式传入有限值时
 才会生效）。
 
+## Fast 模型选择
+
+在 ChatGPT 订阅模型引用后追加精确的 `·fast` 后缀（中点，不是句点），即可
+请求 Fast：
+
+```bash
+ink -m 'openai-codex/gpt-6.1-sol·fast' --thinking high
+INK_MODEL='openai-codex/gpt-6.1-terra·fast' ink
+```
+
+`--model`、`INK_MODEL` 和设置 `defaultModel` 接受与 `/model` 相同的语法。
+选择不带后缀的普通引用即可清除 Fast。启动和恢复优先级不变；思考档位独立。
+这是为同一基础模型请求 Fast，不代表已验证账户权限，也不保证速度；可能产生
+更高用量。仅 `openai-codex` 支持此请求模式，API key `openai` 不支持。错误会
+明确显示，不会回退到普通模式或其他计费路径。能力及验证限制见
+[提供商](providers.md)。
+
 ## 选项
 
 | 参数 | 说明 |
 |---|---|
 | `-p`, `--print <prompt>` | 要运行的提示词，随后退出 |
-| `-m`, `--model <id>` | 模型 id（默认：`$INK_MODEL` 或 `claude-sonnet-4-5`） |
+| `-m`, `--model <id>` | 模型引用；Codex 订阅接受 `·fast`（默认：`$INK_MODEL` 或 `claude-sonnet-4-5`） |
 | `--thinking <level>` | `off` `minimal` `low` `medium` `high` `xhigh` `max` |
 | `--max-tokens <n>` | 每轮最大输出 token 数（默认：模型目录上限） |
 | `--max-turns <n>` | 每次运行的最大 agent 轮数 |
@@ -93,7 +110,7 @@ echo "fix the typo" | ink   # piped: one turn, exits at EOF (empty pipe: help + 
 | `ZAI_API_KEY` | Z.ai key（GLM Coding Plan） |
 | `DEEPSEEK_API_KEY` | DeepSeek key |
 | `MOONSHOT_API_KEY` | Moonshot/Kimi key（两个家族） |
-| `INK_MODEL` | 默认模型 id |
+| `INK_MODEL` | 默认模型引用；Codex 订阅接受 `·fast` |
 | `INK_THINKING` | 默认思考档位（无效值：提示并忽略） |
 | `INK_CONTEXT_WINDOW` | 自动压缩用的上下文窗口（默认 131072） |
 | `INK_AUTOCOMPACT=0` | 禁用自动压缩 |

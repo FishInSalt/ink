@@ -150,6 +150,53 @@ low/high/max；启动档位 `medium` 映射为 `high`）。
   的默认值。档位遵循各模型的目录条目——有些模型无法关闭思考（gpt-5 base、
   o3、gpt-6），较新的模型提供 `xhigh`/`max`。
 
+## Codex Fast 请求
+
+Fast 是 ChatGPT 订阅提供商（`openai-codex`）的逐模型请求模式，不适用于
+API key `openai`，也不是 Ultrafast 或全局速度开关。`/model`（Ctrl+L）为
+**账户列表中每个具备 Fast 能力的 Codex 模型**提供基础模型及紧随其后的
+`·fast` 选项，不限于 Sol。例如：
+
+```text
+/model openai-codex/gpt-6.1-sol·fast
+/model openai-codex/gpt-6.1-sol
+```
+
+第二条命令选择普通处理并清除 Fast。`-m` / `--model`、`INK_MODEL` 和设置
+`defaultModel` 也接受此后缀。状态栏、`/status` 和模型切换提示会显示它。
+自动启动及登录建议仍使用普通模式，不会替换用户明确选择的 Fast。
+
+账户列表可选的能力提示优先于 Ink 随包内置、固定版本的官方 Codex 模型目录
+快照，包括明确的否定提示。`service_tiers` 中的 `id:"priority"` 或
+`id:"fast"`，或旧字段 `additional_speed_tiers` 中的 `"fast"`，表示支持
+Fast。任一字段给出肯定证据即可；否则，不含 Fast 的有效数组（包括 `[]`）
+是否定证据。仅有缺失或格式错误的字段时表示未知，改查快照。
+若支持情况仍为未知或否定，就不自动添加 Fast 选项。快照和 pi.dev 元数据
+都不会补入账户未列出的模型；模型名称也不能证明能力。离线 Fast 选项沿用
+基础列表的过期、未经确认提示。
+
+用户明确选择的、格式有效的 `openai-codex/<id>·fast` 仍是有效请求，即使
+模型是自定义、未知或被标为不支持，也包括从会话恢复的选择。能力变化不会
+清除它。服务端可以拒绝不支持的请求；本地接受不代表账户有权使用。
+
+选择器提示 `Fast requested; higher usage; availability unverified`，即已请求
+Fast、用量更高、可用性未经确认。Fast 可能消耗更多订阅额度或产生额外费用。
+目录估算仍基于基础模型，不代表实际订阅扣费或经验证的 Fast 倍率。模型被列出
+或具备能力都不能验证账户权限，也不保证更快。唯一一次真实订阅 Fast 探测于
+2026-11-10 使用 `service_tier:"fast"`，返回 **HTTP 400**；未保留可确定原因的
+诊断。这不是成功的 Fast 验证，也不能据此确定是否支持 Fast。
+
+Ink 发送不变的基础模型 ID 和 `service_tier:"priority"`，这是官方 Codex 使用的
+Fast 等效取值。普通请求省略该字段。`·fast` 是选择和显示语法，不是新模型：
+上下文、视觉、定价元数据和回放身份都仍使用基础模型。思考档位独立配置
+（`/think`、`--thinking`）；选择 Fast 不会降低思考档位。
+
+出错时保留选择并提示恢复方式：若要按普通模式重试，须明确选择普通模型。
+重试仍请求 Fast；不会静默按普通模式重试、替换模型、切换凭据或计费方式，
+也不回退到旧后端。若终止响应明确报告 `default`、`standard` 或 `flex`，
+Ink 会拒绝该响应，不保存该条回复，也不执行其工具。返回档位缺失或未知
+不代表已确认实际使用 Fast。
+
 ## 模型目录（pi.dev）
 
 模型元数据——上下文窗口、费用费率、思考档位阶梯、视觉能力、家族模型

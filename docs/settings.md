@@ -22,7 +22,7 @@ gating variables (`INK_AUTOCOMPACT=0` etc.) beat their settings keys.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `defaultModel` | string | — | Startup model when `-m`/`INK_MODEL` is absent |
+| `defaultModel` | string | — | Startup model when `-m`/`INK_MODEL` is absent; Codex subscription accepts `·fast` |
 | `defaultThinkingLevel` | string | `medium` | Startup thinking level (model must support a knob) |
 | `hideThinkingBlock` | boolean | `false` | Hide reasoning traces behind a `Thinking...` label (Ctrl+T toggles) |
 | `autoCompact` | boolean | `true` | Auto-compaction gate (`INK_AUTOCOMPACT=0` wins) |
@@ -35,13 +35,32 @@ gating variables (`INK_AUTOCOMPACT=0` etc.) beat their settings keys.
 | `treeFilterMode` | `default` \| `no-tools` \| `user-only` \| `labeled-only` \| `all` | `default` | Default filter when the tree selector opens |
 | `branchSummary.skipPrompt` | boolean | `false` | Skip the "summarize the left branch?" ask on `/tree` jumps |
 
+## Default model selection
+
+`defaultModel` accepts the same selection reference as `/model` and `-m`,
+including the exact `·fast` suffix for the ChatGPT subscription provider:
+
+```json
+{
+  "defaultModel": "openai-codex/gpt-6.1-sol·fast",
+  "defaultThinkingLevel": "high"
+}
+```
+
+Or use `/settings defaultModel openai-codex/gpt-6.1-sol·fast`. A plain reference
+without the suffix selects normal processing; Fast is not a separate settings
+key or global toggle. Thinking remains independent, and startup/resume
+precedence is unchanged. Fast requests may use more allowance; availability
+and account entitlement remain unverified. API-key `openai` is outside this
+feature. See [providers.md](providers.md) for capability rules and error handling.
+
 ## Related files in ~/.ink
 
 | Path | Purpose |
 |---|---|
 | `~/.ink/auth.json` | Credentials, subscription registration and random installation ID (0600); stored keys beat env vars |
 | `~/.ink/models-catalog.json` | Model metadata disk cache (4h refresh window) |
-| `~/.ink/chatgpt-models.json` | Account-scoped subscription model availability (5-minute fresh window) |
+| `~/.ink/chatgpt-models.json` | Account-scoped subscription model availability and optional Fast capability hints (5-minute fresh window) |
 | `~/.ink/commands/` | Markdown quick commands (`/<filename>`) |
 | `~/.ink/extensions/` | Global extensions |
 | `~/.ink/agents/` | Global named agents |
