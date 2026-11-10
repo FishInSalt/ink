@@ -30,6 +30,17 @@ it("sweep rule: foreign imp-* decoys NEVER swept (M-1 §1.2 rule)", () => {
 	expect(wouldSweep("imp-auth-foreign", now - STALE_MS * 10, now)).toBe(false);
 });
 
+it("sweep rule: production renderer diagnostics never overlap fixture prefixes", () => {
+	const production = "ink-renderer-logs-";
+	// The generator must exclude descendant literals as well as the prefix itself.
+	expect(FIXTURE_PREFIXES).not.toContain("ink-renderer-logs-example");
+	for (const prefix of FIXTURE_PREFIXES) {
+		expect(production.startsWith(prefix) || prefix.startsWith(production)).toBe(false);
+	}
+	const now = Date.now();
+	expect(wouldSweep(`${production}example`, now - STALE_MS * 10, now)).toBe(false);
+});
+
 it("sweep rule: inventory covers the parameterized lease prefixes (M-3 regression)", () => {
 	for (const p of ["ink-lease19a-", "ink-lease-inv-", "ink-mid-", "ink-f1-", "ink-cr-wt-base-"]) {
 		expect(FIXTURE_PREFIXES).toContain(p);

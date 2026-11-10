@@ -20,7 +20,7 @@ import { FakeTerminal, settle } from "./login-dialog.helpers.js";
  * case (repro-esc2.test.ts).
  */
 describe("repro: subagent bash hung by a grandchild (esc semantics)", () => {
-	it("esc1 shows the interrupt note while the run is wedged; esc2 force-exits 130", async () => {
+	it("esc1 stops the child process tree; idle esc2 is a no-op; Ctrl+C x2 quits gracefully", async () => {
 		const baseDir = await mkTempDirAsync("ink-repro-esc-");
 		const terminal = new FakeTerminal();
 		const transcript = new TranscriptSink();
@@ -86,7 +86,7 @@ describe("repro: subagent bash hung by a grandchild (esc semantics)", () => {
 			provider,
 			deferInit: false,
 		});
-		runRepl({
+		const repl = runRepl({
 			runner,
 			commands: [],
 			shell: "tui",
@@ -119,14 +119,16 @@ describe("repro: subagent bash hung by a grandchild (esc semantics)", () => {
 		let backToIdle = false;
 		for (let i = 0; i < 60; i++) {
 			await sleep(50);
-			// The esc-hint row only renders while active: its reappearance in
-			// INCREMENTAL frames after the interrupt = the run settled to idle.
-			if (!terminal.frameSince(markAfterEsc1).includes("(esc to interrupt")) {
+			// New renderers may paint an active frame before the buffered Esc
+			// arrives. Historical writes retain that frame forever; require the
+			// positive idle hint instead of absence from accumulated output.
+			if (terminal.frameSince(markAfterEsc1).includes("(/ for commands")) {
 				backToIdle = true;
 				break;
 			}
 		}
 		expect(backToIdle).toBe(true);
+		expect(terminal.frameSince(markAfterEsc1)).toContain("(interrupt");
 		expect(exitCodes).toEqual([]); // the FIRST Esc settled it — no force exit
 		// Second Esc in idle: an editing no-op, never an exit (parity with the
 		// clean-abort case — repro-esc2.test.ts)
@@ -147,5 +149,7 @@ describe("repro: subagent bash hung by a grandchild (esc semantics)", () => {
 			}
 		}
 		expect(sawBye).toBe(true);
+		await repl;
+		expect(exitCodes).toEqual([]);
 	}, 30000);
 });

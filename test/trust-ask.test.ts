@@ -49,6 +49,7 @@ class AskTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 
 	data(text: string): void {
 		this.buffer?.process(text);

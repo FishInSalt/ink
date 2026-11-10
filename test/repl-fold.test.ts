@@ -64,6 +64,7 @@ class FakeTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	setProgramStatus(): void {}
 
 	/** Inject keystrokes through the real splitter (like stdin bursts). */
 	data(text: string): void {
