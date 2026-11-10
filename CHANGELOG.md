@@ -8,6 +8,8 @@ their original release identity.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-10
+
 ### Fixed
 
 - **Apple Terminal Shift+Enter.** Upgrade `@earendil-works/pi-tui` from 0.82.0
