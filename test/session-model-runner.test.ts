@@ -32,7 +32,9 @@ vi.mock("../src/provider/resolve.js", async (importOriginal) => {
 		...actual,
 		createProviderFor,
 		resolveModel: (reference: string) => {
-			const ref = actual.parseModelRef(reference);
+			const ref = actual.parseModelSelection(reference);
+			// Deliberately omit speed: runner initialization must parse selection
+			// independently of a mocked provider factory's return shape.
 			return { provider: createProviderFor(ref.provider), modelId: ref.modelId };
 		},
 	};
@@ -572,6 +574,219 @@ describe("runner per-session model restoration", () => {
 		await live.runTurn({ userMessage: "still original provider" });
 		expect(calls.at(-1)?.family).toBe(initial.provider);
 		expect(calls.at(-1)?.request.model).toBe(initial.modelId);
+	});
+});
+
+describe("runner session speed restoration", () => {
+	const normal = { provider: "openai-codex", modelId: "gpt-6.1-sol" };
+	const fast: SessionModel = { ...normal, speed: "fast" };
+	const reference = qualified(normal);
+	const fastReference = `${reference}·fast`;
+
+	it.each([
+		{ modelSource: "cli", modelId: "gpt-6.1-sol" },
+		{ modelSource: "env", modelId: "gpt-5.5" },
+		{ modelSource: "project", modelId: "custom-future-codex" },
+		{ modelSource: "global", modelId: "retired-codex-2025" },
+	] as const)(
+		"parses $modelSource Fast startup for $modelId independently of the resolution mock",
+		async ({ modelSource, modelId }) => {
+			const normal = { provider: "openai-codex", modelId };
+			const fast: SessionModel = { ...normal, speed: "fast" };
+			const reference = qualified(normal);
+			const fastReference = `${reference}·fast`;
+			const live = await runner({
+				model: fastReference,
+				modelSource,
+				modelExplicit: modelSource === "cli",
+			});
+			expect(live.model).toBe(normal.modelId);
+			expect(live.modelReference()).toBe(reference);
+			expect(live.modelSelectionReference()).toBe(fastReference);
+			expect(live.speed).toBe("fast");
+			expect(live.session?.getModel()).toEqual(fast);
+			expect(fs.existsSync(live.session!.filePath)).toBe(false);
+			await live.runTurn({ userMessage: "keep this selection" });
+			expect(calls.at(-1)).toMatchObject({
+				family: "openai-codex",
+				request: { model: normal.modelId, speed: "fast" },
+			});
+			expect(reopen(live.session!).getModel()).toEqual(fast);
+			expect(fetch).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["resume", "continue"])("startup %s restores saved Fast without rewriting", async (mode) => {
+		const store = saved(fast);
+		const before = snapshot(store);
+		const live = await runner({
+			model: reference,
+			...(mode === "resume" ? { resume: store.header.id } : { continueRecent: true }),
+		});
+		expect(live.speed).toBe("fast");
+		expect(live.modelReference()).toBe(reference);
+		expect(live.modelSelectionReference()).toBe(fastReference);
+		expect(snapshot(store)).toEqual(before);
+		await live.runTurn({ userMessage: "continue" });
+		expect(calls.at(-1)?.request.speed).toBe("fast");
+	});
+
+	it.each(
+		[
+			"gpt-5.5",
+			"gpt-5.1-codex-mini",
+			"custom-future-codex",
+			"retired-codex-2025",
+			"vendor/custom-codex",
+		].flatMap((modelId) => ["resume", "continue", "slash"].map((mode) => ({ modelId, mode }))),
+	)(
+		"$mode restores $modelId Fast without a catalog, credential or API-key fallback",
+		async ({ modelId, mode }) => {
+			vi.stubEnv("OPENAI_API_KEY", "must-not-replace-saved-subscription");
+			const normal = { provider: "openai-codex", modelId };
+			const fast: SessionModel = { ...normal, speed: "fast" };
+			const reference = qualified(normal);
+			const normalStore = saved(normal);
+			// Ensure --continue has a unique newest session on filesystems with coarse mtimes.
+			fs.utimesSync(normalStore.filePath, new Date(1000), new Date(1000));
+			const fastStore = saved(fast);
+			const beforeNormal = snapshot(normalStore);
+			const beforeFast = snapshot(fastStore);
+			const live = await runner({
+				...(mode === "resume" ? { resume: fastStore.header.id } : {}),
+				...(mode === "continue" ? { continueRecent: true } : {}),
+			});
+			if (mode === "slash") live.resumeSession(fastStore.header.id);
+			expect(live.modelReference()).toBe(reference);
+			expect(live.modelSelectionReference()).toBe(`${reference}·fast`);
+			expect(live.providerName).toBe("openai-codex");
+			expect(live.model).toBe(modelId);
+			expect(live.speed).toBe("fast");
+			expect(live.modelSelectionPending()).toBe(false);
+			expect(live.modelUsable()).toBe(false);
+			live.resumeSession(normalStore.header.id);
+			expect(live.speed).toBeUndefined();
+			expect(live.modelSelectionReference()).toBe(reference);
+			live.resumeSession(fastStore.header.id);
+			expect(live.speed).toBe("fast");
+			expect(snapshot(normalStore)).toEqual(beforeNormal);
+			expect(snapshot(fastStore)).toEqual(beforeFast);
+			expect(calls).toEqual([]);
+			expect(fetch).not.toHaveBeenCalled();
+			await live.runTurn({ userMessage: "continue the saved choice" });
+			expect(calls.map(({ family, request }) => [family, request.model, request.speed])).toEqual([
+				["openai-codex", modelId, "fast"],
+			]);
+			expect(reopen(fastStore).getModel()).toEqual(fast);
+		},
+	);
+
+	it("slash resume restores Fast and clears it for an old saved normal selection", async () => {
+		const normalStore = saved(normal);
+		const fastStore = saved(fast);
+		const beforeNormal = snapshot(normalStore);
+		const beforeFast = snapshot(fastStore);
+		const live = await runner({ model: fastReference, resume: normalStore.header.id });
+		expect(live.speed).toBeUndefined(); // saved normal outranks the configured default
+		live.resumeSession(fastStore.header.id);
+		expect(live.speed).toBe("fast");
+		live.resumeSession(normalStore.header.id);
+		expect(live.speed).toBeUndefined();
+		expect(live.modelSelectionReference()).toBe(reference);
+		expect(snapshot(normalStore)).toEqual(beforeNormal);
+		expect(snapshot(fastStore)).toEqual(beforeFast);
+	});
+
+	it.each([false, true])(
+		"explicit startup override restores the whole selection (fast=%s)",
+		async (isFast) => {
+			const store = saved(isFast ? normal : fast);
+			const selected: SessionModel = isFast ? fast : normal;
+			const live = await runner({
+				model: isFast ? fastReference : reference,
+				modelExplicit: true,
+				resume: store.header.id,
+			});
+			expect(live.speed).toBe(selected.speed);
+			expect(reopen(store).getModel()).toEqual(selected);
+			const before = snapshot(store);
+			live.setModel(isFast ? fastReference : reference);
+			expect(snapshot(store)).toEqual(before);
+		},
+	);
+
+	it("model-less legacy history keeps a deliberate Fast startup and appends its seed lazily", async () => {
+		const legacy = saved();
+		const before = snapshot(legacy);
+		const live = await runner({ model: fastReference, modelSource: "global", resume: legacy.header.id });
+		expect(live.speed).toBe("fast");
+		expect(snapshot(legacy)).toEqual(before);
+		expect(reopen(legacy).getModel()).toBeUndefined();
+		await live.runTurn({ userMessage: "persist selected speed" });
+		expect(reopen(legacy).getModel()).toEqual(fast);
+	});
+
+	it("/new retains Fast and seeds the new session lazily", async () => {
+		const live = await runner({ model: fastReference, modelExplicit: true });
+		await live.runTurn({ userMessage: "first" });
+		const previous = live.session!;
+		const before = snapshot(previous);
+		live.newSession();
+		const fresh = live.session!;
+		expect(live.speed).toBe("fast");
+		expect(live.modelSelectionReference()).toBe(fastReference);
+		expect(fs.existsSync(fresh.filePath)).toBe(false);
+		await live.runTurn({ userMessage: "new Fast conversation" });
+		expect(reopen(fresh).getModel()).toEqual(fast);
+		expect(snapshot(previous)).toEqual(before);
+	});
+
+	it.each([false, true])(
+		"speed-only persistence failure preserves the entire live selection (fast=%s)",
+		async (isFast) => {
+			const store = saved(isFast ? fast : normal);
+			const live = await runner({ model: reference, resume: store.header.id, thinking: "high" });
+			const before = snapshot(store);
+			const history = [...live.history];
+			const window = live.contextWindow;
+			const thinking = live.thinkingLevel;
+			vi.mocked(fs.appendFileSync).mockImplementationOnce(() => {
+				throw new Error("speed write failed");
+			});
+			expect(() => live.setModel(isFast ? reference : fastReference)).toThrow("speed write failed");
+			expect(live.speed).toBe(isFast ? "fast" : undefined);
+			expect(live.providerName).toBe("openai-codex");
+			expect(live.model).toBe(normal.modelId);
+			expect(live.thinkingLevel).toBe(thinking);
+			expect(live.contextWindow).toBe(window);
+			expect(live.history).toEqual(history);
+			expect(snapshot(store)).toEqual(before);
+			await live.runTurn({ userMessage: "unchanged selection" });
+			expect(calls.at(-1)?.request.speed).toBe(isFast ? "fast" : undefined);
+		},
+	);
+
+	it("invalid Fast selections do not persist or partially change provider/model/speed/thinking", async () => {
+		const store = saved(fast);
+		const live = await runner({ model: reference, resume: store.header.id, thinking: "high" });
+		const before = snapshot(store);
+		const thinking = live.thinkingLevel;
+		for (const invalid of [
+			"openai/gpt-6.1-sol·fast",
+			"anthropic/gpt-5.5·fast",
+			"openai-codex/·fast",
+			"openai-codex/gpt other·fast",
+			"openai-codex/gpt\tother·fast",
+			"openai-codex/gpt·other·fast",
+			"openai-codex/gpt-5.5·fast·fast",
+		]) {
+			expect(() => live.setModel(invalid)).toThrow(/Fast/);
+			expect(live.modelSelectionReference()).toBe(fastReference);
+			expect(live.speed).toBe("fast");
+			expect(live.thinkingLevel).toBe(thinking);
+			expect(snapshot(store)).toEqual(before);
+		}
+		expect(calls).toEqual([]);
 	});
 });
 

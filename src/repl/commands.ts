@@ -31,14 +31,17 @@ import type { McpManager } from "../mcp/manager.js";
 import { clearApiKey, loadApiKey, saveApiKey, storedApiKeyFamilies } from "../provider/auth-store.js";
 import { catalogModelIds, refreshCatalog } from "../provider/catalog.js";
 import { loadCodexCredential, loginCodex, logoutCodex } from "../provider/codex-auth.js";
+import { bundledCodexFastModeSupport } from "../provider/codex-speed-catalog.js";
 import {
 	cachedCodexModelIds,
+	codexFastModeSupport,
 	discoverCodexModels,
 	discoverModels,
 	familyConfigured,
 } from "../provider/discover.js";
 import { LOGIN_TARGETS, type LoginTarget, loginTargetFor } from "../provider/login-targets.js";
 import { costFor } from "../provider/models.js";
+import { canRequestFastMode, formatModelSelection } from "../provider/resolve.js";
 import { resolveStartupModelFallback } from "../provider/startup-model.js";
 import {
 	supportedThinkingLevels,
@@ -681,6 +684,8 @@ export interface ModelListDeps {
 	) => string[] | null;
 	/** Account-scoped snapshot only, never the public metadata catalog. */
 	cachedCodexIds?: () => string[] | null;
+	/** Capability only; never adds a model to account availability. */
+	fastModeSupport?: (modelId: string) => boolean | undefined;
 }
 
 /**
@@ -730,6 +735,12 @@ export async function buildModelList(
 					const reference = `openai-codex/${id}`;
 					ids.push(reference);
 					if (discovered === null) staleCodexIds.add(reference);
+					const support = deps.fastModeSupport ? deps.fastModeSupport(id) : bundledCodexFastModeSupport(id);
+					if (support === true && canRequestFastMode(family, id)) {
+						const fast = formatModelSelection(reference, "fast");
+						ids.push(fast);
+						if (discovered === null) staleCodexIds.add(fast);
+					}
 				}
 				continue;
 			}
@@ -785,13 +796,21 @@ export async function buildModelList(
 		}
 	}
 	ids = [...new Set(ids)];
-	const rows = (ids.includes(current) ? ids : [current, ...ids]).map((id) => ({
+	const ordered = current.endsWith("·fast")
+		? [current, ...ids.filter((id) => id !== current)]
+		: ids.includes(current)
+			? ids
+			: [current, ...ids];
+	const rows = ordered.map((id) => ({
 		label: id,
-		description: staleCodexIds.has(id)
-			? `${id === current ? "current · " : ""}ChatGPT plan · offline/stale availability unverified`
-			: id === current
-				? "current"
-				: familyLabel(id),
+		description:
+			id.startsWith("openai-codex/") && id.endsWith("·fast")
+				? `${id === current ? "current · " : ""}${familyLabel(id)} · Fast requested; higher usage; availability unverified${staleCodexIds.has(id) ? " · offline/stale" : ""}`
+				: staleCodexIds.has(id)
+					? `${id === current ? "current · " : ""}ChatGPT plan · offline/stale availability unverified`
+					: id === current
+						? "current"
+						: familyLabel(id),
 	}));
 	return { rows, fallbackNotes };
 }
@@ -802,7 +821,9 @@ function switchModel(ctx: CommandContext, id: string): void {
 	ctx.runner.setModel(id); // re-resolves the provider too (multi-provider)
 	// Canonical refs on both sides (review P2-5): "gpt-5.4" alone cannot tell
 	// the user WHICH protocol family the switch landed on.
-	ctx.renderer.status(`Model: ${ctx.runner.modelReference()}`); // pi's showStatus form
+	ctx.renderer.status(
+		`Model: ${formatModelSelection(ctx.runner.modelReference(), ctx.runner.speed)}${ctx.runner.speed === "fast" ? " · Fast requested; higher usage; availability unverified" : ""}`,
+	); // The suffix denotes the request, not verified Fast processing.
 	maybeNoteDefaultModelHint(ctx); // #startup-model-resolution D5
 }
 
@@ -835,7 +856,7 @@ function maybeNoteDefaultModelHint(ctx: CommandContext): void {
 	// F2: only when the file actually carries one).
 	if (!ctx.runner.projectSettingsAllowed && projectDefaultModelPresent(ctx.runner.runnerCwd)) return;
 	const fallback = resolveStartupModelFallback();
-	const reference = ctx.runner.modelReference();
+	const reference = formatModelSelection(ctx.runner.modelReference(), ctx.runner.speed);
 	if (fallback !== undefined && fallback.reference === reference) return;
 	state.defaultModelHintShown = true;
 	ctx.renderer.note(`▪ /settings defaultModel ${reference} keeps this model for new sessions`);
@@ -854,7 +875,7 @@ function resumeById(ctx: CommandContext, id: string): CommandOutcome {
 			// N3 covered startup only.
 			`▪ resumed ${id8} — ${messages} message${messages === 1 ? "" : "s"} restored · ${
 				ctx.runner.modelUsable()
-					? ctx.runner.modelReference()
+					? formatModelSelection(ctx.runner.modelReference(), ctx.runner.speed)
 					: noModelText(ctx.runner.hasConfiguredProviders(), true)
 			}`,
 		);
@@ -1573,7 +1594,7 @@ export const COMMANDS: readonly SlashCommand[] = [
 					ctx.renderer.writeLine(
 						`model: ${
 							ctx.runner.modelUsable()
-								? ctx.runner.modelReference()
+								? formatModelSelection(ctx.runner.modelReference(), ctx.runner.speed)
 								: noModelText(ctx.runner.hasConfiguredProviders(), true)
 						}`,
 					);
@@ -1589,13 +1610,17 @@ export const COMMANDS: readonly SlashCommand[] = [
 				// (non-blocking — the list below is built from the current
 				// overlay; a refresh lands for the NEXT open).
 				void refreshCatalog().catch(() => undefined);
-				const { rows, fallbackNotes } = await buildModelList(ctx.runner.modelReference(), {
-					configured: familyConfigured,
-					discover: (family) =>
-						family === "openai-codex" ? discoverCodexModels({ force: true }) : discoverModels(family),
-					catalogIds: catalogModelIds,
-					cachedCodexIds: cachedCodexModelIds,
-				});
+				const { rows, fallbackNotes } = await buildModelList(
+					formatModelSelection(ctx.runner.modelReference(), ctx.runner.speed),
+					{
+						configured: familyConfigured,
+						discover: (family) =>
+							family === "openai-codex" ? discoverCodexModels({ force: true }) : discoverModels(family),
+						catalogIds: catalogModelIds,
+						cachedCodexIds: cachedCodexModelIds,
+						fastModeSupport: codexFastModeSupport,
+					},
+				);
 				for (const note of fallbackNotes) {
 					if (note.startsWith("!codex ")) {
 						ctx.renderer.note(`▪ model list: ${note.slice("!codex ".length)}`);
@@ -1893,7 +1918,7 @@ export const COMMANDS: readonly SlashCommand[] = [
 			// #fresh-install-hint (round-2 review F5): /status is a display
 			// surface — an unusable model shows the /login pointer instead.
 			ctx.renderer.note(
-				`▪ model ${runner.modelUsable() ? runner.model : noModelText(runner.hasConfiguredProviders(), true)}`,
+				`▪ model ${runner.modelUsable() ? formatModelSelection(runner.model, runner.speed) : noModelText(runner.hasConfiguredProviders(), true)}`,
 			);
 			const session = runner.session;
 			if (session === null) {

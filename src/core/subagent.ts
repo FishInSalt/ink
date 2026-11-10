@@ -3,7 +3,7 @@ import { formatTokens } from "../format.js";
 import { modelMaxTokensFor } from "../provider/catalog.js";
 import { compactionSettingsFor } from "../provider/compaction-settings.js";
 import type { ThinkingLevel } from "../provider/thinking.js";
-import type { LLMProvider } from "../provider/types.js";
+import type { LLMProvider, ModelSpeed } from "../provider/types.js";
 import {
 	type CompactHistoryResult,
 	type CompactionSettings,
@@ -48,6 +48,8 @@ export interface SubagentOptions {
 	 *  wire routing (SA-02). The task tool always passes it; absent → the wire
 	 *  model is used as the reference (older callers unchanged). */
 	modelReference?: string;
+	/** Spawn-time selection, fixed for task requests and every summary/retry. */
+	speed?: ModelSpeed;
 	/** SA-09: the resolved child thinking level (frontmatter > parent session
 	 *  level at spawn). Undefined → no level is sent; the provider family's
 	 *  pre-SA-09 fallback applies (legacy/test callers). */
@@ -174,6 +176,7 @@ export function childModelMetadata(options: Pick<SubagentOptions, "model" | "mod
 }
 
 export async function runSubagent(options: SubagentOptions): Promise<SubagentOutcome> {
+	const speed = options.speed;
 	// Use only the child's own identity; no-store invocations get a fresh UUID.
 	// Capture before launching so overflow retries keep the same affinity.
 	const sessionId = options.session?.header.id ?? randomUUID();
@@ -235,6 +238,9 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 	// a seeded (compacted) history starts at its own boundary.
 	let childFloor = options.initialFloor ?? 0;
 	let compactionDisabled = false;
+	// Preserve origin across loop error handling: a Fast SUMMARY overflow is
+	// not a task overflow and must never start another summary/recovery run.
+	let fastSummaryFailed = false;
 	const onBeforeTurn: RunAgentLoopOptions["onBeforeTurn"] | undefined = autoCompact
 		? async (history) => {
 				if (compactionDisabled) return;
@@ -245,12 +251,14 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 		: undefined;
 
 	/** Compact the child's history in place (details inline per branch). A
-	 *  summarizer LLM call failing must not kill the child: the main loop's turn
+	 *  normal-mode summarizer failure must not kill the child: the main loop's turn
 	 *  throws there but its host (the REPL) catches it and the next turn retries
 	 *  — a child has no outer host, so the equivalent contract (run survives,
 	 *  un-compacted history, retry at the next turn boundary if still over
 	 *  threshold) is provided by catching here.
 	 *
+	 *  Fast requests are the exception: a rejected summarizer must surface
+	 *  immediately, never silently continue/retry at later tool boundaries.
 	 *  Returns {compacted, error?}: the overflow-recovery seam (below) needs
 	 *  both signals — "did not move, do not retry" and the failure cause for
 	 *  the guidance text. The onBeforeTurn caller ignores the result. */
@@ -271,6 +279,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 					session: options.session,
 					provider: options.provider,
 					model: options.model,
+					...(speed === undefined ? {} : { speed }),
 					...(childReference !== undefined && { modelReference: childReference }),
 					signal: child.signal,
 					settings,
@@ -292,6 +301,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 					messages: history,
 					provider: options.provider,
 					model: options.model,
+					...(speed === undefined ? {} : { speed }),
 					modelReference: estimateTarget,
 					minAnchorIndex: childFloor,
 					signal: child.signal,
@@ -314,6 +324,12 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 			}
 			return { compacted: false }; // keepRecent swallowed everything (cut <= 0)
 		} catch (err) {
+			// Keep cancellation classification intact, but never suppress a live
+			// Fast failure behind the normal-mode summarizer backstop.
+			if (speed === "fast" && !child.signal.aborted) {
+				fastSummaryFailed = true;
+				throw err;
+			}
 			// Keep the un-compacted history and continue; the next turn boundary
 			// retries if the estimate is still over the threshold (#loop-health:
 			// no turn bound remains — three consecutive failures disable it for
@@ -359,6 +375,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 		runAgentLoop({
 			provider: options.provider,
 			model: options.model,
+			...(speed === undefined ? {} : { speed }),
 			...(childReference !== undefined && { modelReference: childReference }),
 			sessionId,
 			system:
@@ -432,7 +449,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 		// mirrored onto the child, minus its session-only compactAndSplice
 		// (compactChildHistory works in both modes). Single attempt, like pi's
 		// _overflowRecoveryAttempted and the main loop.
-		if (!isContextOverflowError(err)) {
+		if (fastSummaryFailed || !isContextOverflowError(err)) {
 			// Provider/protocol error: partial recovery — whatever the child already
 			// said survives (§3); the task tool decides error vs partial-result.
 			return crashWith(rawMessage(err));
@@ -443,7 +460,17 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 				overflowGuidance(guidanceTokens(), settings, "compaction disabled after repeated failures"),
 			);
 		}
-		const { compacted, error } = await compactChildHistory(history);
+		let compacted: boolean;
+		let error: string | undefined;
+		try {
+			({ compacted, error } = await compactChildHistory(history));
+		} catch (compactionError) {
+			if (child.signal.aborted) {
+				const timedOut = clock !== undefined && !(options.signal?.aborted ?? false) && clock.aborted;
+				return settled(timedOut ? "timeout" : "aborted");
+			}
+			return crashWith(rawMessage(compactionError));
+		}
 		if (!compacted) {
 			// Review P1-1: an abort/timeout during the compact window is swallowed
 			// by compactChildHistory's internal catch (it only returns false) —
@@ -465,7 +492,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 		} catch (retryErr) {
 			// Review P1-2: a NON-overflow retry failure (401/500/network) keeps its
 			// raw message — never mislabeled as overflow (runner.ts:775 parity).
-			if (!isContextOverflowError(retryErr)) return crashWith(rawMessage(retryErr));
+			if (fastSummaryFailed || !isContextOverflowError(retryErr)) return crashWith(rawMessage(retryErr));
 			return crashWith(
 				overflowGuidance(guidanceTokens(), settings, "still over the window after one compaction"),
 			);

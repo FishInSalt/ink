@@ -56,6 +56,29 @@ resuming restores them, while `/new` starts fresh. Without a session
 usage only: unreported cache counters contribute zero, and missing usage is
 not reconstructed.
 
+## Model selection and Fast
+
+Sessions save the base provider/model plus optional `speed:"fast"` for a Codex
+Fast selection. Restoring it preserves `·fast`, including custom models whose
+capability is not advertised. A saved model without speed means normal;
+restoring it clears any previous Fast selection. Old model-less sessions keep
+the existing startup precedence, including an explicit `-m ...·fast`.
+The existing explicit `-m` versus restored-session precedence is unchanged.
+`/new` retains the current model and speed. No session rewrite or version change
+is needed; speed-only changes are appended like other model selections.
+
+Normal and Fast for the same base model share the same metadata and compatible
+native replay history. Exact provider/base-model replay checks are unchanged;
+the suffix is not part of assistant provenance or usage/pricing identity.
+Thinking is independent of speed.
+
+Each top-level run captures provider, model, and speed at entry, before
+`run_start`. Its tool follow-ups and overflow recovery keep that snapshot;
+changing `/model` affects the next top-level run, not the active main loop.
+New child dispatch is the deliberate exception: it captures the **live**
+selection at dispatch, not the parent run's earlier snapshot. Child continuation
+uses the child's recorded speed, not the parent's current selection.
+
 ## The tree
 
 Every session's messages form a tree, not a line. Forking or jumping creates
@@ -100,6 +123,12 @@ is unchanged by model switches.
 Branch summaries (from `/tree` jumps) are separate: they record an abandoned
 branch in one entry. Both preserve the original entries — the tree is never
 pruned.
+
+Automatic compaction and overflow summaries use the active run's captured
+speed. Manual `/compact` and branch summaries capture the current selection
+when they start; child summaries use the child's own captured speed. A
+summarizer retry that changes thinking keeps the same speed. Fast errors never
+cause a normal-speed fallback summary.
 
 ## Multi-line input and terminal behavior
 

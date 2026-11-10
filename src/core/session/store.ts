@@ -9,6 +9,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { firstLine } from "../../format.js";
+import { canRequestFastMode, type ModelSpeed } from "../../provider/model-speed.js";
 import type { ChildLaunchRecord } from "../child-launch.js";
 import { type AgentMessage, contentText, type Usage } from "../messages.js";
 
@@ -41,6 +42,8 @@ import { type AgentMessage, contentText, type Usage } from "../messages.js";
 export interface SessionModel {
 	provider: string;
 	modelId: string;
+	/** Absent means normal; the model identity itself always stays base-only. */
+	speed?: ModelSpeed;
 }
 
 /** Keep validation local: reading sessions must not load provider runtimes. */
@@ -53,11 +56,17 @@ function parseModel(value: unknown, context: string): SessionModel {
 			model.provider ?? "",
 		) ||
 		typeof model.modelId !== "string" ||
-		model.modelId.trim() === ""
+		model.modelId.trim() === "" ||
+		(model.speed !== undefined &&
+			(model.speed !== "fast" || !canRequestFastMode(model.provider ?? "", model.modelId)))
 	) {
 		throw new SessionError(`${context}: invalid session model`);
 	}
-	return { provider: model.provider as string, modelId: model.modelId };
+	return {
+		provider: model.provider as string,
+		modelId: model.modelId,
+		...(model.speed === undefined ? {} : { speed: model.speed }),
+	};
 }
 
 export interface SessionHeader {
@@ -340,7 +349,12 @@ export class SessionStore {
 	setModel(model: SessionModel): void {
 		const next = parseModel(model, "setModel");
 		const current = this.getModel();
-		if (current?.provider === next.provider && current.modelId === next.modelId) return;
+		if (
+			current?.provider === next.provider &&
+			current.modelId === next.modelId &&
+			current.speed === next.speed
+		)
+			return;
 		this.writeRecords(`${JSON.stringify({ type: "session_model", ...next, explicit: true })}\n`);
 		this.savedModel = next;
 		this.pendingModel = undefined;

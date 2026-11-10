@@ -88,6 +88,18 @@ describe("CLI model provenance", () => {
 		expectSelection([], {}, "claude-sonnet-4-5", false);
 	});
 
+	it.each(["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna", "future-model"])(
+		"preserves Fast selection syntax through CLI, environment and defaults for %s",
+		(model) => {
+			const reference = `openai-codex/${model}·fast`;
+			expectSelection(["-m", reference], {}, reference, true);
+			expectSelection(["--model", reference, "--continue"], {}, reference, true);
+			expectSelection([], { env: reference }, reference, false);
+			expectSelection([], { global: reference }, reference, false);
+			expectSelection([], { project: reference }, reference, false);
+		},
+	);
+
 	it("obsolete IMP_MODEL neither selects a default nor overrides INK_MODEL", () => {
 		expectSelection([], { oldEnv: "openai/obsolete" }, "claude-sonnet-4-5", false);
 		expectSelection([], { env: "zai/current", oldEnv: "openai/obsolete" }, "zai/current", false);

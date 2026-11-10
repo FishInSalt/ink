@@ -1,5 +1,8 @@
 import type { AgentMessage, AssistantMessage } from "../core/messages.js";
 import type { Tool } from "../core/tools/types.js";
+import type { ModelSpeed } from "./model-speed.js";
+
+export type { ModelSpeed } from "./model-speed.js";
 
 /**
  * Provider-agnostic streaming events. The loop and UI consume these;
@@ -23,6 +26,8 @@ export interface LLMRequest {
 	messages: AgentMessage[];
 	tools: Tool[];
 	model: string;
+	/** Requested speed; never part of the wire model ID or provenance. */
+	speed?: ModelSpeed;
 	maxTokens: number;
 	/** Thinking level (pi parity). Providers map off/undefined and enabled
 	 *  levels to their native defaults/parameters (see thinking.ts). */

@@ -75,8 +75,9 @@ import { modelAvailability } from "./provider/model-availability.js";
 import { contextWindowFor } from "./provider/models.js";
 import {
 	createProviderFor,
+	formatModelSelection,
 	type ProviderName,
-	parseModelRef,
+	parseModelSelection,
 	qualifiedReference,
 	resolveModel,
 } from "./provider/resolve.js";
@@ -87,7 +88,7 @@ import {
 	type ThinkingLevel,
 	thinkingMetaFor,
 } from "./provider/thinking.js";
-import type { LLMProvider } from "./provider/types.js";
+import type { LLMProvider, ModelSpeed } from "./provider/types.js";
 import { modelSupportsVision } from "./provider/vision.js";
 import { zaiApiKey } from "./provider/zai.js";
 import type { Renderer } from "./render.js";
@@ -265,6 +266,8 @@ export interface Runner {
 	 *  (anthropic = the compat endpoint / first-party API; zai = Z.ai's
 	 *  coding endpoint; modelReference() prefixes every family but anthropic). */
 	readonly providerName: ProviderName;
+	/** Requested processing speed; absent means normal. Never part of model identity. */
+	readonly speed: ModelSpeed | undefined;
 	setModel(reference: string): void;
 	/** Current thinking level (#thinking-levels, pi parity). "off" default. */
 	readonly thinkingLevel: ThinkingLevel;
@@ -283,6 +286,8 @@ export interface Runner {
 	readonly autoCompactEnabled: boolean;
 	/** Canonical display reference — "openai-codex/gpt-5.4" vs bare "glm-4.6". */
 	modelReference(): string;
+	/** Current selection for display/defaults, including the optional Fast suffix. */
+	modelSelectionReference(): string;
 	/** #fresh-install-hint: does the CURRENT model's family hold a
 	 *  credential (stored key or env var)? Live probe at call time — no
 	 *  cache; after /login the next read is correct. The D7 test seam:
@@ -369,6 +374,9 @@ export interface Runner {
  * including) the first LLM call.
  */
 export async function createRunner(options: RunnerOptions): Promise<Runner> {
+	// Parse independently of resolveModel's provider factory/test seam. Speed
+	// is a selection option, not part of the base wire or metadata identity.
+	const selection = parseModelSelection(options.model);
 	const logger = await createRunLogger({ cwd: options.cwd, argv: options.argv });
 	for (const failure of options.extensionFailures ?? []) {
 		// Already shown on screen by cli.ts at load time; this persists the full
@@ -385,14 +393,14 @@ export async function createRunner(options: RunnerOptions): Promise<Runner> {
 	// registry batch; construction-time resolution covers subagents too.
 	const resolved = resolveModel(options.model);
 	const provider = withLogging(options.provider ?? resolved.provider, logger);
-	const initialModel = resolved.modelId;
-	return new RunnerImpl(options, logger, provider, initialModel, parseModelRef(options.model).provider);
+	return new RunnerImpl(options, logger, provider, selection.modelId, selection.provider, selection.speed);
 }
 
 /** Run-entry bindings, reused unchanged across overflow recovery. Readonly
  *  is shallow: session/provider objects keep their existing mutable behavior. */
 type RunContext = Readonly<{
 	model: string;
+	speed?: ModelSpeed;
 	provider: LLMProvider;
 	settings: CompactionSettings;
 	session: SessionStore | null;
@@ -404,6 +412,7 @@ type RunContext = Readonly<{
 class RunnerImpl implements Runner {
 	readonly history: AgentMessage[] = [];
 	model: string;
+	private modelSpeed: ModelSpeed | undefined;
 	private readonly options: RunnerOptions;
 	private readonly logger: RunLogger;
 	private provider: LLMProvider; // wrapped with logging once; /model may swap it (multi-provider)
@@ -488,6 +497,7 @@ class RunnerImpl implements Runner {
 		provider: LLMProvider,
 		initialModel: string,
 		providerName: ProviderName,
+		speed?: ModelSpeed,
 	) {
 		this.options = options;
 		this.logger = logger;
@@ -500,8 +510,9 @@ class RunnerImpl implements Runner {
 		this.providerIsTestFake = options.provider !== undefined;
 		this.interactive = options.interactive ?? true;
 		this.modelExplicitPick = options.modelExplicit === true;
-		this.providerName = options.provider !== undefined ? parseModelRef(options.model).provider : providerName;
+		this.providerName = providerName;
 		this.model = initialModel;
+		this.modelSpeed = speed;
 		// Multi-provider review P1-3: the compaction window must follow the
 		// registry from construction — not only after an explicit /model switch.
 		this.settings = compactionSettingsFor(`${this.providerName}/${this.model}`);
@@ -575,6 +586,9 @@ class RunnerImpl implements Runner {
 				getProvider: () => this.provider,
 				getModel: () => this.model,
 				getModelReference: () => `${this.providerName}/${this.model}`,
+				// Children deliberately snapshot the LIVE selection at dispatch,
+				// not the active top-level run's captured speed.
+				getSpeed: () => this.speed,
 				// SA-09: the inherit fallback for child thinking (frontmatter wins).
 				getThinkingLevel: () => this.thinkingLevel,
 				getAutoCompact: () => this.autoCompact,
@@ -706,7 +720,7 @@ class RunnerImpl implements Runner {
 					// #startup-model-resolution (D6): the copy distinguishes
 					// "nothing configured" from "configured, not selected".
 					const modelSegment = this.modelUsable()
-						? this.modelReference()
+						? this.modelSelectionReference()
 						: noModelText(this.hasConfiguredProviders(), true);
 					options.renderer.note(
 						`▪ resumed ${resumed.header.id.slice(0, 8)} · ${modelSegment} · ${stats.messageCount} msgs · ~${formatTokens(est.tokens)} tokens${loaded.compacted ? " (compacted)" : ""}`,
@@ -719,7 +733,7 @@ class RunnerImpl implements Runner {
 			// Deliberate subscription choices survive missing credentials;
 			// unselected builtin placeholders still must not enter sessions.
 			if (this.modelCanBeSeeded())
-				this.sessionStore.seedModel({ provider: this.providerName, modelId: this.model });
+				this.sessionStore.seedModel({ provider: this.providerName, modelId: this.model, speed: this.speed });
 		}
 		this.noteModelCredential(`${this.providerName}/${this.model}`, this.providerName);
 		for (const warning of this.agents.warnings) {
@@ -895,7 +909,7 @@ class RunnerImpl implements Runner {
 			// Keep a deliberate subscription choice through /new, without
 			// resurrecting an unselected dead builtin on a fresh install.
 			if (this.modelCanBeSeeded())
-				this.sessionStore.seedModel({ provider: this.providerName, modelId: this.model });
+				this.sessionStore.seedModel({ provider: this.providerName, modelId: this.model, speed: this.speed });
 			const id8 = this.sessionStore.header.id.slice(0, 8);
 			const old8 = previous.header.id.slice(0, 8);
 			this.options.renderer.note(
@@ -1009,6 +1023,7 @@ class RunnerImpl implements Runner {
 		let summaryUsage: Usage | undefined;
 		let summaryUsageMissing = false;
 		const summaryModel = this.model; // the producing model, not the post-await current one
+		const summarySpeed = this.speed;
 		// SA-05 round 2: live pair — safe only because /tree and /fork are
 		// allowedDuringRun:false. A mid-run gate change must snapshot instead.
 		const summaryReference = qualifiedReference(this.providerName, summaryModel);
@@ -1026,7 +1041,8 @@ class RunnerImpl implements Runner {
 						messages,
 						provider: this.provider,
 						model: summaryModel,
-						modelMaxTokens: modelMaxTokensFor(summaryModel), // #derived-budget
+						speed: summarySpeed,
+						modelMaxTokens: modelMaxTokensFor(summaryReference), // #derived-budget
 						thinking: this.level, // pi: the summarizer thinks at the session level
 						signal: opts?.signal,
 						customInstructions: opts?.customInstructions,
@@ -1202,7 +1218,7 @@ class RunnerImpl implements Runner {
 
 	/** Prepare before persistence so a failed selection cannot partially swap state. */
 	private prepareModel(reference: string) {
-		const ref = parseModelRef(reference);
+		const ref = parseModelSelection(reference);
 		if (!ref.modelId.trim()) throw new Error("model must not be blank");
 		const provider =
 			ref.provider === this.providerName
@@ -1219,6 +1235,7 @@ class RunnerImpl implements Runner {
 		// comparison must precede the assignment below (identity compare).
 		const providerChanged = prepared.provider !== this.provider;
 		this.model = prepared.ref.modelId;
+		this.modelSpeed = prepared.ref.speed;
 		this.providerName = prepared.ref.provider;
 		this.provider = prepared.provider;
 		if (providerChanged) this.providerIsTestFake = false;
@@ -1230,7 +1247,9 @@ class RunnerImpl implements Runner {
 		const saved = store.getModel();
 		const explicit = startup && this.options.modelExplicit === true;
 		let prepared = this.prepareModel(
-			!explicit && saved ? `${saved.provider}/${saved.modelId}` : this.options.model,
+			!explicit && saved
+				? formatModelSelection(`${saved.provider}/${saved.modelId}`, saved.speed)
+				: this.options.model,
 		);
 		// Missing subscription credentials must never change the selected
 		// model/provider (in particular, never to API-key billing). Keep the
@@ -1286,6 +1305,14 @@ class RunnerImpl implements Runner {
 		return this.providerName === "anthropic" ? this.model : `${this.providerName}/${this.model}`;
 	}
 
+	get speed(): ModelSpeed | undefined {
+		return this.modelSpeed;
+	}
+
+	modelSelectionReference(): string {
+		return formatModelSelection(this.modelReference(), this.speed);
+	}
+
 	/** #fresh-install-hint (design §3.1/D7): live availability probe.
 	 *  Injected-fake providers (the RunnerOptions.provider test seam)
 	 *  report usable without touching host credentials; a REAL provider —
@@ -1335,14 +1362,16 @@ class RunnerImpl implements Runner {
 		// family switch must not pair a new provider/window with the old model
 		// in this run's compaction seam or overflow retry.
 		const model = this.model;
+		const speed = this.speed;
 		const session = this.sessionStore;
 		// Login may retain the current deliberate selection rather than
 		// call setModel. Seed automatically before the first message write,
 		// including model-less resumed history, without a UI persistence hook.
 		if (this.providerName === "openai-codex" && this.modelCanBeSeeded())
-			session?.seedModel({ provider: this.providerName, modelId: model });
+			session?.seedModel({ provider: this.providerName, modelId: model, speed });
 		const context: RunContext = {
 			model,
+			speed,
 			provider: this.provider,
 			settings: this.settings,
 			session,
@@ -1410,7 +1439,7 @@ class RunnerImpl implements Runner {
 		options: RunTurnOptions,
 		health: LoopHealthMonitor | undefined,
 	): Promise<RunAgentLoopResult> {
-		const { model, provider, settings, modelReference } = context;
+		const { model, speed, provider, settings, modelReference } = context;
 		try {
 			return await this.runTurnInner(context, options, health);
 		} catch (err) {
@@ -1420,7 +1449,7 @@ class RunnerImpl implements Runner {
 			this.options.renderer.note("▪ context over the model's window — compacting once and retrying…");
 			let compacted = false;
 			try {
-				compacted = await this.compactAndSplice(provider, settings, model, modelReference);
+				compacted = await this.compactAndSplice(provider, settings, model, modelReference, speed);
 			} catch (compactErr) {
 				const compactCause = compactErr instanceof Error ? compactErr.message : String(compactErr);
 				this.logger.log("run_error", { source: "compaction", message: compactCause });
@@ -1482,7 +1511,7 @@ class RunnerImpl implements Runner {
 		 *  overflow retry); undefined when INK_HEALTH=0. */
 		health: LoopHealthMonitor | undefined,
 	): Promise<RunAgentLoopResult> {
-		const { model, provider, settings, session, sessionId, modelReference } = context;
+		const { model, speed, provider, settings, session, sessionId, modelReference } = context;
 		// The task tool is built once at construction; its child-event relay
 		// reaches the CURRENT turn's tap through this holder (task children run
 		// strictly inside the turn, so one slot is enough; cleared in finally).
@@ -1499,6 +1528,7 @@ class RunnerImpl implements Runner {
 			const result = await runAgentLoop({
 				provider,
 				model,
+				speed,
 				// SA-05 round 2: the persisted pricing identity — the run
 				// snapshot's reference (delta review F1), never a live pair.
 				modelReference,
@@ -1541,7 +1571,7 @@ class RunnerImpl implements Runner {
 							// the 1M→272k switch-down deadlock: the summarization request
 							// itself can exceed the new model's input window).
 							try {
-								await this.compactAndSplice(provider, settings, model, modelReference);
+								await this.compactAndSplice(provider, settings, model, modelReference, speed);
 							} catch (err) {
 								const cause = err instanceof Error ? err.message : String(err);
 								this.logger.log("run_error", { source: "compaction", message: cause });
@@ -1606,6 +1636,7 @@ class RunnerImpl implements Runner {
 				this.settings,
 				this.model,
 				qualifiedReference(this.providerName, this.model),
+				this.speed,
 				signal,
 			);
 			return compacted ? "compacted" : "nothing-to-compact";
@@ -1628,6 +1659,7 @@ class RunnerImpl implements Runner {
 		/** SA-05 round 2: the FULLY QUALIFIED producer reference for the entry
 		 *  stamp; `model` stays the wire id. */
 		modelReference: string,
+		speed?: ModelSpeed,
 		signal?: AbortSignal,
 	): Promise<boolean> {
 		const session = this.sessionStore;
@@ -1636,12 +1668,13 @@ class RunnerImpl implements Runner {
 			session,
 			provider,
 			model,
+			speed,
 			modelReference,
 			signal,
 			settings,
-			// #derived-budget: the model reference resolves to the runner's live
-			// model (multi-provider switches mid-session keep the cap honest).
-			modelMaxTokens: modelMaxTokensFor(this.model),
+			// Resolve against the same captured base identity as the request,
+			// never a live model that may have changed during this run.
+			modelMaxTokens: modelMaxTokensFor(modelReference),
 			thinking: this.level, // pi: the summarizer thinks at the session level
 		});
 		if (compacted) {

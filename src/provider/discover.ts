@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { authFilePath, loadApiKey, resolveApiKey } from "./auth-store.js";
 import { getCodexAccessToken, getCodexRegistrationKey, loadCodexCredential } from "./codex-auth.js";
+import { bundledCodexFastModeSupport } from "./codex-speed-catalog.js";
 import { DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_SEED_MODELS, deepseekApiKey } from "./deepseek.js";
 import {
 	MOONSHOT_CN_DEFAULT_BASE_URL,
@@ -45,6 +46,8 @@ export const MODELS_PAGE_CAP = 10;
 interface CacheEntry {
 	ids: string[];
 	at: number;
+	/** Optional account capability evidence, only for listed subscription ids. */
+	fastModes?: Record<string, boolean>;
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -398,6 +401,16 @@ function codexCacheKey(base: string): string | null {
 		.digest("hex");
 }
 
+/** Ignore malformed capability metadata without invalidating an older ids-only cache. */
+function validatedFastModes(ids: string[], value: unknown): Record<string, boolean> | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const listed = new Set(ids);
+	const entries = Object.entries(value).filter(
+		([id, support]) => listed.has(id) && typeof support === "boolean",
+	);
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 function readCodexModelsFile(): CodexModelsFile {
 	const empty: CodexModelsFile = { version: 1, source: "chatgpt-direct-models", entries: {} };
 	try {
@@ -420,8 +433,14 @@ function readCodexModelsFile(): CodexModelsFile {
 				Number.isFinite(entry.at) &&
 				Array.isArray(entry.ids) &&
 				entry.ids.every((id) => typeof id === "string" && id.trim() !== "")
-			)
-				empty.entries[key] = { at: entry.at, ids: [...entry.ids] };
+			) {
+				const fastModes = validatedFastModes(entry.ids, entry.fastModes);
+				empty.entries[key] = {
+					at: entry.at,
+					ids: [...entry.ids],
+					...(fastModes === undefined ? {} : { fastModes }),
+				};
+			}
 		}
 	} catch {
 		// Missing/corrupt/unreadable availability is unknown, never seeds.
@@ -452,6 +471,14 @@ export function cachedCodexModelIds(): string[] | null {
 	return cachedCodexModelsEntry()?.ids.slice() ?? null;
 }
 
+/** Capability, not account availability or entitlement. Account evidence (even
+ *  false) wins; otherwise consult the pinned public snapshot. Like cached ids,
+ *  stale hints remain usable for the picker's labeled, unverified offline list. */
+export function codexFastModeSupport(modelId: string): boolean | undefined {
+	const support = cachedCodexModelsEntry()?.fastModes?.[modelId];
+	return typeof support === "boolean" ? support : bundledCodexFastModeSupport(modelId);
+}
+
 /** Synchronous automatic-startup candidate list, only within the same
  *  5-minute freshness window as live discovery. Stale/future timestamps
  *  resolve to unknown; a fresh empty list remains authoritative. */
@@ -462,7 +489,11 @@ export function freshCachedCodexModelIds(): string[] | null {
 
 function persistCodexModels(key: string, entry: CacheEntry): void {
 	const file = readCodexModelsFile();
-	file.entries[key] = { ids: [...entry.ids], at: entry.at };
+	file.entries[key] = {
+		ids: [...entry.ids],
+		at: entry.at,
+		...(entry.fastModes === undefined ? {} : { fastModes: { ...entry.fastModes } }),
+	};
 	// Bound endpoint/generation history; only one registration is active.
 	file.entries = Object.fromEntries(
 		Object.entries(file.entries)
@@ -490,8 +521,36 @@ function persistCodexModels(key: string, entry: CacheEntry): void {
 	}
 }
 
+/** Validate each optional schema independently. A positive modern OR legacy
+ *  advertisement wins. Otherwise a valid array (including []) is negative;
+ *  missing/malformed arrays alone are unknown, never implicit negatives. */
+function subscriptionFastModeSupport(model: Record<string, unknown>): boolean | undefined {
+	const modern = model.service_tiers;
+	const legacy = model.additional_speed_tiers;
+	const validModern =
+		Array.isArray(modern) &&
+		modern.every(
+			(tier: unknown) =>
+				typeof tier === "object" &&
+				tier !== null &&
+				"id" in tier &&
+				typeof tier.id === "string" &&
+				"name" in tier &&
+				typeof tier.name === "string" &&
+				"description" in tier &&
+				typeof tier.description === "string",
+		);
+	const validLegacy = Array.isArray(legacy) && legacy.every((tier: unknown) => typeof tier === "string");
+	if (validModern && modern.some((tier) => tier.id === "priority" || tier.id === "fast")) return true;
+	if (validLegacy && legacy.includes("fast")) return true;
+	return validModern || validLegacy ? false : undefined;
+}
+
 /** Bounded credential-bearing body read; errors never contain server data. */
-async function readSubscriptionModels(response: Response, signal: AbortSignal): Promise<string[] | null> {
+async function readSubscriptionModels(
+	response: Response,
+	signal: AbortSignal,
+): Promise<Omit<CacheEntry, "at"> | null> {
 	if (response.body === null) return null;
 	const reader = response.body.getReader();
 	const abort = () => {
@@ -513,13 +572,17 @@ async function readSubscriptionModels(response: Response, signal: AbortSignal): 
 		const json: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 		if (typeof json !== "object" || json === null || !("models" in json) || !Array.isArray(json.models))
 			return null;
-		return json.models.flatMap((model: unknown) => {
-			if (typeof model !== "object" || model === null) return [];
-			const item = model as { visibility?: unknown; slug?: unknown };
-			return item.visibility === "list" && typeof item.slug === "string" && item.slug.trim() !== ""
-				? [item.slug]
-				: [];
-		});
+		const ids: string[] = [];
+		const hints: Array<[string, boolean]> = [];
+		for (const model of json.models) {
+			if (typeof model !== "object" || model === null) continue;
+			const item = model as Record<string, unknown>;
+			if (item.visibility !== "list" || typeof item.slug !== "string" || item.slug.trim() === "") continue;
+			ids.push(item.slug);
+			const support = subscriptionFastModeSupport(item);
+			if (support !== undefined) hints.push([item.slug, support]);
+		}
+		return { ids, ...(hints.length === 0 ? {} : { fastModes: Object.fromEntries(hints) }) };
 	} finally {
 		signal.removeEventListener("abort", abort);
 		await reader.cancel().catch(() => {});
@@ -570,12 +633,13 @@ export async function discoverCodexModels(
 			await response.body?.cancel().catch(() => {});
 			return null;
 		}
-		const ids = await readSubscriptionModels(response, controller.signal);
-		if (ids === null || controller.signal.aborted || codexCacheKey(base) !== key) return null;
-		const entry = { ids: [...ids], at: now() };
+		const models = await readSubscriptionModels(response, controller.signal);
+		if (models === null || controller.signal.aborted || codexCacheKey(base) !== key) return null;
+		// A complete refresh replaces hints too: omissions must not retain stale evidence.
+		const entry = { ...models, ids: [...models.ids], at: now() };
 		cache.set(`chatgpt|${codexModelsCachePath()}|${key}`, entry);
 		persistCodexModels(key, entry);
-		return ids;
+		return models.ids;
 	} catch {
 		return null; // quiet discovery; login/inference reports auth failures
 	} finally {

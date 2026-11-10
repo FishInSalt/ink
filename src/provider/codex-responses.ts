@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { StopReason, Usage } from "../core/messages.js";
 import { getCodexAccessToken } from "./codex-auth.js";
+import { canRequestFastMode } from "./model-speed.js";
 import {
 	CodexResponseError,
 	diagnosticField,
@@ -64,6 +65,43 @@ function* untilAborted(events: Iterable<LLMEvent>, signal?: AbortSignal): Genera
 	}
 }
 
+/** Validate the raw boundary before the underlying generator can read auth.
+ * Keep typed diagnostics intact, adding recovery guidance without retrying or
+ * mutating the selected model, speed, or credential route. */
+function withFastMode(provider: LLMProvider): LLMProvider {
+	return {
+		name: provider.name,
+		async *stream(request: LLMRequest): AsyncIterable<LLMEvent> {
+			if (request.signal?.aborted) return;
+			const speed: unknown = request.speed;
+			if (speed !== undefined && speed !== "fast") {
+				throw new CodexResponseError('Invalid Codex speed: expected "fast" or no speed', {
+					code: "invalid_speed",
+					param: "speed",
+				});
+			}
+			if (
+				speed === "fast" &&
+				(typeof request.model !== "string" || !canRequestFastMode(provider.name, request.model))
+			) {
+				throw new CodexResponseError("Codex Fast requires an undecorated base model ID without whitespace", {
+					code: "invalid_model",
+					param: "model",
+				});
+			}
+			try {
+				yield* provider.stream(request);
+			} catch (error) {
+				if (speed === "fast" && error instanceof Error) {
+					error.message +=
+						" — Fast was requested; use /model to explicitly select the normal model before retrying.";
+				}
+				throw error;
+			}
+		},
+	};
+}
+
 export function createCodexResponsesProvider(options: CodexResponsesProviderOptions = {}): LLMProvider {
 	const explicitBase = options.baseUrl;
 	const endpoint = responsesEndpoint(
@@ -71,7 +109,7 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 		explicitBase !== undefined && (options.auth !== undefined || options.fetch !== undefined),
 	);
 	const auth = options.auth ?? getCodexAccessToken;
-	return {
+	return withFastMode({
 		name: "openai-codex",
 		async *stream(request: LLMRequest): AsyncIterable<LLMEvent> {
 			if (request.signal?.aborted) return;
@@ -104,6 +142,7 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 			const key = sessionKey(request.sessionId);
 			const body: Record<string, unknown> = {
 				model: request.model,
+				...(request.speed === "fast" ? { service_tier: "priority" } : {}),
 				store: false,
 				stream: true,
 				instructions: request.system,
@@ -208,6 +247,22 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 						}
 						if (record(final.error))
 							throw responseError(final, { ...errorFields, label: "Codex response failed" });
+						// Both accepted terminal paths must reject an explicit downgrade
+						// before reconciliation can yield output or a message_end can
+						// persist tools/text or trigger a capped-summary thinking retry.
+						const tier = final.service_tier;
+						if (request.speed === "fast" && (tier === "default" || tier === "standard" || tier === "flex")) {
+							throw responseError(
+								{
+									error: {
+										code: "service_tier_downgrade",
+										param: "service_tier",
+										message: `Fast requested, but Codex reported service_tier="${tier}"`,
+									},
+								},
+								{ ...errorFields, reason: tier },
+							);
+						}
 						({ usage, sawUsage } = usageFromResponse(final.usage));
 						stopReason = incomplete ? "max_tokens" : "end_turn";
 						events = output.reconcile(final.output, incomplete);
@@ -251,5 +306,5 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 				},
 			};
 		},
-	};
+	});
 }

@@ -1,5 +1,5 @@
 import { Value } from "typebox/value";
-import type { LLMEvent, LLMProvider } from "../provider/types.js";
+import type { LLMEvent, LLMProvider, ModelSpeed } from "../provider/types.js";
 import { ABORT_GRACE_MS, MAX_CONCURRENT_SAFE_CALLS } from "./constants.js";
 import type { HealthSignal } from "./health.js";
 import {
@@ -41,6 +41,8 @@ export type AgentEvent =
 export interface RunAgentLoopOptions {
 	provider: LLMProvider;
 	model: string;
+	/** Requested processing speed, captured for every turn of this run. */
+	speed?: ModelSpeed;
 	/** SA-05: the FULLY QUALIFIED producer reference (`provider/modelId`), the
 	 *  pricing identity stamped onto assistant messages as `modelReference`
 	 *  (distinct from `model`, the wire id). Omitted → no stamp → unpriced. */
@@ -147,6 +149,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
 	const {
 		provider,
 		model,
+		speed,
 		modelReference,
 		sessionId,
 		system,
@@ -220,7 +223,17 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
 
 		const assistant = await streamAssistant({
 			provider,
-			request: { system, sessionId, messages: history, tools, model, maxTokens, thinking, signal },
+			request: {
+				system,
+				sessionId,
+				messages: history,
+				tools,
+				model,
+				...(speed === undefined ? {} : { speed }),
+				maxTokens,
+				thinking,
+				signal,
+			},
 			onEvent,
 			usage,
 			ledger: usageLedger,

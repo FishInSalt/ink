@@ -10,6 +10,7 @@ import {
 	statSync,
 } from "node:fs";
 import path from "node:path";
+import { canRequestFastMode, type ModelSpeed } from "../provider/model-speed.js";
 import { type ChildModelBinding, isModelBinding } from "./child-model.js";
 import { type SessionEntry, type SessionHeader, SessionStore } from "./session/store.js";
 import { collectTaskRecords, type TaskRecordStatus, taskRecordsInEntry } from "./task-record.js";
@@ -95,6 +96,8 @@ export interface ChildLaunchRecord {
 	inkVersion: string;
 	agent?: { name: string; source: string; roleSha256: string };
 	model: ChildModelBinding;
+	/** Separate from the base model identity; absent in old records means normal. */
+	speed?: ModelSpeed;
 	cwd: string;
 	worktree?: ChildLaunchWorktree;
 	tools: ChildLaunchToolEntry[];
@@ -113,6 +116,7 @@ export interface ChildLaunchBuildInput {
 	inkVersion: string;
 	agent?: { name: string; system: string; source: string };
 	model: ChildModelBinding;
+	speed?: ModelSpeed;
 	cwd: string;
 	worktree?: {
 		repoRoot: string;
@@ -151,6 +155,7 @@ export function buildChildLaunch(input: ChildLaunchBuildInput): ChildLaunchRecor
 		childId: input.childId,
 		inkVersion: input.inkVersion,
 		model: { ...input.model },
+		...(input.speed === undefined ? {} : { speed: input.speed }),
 		cwd: input.cwd,
 		tools: input.tools
 			.map((tool) =>
@@ -215,7 +220,13 @@ export function parseChildLaunch(value: unknown): ChildLaunchParse {
 	if (!isName(r.inkVersion)) return { ok: false, reason: "invalid" };
 	if (Object.hasOwn(r, "impVersion")) return { ok: false, reason: "invalid" };
 	if (!isAbsolutePath(r.cwd)) return { ok: false, reason: "invalid" };
-	if (!isBinding(r.model)) return { ok: false, reason: "invalid" };
+	if (!isModelBinding(r.model)) return { ok: false, reason: "invalid" };
+	if (
+		r.speed !== undefined &&
+		(r.speed !== "fast" || !canRequestFastMode(r.model.providerName, r.model.wireModelId))
+	) {
+		return { ok: false, reason: "invalid" };
+	}
 	if (r.agent !== undefined && !isAgent(r.agent)) return { ok: false, reason: "invalid" };
 	if (r.worktree !== undefined && !isWorktree(r.worktree)) return { ok: false, reason: "invalid" };
 	if (!Array.isArray(r.tools) || !r.tools.every(isToolEntry)) return { ok: false, reason: "invalid" };
@@ -246,13 +257,6 @@ function isAbsolutePath(value: unknown): value is string {
 
 function isHash(value: unknown): value is string {
 	return typeof value === "string" && HEX64.test(value);
-}
-
-function isBinding(value: unknown): boolean {
-	// SA-08 reopened F-3: one shared derivation rule with TaskRecord's
-	// isBinding (a3aaa72's launch-side rule generalized).
-	if (value === undefined) return false;
-	return isModelBinding(value);
 }
 
 function isAgent(value: unknown): boolean {
