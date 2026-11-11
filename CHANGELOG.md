@@ -8,6 +8,21 @@ their original release identity.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI search prerequisites.** Use isolated, signed official Ubuntu sources
+  with explicit amd64 filtering and bounded acquisition instead of the hosted
+  image's mirror list. Installation failures and required-tool checks remain
+  fatal; this does not claim to repair every hosted DNS failure.
+- **Login test readiness.** Observe saved-key UI completion instead of assuming
+  durable credential writes finish in one render interval. A gated real-save
+  regression covers delayed persistence without changing production auth.
+- **Post-publish registry verification.** Separate successful publication from
+  pending metadata verification. Future workflows use bounded exact-version,
+  source-commit and tarball checks for up to ten minutes, report setup/summary
+  failures accurately, and never automatically publish again. Artifact integrity
+  and provenance still require separate verification.
+
 ## [0.6.0] - 2026-11-11
 
 ### Added

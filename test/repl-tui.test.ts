@@ -5561,7 +5561,13 @@ describe("runRepl with shell:tui", () => {
 
 		it("/login: the secret prompt renders, Enter stores the key, Esc cancels; the typed key never enters history", async () => {
 			const saved: Record<string, string | undefined> = {};
-			for (const key of ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "ZAI_API_KEY"]) {
+			for (const key of [
+				"ANTHROPIC_AUTH_TOKEN",
+				"ANTHROPIC_API_KEY",
+				"OPENAI_API_KEY",
+				"ZAI_API_KEY",
+				"INK_AUTH_PATH",
+			]) {
 				saved[key] = process.env[key];
 				delete process.env[key];
 			}
@@ -5569,6 +5575,22 @@ describe("runRepl with shell:tui", () => {
 			process.env.INK_AUTH_PATH = authPath;
 			try {
 				const env = await startTuiRepl([reply("ok")]);
+				let ended = false;
+				void env.repl.then(
+					() => {
+						ended = true;
+					},
+					() => {
+						ended = true;
+					},
+				);
+				onTestFinished(async () => {
+					if (ended) return;
+					env.terminal.rawData("\x1b");
+					await settle();
+					env.terminal.data("/exit\r");
+					await vi.waitFor(() => expect(ended).toBe(true));
+				});
 				await settle();
 				env.terminal.data("/login zai\r");
 				await settle();
@@ -5576,7 +5598,8 @@ describe("runRepl with shell:tui", () => {
 				// exactly like pi's LoginDialog
 				expect(env.terminal.frameSince(0)).toContain("Enter Z.AI API key");
 				env.terminal.data("sk-tui-key\r"); // typed + Enter
-				await settle();
+				// Locking, fsync and rename need not finish in one render interval.
+				await frameContains(env, "Saved API key for Z.AI");
 				expect(env.terminal.frameSince(0)).toContain("Saved API key for Z.AI");
 				expect(env.terminal.frameSince(0)).toContain("▪ switch with /model zai/glm-5.3");
 				expect(loadApiKey("zai", authPath)).toBe("sk-tui-key");
@@ -5597,6 +5620,80 @@ describe("runRepl with shell:tui", () => {
 					if (value === undefined) delete process.env[key];
 					else process.env[key] = value;
 				}
+			}
+		});
+
+		it("/login waits for gated durable-save completion, not one render interval", async () => {
+			const prior = process.env.INK_AUTH_PATH;
+			const authPath = path.join(await mkTempDirAsync("ink-login-"), "auth.json");
+			process.env.INK_AUTH_PATH = authPath;
+			const authStore = await import("../src/provider/auth-store.js");
+			const realSave = authStore.saveApiKey;
+			const release = gate();
+			let pendingSave: Promise<void> | undefined;
+			let completion: Promise<void> | undefined;
+			const spy = vi.spyOn(authStore, "saveApiKey").mockImplementationOnce((...args) => {
+				// Capture the fixture path before the gate; no production auth file
+				// may be selected even if cleanup later restores the environment.
+				const captured = args[2] ?? authPath;
+				pendingSave = release.promise.then(() => realSave(args[0], args[1], captured, args[3]));
+				return pendingSave;
+			});
+			let env: Awaited<ReturnType<typeof startTuiRepl>> | undefined;
+			let ended = false;
+			let cleanup: Promise<void> | undefined;
+			const finish = () =>
+				(cleanup ??= (async () => {
+					release.resolve();
+					try {
+						await pendingSave?.catch(() => {});
+						await completion?.catch(() => {});
+						if (env) {
+							env.terminal.rawData("\x1b");
+							await settle();
+							env.terminal.data("/exit\r");
+							await vi.waitFor(() => expect(ended).toBe(true));
+						}
+					} finally {
+						spy.mockRestore();
+						if (prior === undefined) delete process.env.INK_AUTH_PATH;
+						else process.env.INK_AUTH_PATH = prior;
+					}
+				})());
+			onTestFinished(finish);
+			try {
+				env = await startTuiRepl([reply("ok")]);
+				void env.repl.then(
+					() => {
+						ended = true;
+					},
+					() => {
+						ended = true;
+					},
+				);
+				await frameContains(env, "Tips for getting started:");
+				env.terminal.data("/login zai\r");
+				await frameContains(env, "Enter Z.AI API key");
+				env.terminal.data("sk-gated-fixture-key\r");
+				await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+				completion = frameContains(env, "Saved API key for Z.AI");
+				let completed = false;
+				void completion.then(
+					() => {
+						completed = true;
+					},
+					() => {},
+				);
+				await settle(); // The completion observer must remain pending beyond 30 ms.
+				expect(completed).toBe(false);
+				expect(env.terminal.frameSince(0)).not.toContain("Saved API key for Z.AI");
+				expect(loadApiKey("zai", authPath)).toBeNull();
+				release.resolve();
+				await completion;
+				expect(loadApiKey("zai", authPath)).toBe("sk-gated-fixture-key");
+				expect(env.requests).toHaveLength(0);
+			} finally {
+				await finish();
 			}
 		});
 

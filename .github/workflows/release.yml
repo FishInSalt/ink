@@ -33,12 +33,8 @@ jobs:
           node-version: 24
           cache: npm
       - name: install search test prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ripgrep fd-find
-          mkdir "$RUNNER_TEMP/ink-test-tools"
-          ln -s "$(command -v fdfind)" "$RUNNER_TEMP/ink-test-tools/fd"
-          echo "$RUNNER_TEMP/ink-test-tools" >> "$GITHUB_PATH"
+        timeout-minutes: 10
+        run: bash scripts/install-ci-search-tools.sh
       - name: verify search test prerequisites
         run: |
           rg --version
@@ -106,24 +102,20 @@ jobs:
 
       - name: registry visibility check
         if: github.event_name == 'push' && steps.plan.outputs.mode == 'publish'
+        timeout-minutes: 12
         env:
           PACKAGE: ${{ steps.plan.outputs.package }}
           VERSION: ${{ steps.plan.outputs.version }}
         run: |
-          # After a successful publish npm may report "Your package is being
-          # processed and may take a few minutes to become available." Allow up
-          # to 3 minutes for registry visibility before failing.
-          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            if npm view "$PACKAGE@$VERSION" version > /dev/null 2>&1; then
-              echo "$PACKAGE@$VERSION is visible on the registry"
-              npm view "$PACKAGE@$VERSION" version dist.tarball
-              echo "Provenance: https://www.npmjs.com/package/$PACKAGE/v/$VERSION"
-              exit 0
-            fi
-            sleep 15
-          done
-          echo "$PACKAGE@$VERSION not visible after 180s — check the registry" >&2
-          exit 1
+          # Record acceptance BEFORE git/verifier setup can fail. Summary writes
+          # are best-effort and cannot mask the primary verification outcome.
+          printf '%s\n' 'npm publish returned success; registry verification is pending. Do not rerun publication.' >&2
+          if ! printf '%s\n' '### npm publish returned success' '' 'Registry verification is pending. Do not rerun publication.' >> "$GITHUB_STEP_SUMMARY"; then
+            printf '%s\n' 'Warning: could not write publication summary; verification will still run.' >&2
+          fi
+          EXPECTED_GIT_HEAD="$(git rev-parse "$GITHUB_REF^{commit}")"
+          export EXPECTED_GIT_HEAD
+          node scripts/check-registry-visibility.mjs
 
       - name: publish skipped notice
         if: steps.plan.outputs.mode == 'skip'
