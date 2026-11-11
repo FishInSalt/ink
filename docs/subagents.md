@@ -32,6 +32,14 @@ from the requested priority tier; actual failures and incomplete-tool safety are
 unchanged. Child assistant observations persist separately from the base binding
 and do not enter replay or summary prompts; see [providers.md](providers.md).
 
+A task's parent session is captured by the run that issues it. Switching the
+active conversation with `/new` or `/resume`, even during a summary, does not
+move that run's task records or child parent links to the replacement session.
+Continuing a child also resolves ownership against the issuing run's parent.
+This does not freeze the live provider/model/speed or inherited thinking used
+when a new child is dispatched. Without a captured parent store, the task has no
+persisted child transcript, even if a saved session later becomes active.
+
 Results contain only the last nonempty assistant text accepted during the
 current attempt, for both fresh and continued children. Compaction and overflow
 recovery cannot substitute a previous attempt's answer or a summary. A continued

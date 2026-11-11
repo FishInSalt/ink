@@ -22,6 +22,12 @@ their original release identity.
 
 ### Fixed
 
+- **Task parent ownership during session switches.** Keep task records, child
+  parent links and child-continuation lookups with the issuing run's captured
+  session across `/new` or `/resume`, including automatic/overflow summaries.
+  Preserve live child model/speed/thinking selection, no-parent behavior and
+  independent ownership for overlapping runs; later direct calls do not inherit
+  a completed run's parent.
 - **Child results after compaction.** Keep task output scoped to the current
   attempt, including persisted child continuations and overflow recovery.
   Silent or immediately-failed attempts no longer return a previous answer

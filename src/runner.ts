@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -415,6 +416,12 @@ type RunContext = Readonly<{
 	history: { messages: AgentMessage[]; estimateFloor: number };
 }>;
 
+/** Per-run ownership, invalidated at settle even in inherited detached chains.
+ * An absent binding permits direct live calls; a bound null is authoritative. */
+type TaskOwnerScope = {
+	binding: Readonly<{ session: SessionStore | null }> | undefined;
+};
+
 class RunnerImpl implements Runner {
 	readonly history: AgentMessage[] = [];
 	model: string;
@@ -478,6 +485,8 @@ class RunnerImpl implements Runner {
 	/** #thinking-levels: the live level (pi's AgentState.thinkingLevel). */
 	private level: ThinkingLevel = "off";
 	private sessionStore: SessionStore | null = null;
+	/** Instance-local async scopes, never a shared current-run owner slot. */
+	private readonly taskOwnerScopes = new AsyncLocalStorage<TaskOwnerScope>();
 	/** In-memory conversation identity when sessions are disabled; /new replaces it. */
 	private ephemeralSessionId = randomUUID();
 	/** SA-05: the whole-session usage aggregate — one tracker per store instance
@@ -581,9 +590,10 @@ class RunnerImpl implements Runner {
 			]),
 			...(options.extensions?.tools ?? []),
 		];
-		// The task tool (M5): delegates to in-process subagents. Getters keep the
-		// spawn-time reads live — /model, /new, /resume all change what children
-		// should see. It references this.tools (name-filtered at spawn), so push
+		// The task tool (M5): delegates to in-process subagents. Selection and
+		// environment getters stay live at dispatch; parent ownership instead
+		// follows the issuing run across /new and /resume. It references
+		// this.tools (name-filtered at spawn), so push
 		// after the array is built. Agents load once from disk (M5c) — new agent
 		// files need a restart, like extension changes.
 		this.agents = loadAgentDefinitions(options.cwd, options.agentsHomeDir, options.agentsProjectAllowed);
@@ -601,7 +611,7 @@ class RunnerImpl implements Runner {
 				getSystem: () => this.system,
 				getLaunchEnvironment: () => this.getLaunchEnvironment(),
 				getTools: () => this.tools,
-				getSession: () => this.sessionStore,
+				getSession: () => this.taskParentSession(),
 				sessionBaseDir: options.sessionBaseDir,
 				agents: this.agents.agents,
 				agentsProjectGated: this.agents.projectGated,
@@ -1384,6 +1394,12 @@ class RunnerImpl implements Runner {
 		return this.estimateFloor;
 	}
 
+	private taskParentSession(): SessionStore | null {
+		const binding = this.taskOwnerScopes.getStore()?.binding;
+		// Do not use ?? on session: captured null must not inherit a live store.
+		return binding === undefined ? this.sessionStore : binding.session;
+	}
+
 	private captureRunContext(): RunContext {
 		return {
 			model: this.model,
@@ -1414,56 +1430,75 @@ class RunnerImpl implements Runner {
 		// Capture before run_start: model/provider/settings/session/history
 		// remain one binding through compaction and overflow recovery.
 		const context = this.captureRunContext();
-		const { model, speed, session } = context;
-		// Login may retain the current deliberate selection rather than
-		// call setModel. Seed automatically before the first message write,
-		// including model-less resumed history, without a UI persistence hook.
-		if (this.providerName === "openai-codex" && this.modelCanBeSeeded())
-			session?.seedModel({ provider: this.providerName, modelId: model, speed });
-		this.lastRunModel = model;
-		// run_start fires HERE, not in runTurnInner: entry-level is the one site
-		// both shells reach exactly once per run — the overflow retry below
-		// re-enters runTurnInner, never runTurn (task-timer design §4.1). Its
-		// pair is run_end, which a provider crash skips — consumers must
-		// tolerate an unpaired run_start.
-		this.options.extensions?.emitRunStart({ type: "run_start" });
-		// #loop-health (design §4.1; post-merge review finding 2): ONE monitor
-		// per top-level run turn — hoisted above runTurnOrRecoverFromOverflow so
-		// the overflow retry does NOT reset turn/signature/streak state or
-		// cancel open-tool timers (the child engine already shares one monitor
-		// across its retry). Observes the same stream the REPL sees; relays
-		// first fires as `health` events; disposed after the whole flow.
-		const health = healthEnabled()
-			? createLoopHealth({ emit: (signal) => options.onEvent?.({ type: "health", signal }) })
-			: undefined;
-		// runTurn is sync-returning: cleanup rides the promise's settle (the
-		// same timing class as runTurnInner's own finally).
-		return this.runTurnOrRecoverFromOverflow(context, options, health)
-			.then(
-				(result) => result,
-				// #run-error (design §4.2): the crash-side mirror of run_start — one
-				// vantage over every crash shape (the overflow-recovery throws below
-				// never pass through runTurnInner's catch). Mutually exclusive with
-				// run_end's emit by construction: this handler runs only on rejection.
-				(err) => {
-					try {
-						this.options.extensions?.emitRunError({
-							type: "run_error",
-							message: firstLine(runErrorText(err), 160),
-						});
-					} catch {
-						// The emission must never mask the crash itself: a throwing
-						// coercion (non-coercible null-prototype object) or emitter
-						// must not swallow run_error AND replace the host's rejection
-						// with a TypeError (design §4.1 item 1 / §6.1b) — `throw err`
-						// below is unconditional. Defense-in-depth: the inner catch's
-						// log line coerces first today, so this guard protects future
-						// changes there.
-					}
-					throw err;
-				},
-			)
-			.finally(() => health?.dispose());
+		const scope: TaskOwnerScope = { binding: { session: context.session } };
+		return this.taskOwnerScopes.run(scope, () => {
+			let health: LoopHealthMonitor | undefined;
+			try {
+				const { model, speed, session } = context;
+				// Login may retain the current deliberate selection rather than
+				// call setModel. Seed automatically before the first message write,
+				// including model-less resumed history, without a UI persistence hook.
+				if (this.providerName === "openai-codex" && this.modelCanBeSeeded())
+					session?.seedModel({ provider: this.providerName, modelId: model, speed });
+				this.lastRunModel = model;
+				// run_start fires HERE, not in runTurnInner: entry-level is the one site
+				// both shells reach exactly once per run — the overflow retry below
+				// re-enters runTurnInner, never runTurn (task-timer design §4.1). Its
+				// pair is run_end, which a provider crash skips — consumers must
+				// tolerate an unpaired run_start.
+				this.options.extensions?.emitRunStart({ type: "run_start" });
+				// #loop-health (design §4.1; post-merge review finding 2): ONE monitor
+				// per top-level run turn — hoisted above runTurnOrRecoverFromOverflow so
+				// the overflow retry does NOT reset turn/signature/streak state or
+				// cancel open-tool timers (the child engine already shares one monitor
+				// across its retry). Observes the same stream the REPL sees; relays
+				// first fires as `health` events; disposed after the whole flow.
+				health = healthEnabled()
+					? createLoopHealth({ emit: (signal) => options.onEvent?.({ type: "health", signal }) })
+					: undefined;
+				// Keep ownership through recovery, not just one runTurnInner attempt.
+				return this.runTurnOrRecoverFromOverflow(context, options, health)
+					.then(
+						(result) => result,
+						// #run-error (design §4.2): the crash-side mirror of run_start — one
+						// vantage over every crash shape (the overflow-recovery throws below
+						// never pass through runTurnInner's catch). Mutually exclusive with
+						// run_end's emit by construction: this handler runs only on rejection.
+						(err) => {
+							try {
+								this.options.extensions?.emitRunError({
+									type: "run_error",
+									message: firstLine(runErrorText(err), 160),
+								});
+							} catch {
+								// The emission must never mask the crash itself: a throwing
+								// coercion (non-coercible null-prototype object) or emitter
+								// must not swallow run_error AND replace the host's rejection
+								// with a TypeError (design §4.1 item 1 / §6.1b) — `throw err`
+								// below is unconditional. Defense-in-depth: the inner catch's
+								// log line coerces first today, so this guard protects future
+								// changes there.
+							}
+							throw err;
+						},
+					)
+					.finally(() => {
+						// Invalidate inherited detached scopes too; never disable the ALS
+						// instance or clear another overlapping/reentrant run's binding.
+						scope.binding = undefined;
+						health?.dispose();
+					});
+			} catch (err) {
+				// Preserve synchronous pre-promise failures (e.g. run_start emitter).
+				scope.binding = undefined;
+				try {
+					health?.dispose();
+				} catch {
+					// Cleanup must not replace the primary synchronous error.
+				}
+				throw err;
+			}
+		});
 	}
 
 	/** #overflow-grace: a live "context window exceeded" provider error gets

@@ -124,7 +124,9 @@ export interface TaskToolOptions {
 	/** Project `.ink/agents` exists but was skipped by the trust gate — the
 	 *  roster must say so instead of "no agents are defined" (M8 review). */
 	agentsProjectGated?: boolean;
-	/** Current parent session — children link to it and live beside it. Null when sessions are disabled. */
+	/** Issuing parent session — captured once per execute for child links and
+	 * lookup. Runner binds this to its active async run (including null), or
+	 * the live store for direct calls outside a run. */
 	getSession: () => SessionStore | null;
 	/** Hermetic tests: session base dir override (passed through to the session manager). */
 	sessionBaseDir?: string;
