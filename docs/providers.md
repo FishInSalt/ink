@@ -219,10 +219,15 @@ The picker says `Fast requested; higher usage; availability unverified`.
 Fast may consume more subscription allowance or incur additional cost. Catalog
 estimates remain base-model estimates, not actual subscription charges or a
 verified Fast multiplier. Listing and capability do not verify account
-entitlement or guarantee faster responses. The only live Fast subscription probe,
-on 2026-11-10 with `service_tier:"fast"`, returned **HTTP 400**; its diagnostic
-reason was not retained. This was not successful Fast verification and does
-not establish whether Fast is supported.
+entitlement or guarantee faster responses. An initial 2026-11-10 subscription
+probe with `service_tier:"fast"` returned **HTTP 400** without a retained diagnostic
+reason. A separately authorized follow-up completed 42 requests (2 warm-ups and
+20 randomized formal pairs), with 18,942 reported tokens, correct outputs and no
+failures or exclusions. Paired character delivery improved 42.29% and total
+latency decreased 23.62% in that workload and observation window. All terminal
+tiers were `default`: these results are performance evidence for that experiment,
+not confirmation of an internal processing tier, entitlement, billing, or a
+general speed guarantee.
 
 Ink sends the unchanged base model ID with `service_tier:"priority"`, the
 Fast-equivalent value used by official Codex. Normal requests omit the tier
@@ -233,9 +238,23 @@ pricing metadata and replay identity stay base-only. Thinking remains independen
 Errors preserve the selection and show recovery guidance: explicitly choose
 the normal model before retrying normally. Retries keep Fast; there is no silent
 normal retry, model substitution, credential/billing switch, or legacy-backend
-fallback. If a terminal response explicitly reports `default`, `standard`, or
-`flex`, Ink rejects it without saving that reply or executing its tools. An
-omitted or unknown reported tier is not confirmation that Fast was delivered.
+fallback. A valid terminal response completes normally even if its reported tier
+is `default`, `standard`, `flex`, unknown, or missing. This also applies to the
+already-supported `max_output_tokens` incomplete path; incomplete tool batches
+remain non-executable. Actual stream failures, terminal errors, unsupported
+incomplete reasons, invalid tools/replay, and truncated streams still fail.
+HTTP 200 alone is not completion; stream errors retain typed diagnostic status
+without misleading `API error 200` wording.
+
+Codex assistant messages save bounded `serviceTier` observations separately:
+`requested` is `priority` for Fast or `omitted` for an ordinary request; optional
+`reported` is the terminal value, never rewritten to match the request or taken
+from a created event. Malformed reports are ignored. None of these values attest
+to actual processing or charges. `/status` shows the **LAST response** observation
+for the current exact provider/base model in active history, not confirmation of
+the current selection. It shows `omitted` and `unreported` explicitly. If that
+model's latest assistant has no valid observation, it does not substitute an
+older one. Legacy sessions remain valid; there is no per-turn warning.
 
 ## Model catalog (pi.dev)
 

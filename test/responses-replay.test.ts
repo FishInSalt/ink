@@ -525,6 +525,32 @@ describe("Responses final snapshots", () => {
 	});
 });
 
+describe("Service tier metadata is observation-only", () => {
+	it.each(["omitted", "priority"] as const)(
+		"does not change replay, summary or estimates for requested=%s",
+		(requested) => {
+			const base = replayMessage();
+			const observed = { ...base, serviceTier: { requested, reported: "default" } };
+			for (const model of [MODEL, "other-base"]) {
+				expect(toResponsesInput([observed], model)).toEqual(toResponsesInput([base], model));
+			}
+			expect(serializeForSummary([observed])).toBe(serializeForSummary([base]));
+			for (const target of [TARGET, "openai/gpt-5.5", "openai-codex/other-base"]) {
+				expect(estimateTokens(observed, target)).toBe(estimateTokens(base, target));
+				expect(estimateContextTokens([observed], 0, target)).toEqual(
+					estimateContextTokens([base], 0, target),
+				);
+			}
+			const root = mkTempDir("ink-session-");
+			const session = createSession(root, root);
+			session.appendMessage(observed);
+			const reloaded = SessionStore.open(session.filePath).buildContext().messages;
+			expect(reloaded).toEqual([observed]);
+			expect(toResponsesInput(reloaded, MODEL)).toEqual(toResponsesInput([base], MODEL));
+		},
+	);
+});
+
 describe("Responses replay boundary", () => {
 	// Focused projections of OpenAI's Responses input schemas: native output
 	// messages require id/status/annotations; EasyInputMessage permits only

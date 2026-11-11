@@ -3,10 +3,14 @@
 Status: revised scope independently approved on 2026-11-10. The original design
 passed two review rounds; after the user clarified that Fast must cover every
 supported Codex model, a fresh adversarial reviewer approved the capability-based
-revision. Terminal validation and child-dispatch decisions remain unchanged.
+revision. Child-dispatch decisions remain unchanged. **The terminal tier rejection
+below is superseded** by [batch 1 completion compatibility](codex-fast-completion-design.md):
+Fast requests priority, not priority-or-error. The original verification/review
+record below describes the earlier implementation, not approval of batch 1.
 Implementation completed and both independent code-review scopes approved.
 Final verification: 4585 tests passed across 163 files; typecheck, lint and build
-passed. Subscription Fast entitlement/acceleration remains unverified.
+passed for that earlier implementation. Subscription Fast entitlement/billing
+remains unverified; later experimental performance is workload/window-specific.
 
 ## Goal and scope
 
@@ -41,14 +45,20 @@ On 2026-11-10, the user authorized one real subscription request. A minimal
 `gpt-6.1-sol` request with `service_tier:"fast"`, `store:false`, and
 `stream:true` returned HTTP 400. The probe did not retain a diagnostic that
 identifies the reason. This does NOT establish that Fast is unavailable, nor
-that it works with either spelling. No further real request is authorized by
-this design. Do not refresh credentials or use real requests in tests.
+that it works with either spelling. A separately authorized follow-up experiment
+completed 42 requests (2 warm-ups and 20 randomized formal pairs), 18,942 reported
+tokens, all correct, no failures or exclusions. Paired character delivery improved
+42.29% and total latency decreased 23.62%; all terminal tiers were `default`.
+These are workload/window-specific observations, not proof of internal tier or
+billing. No further real request is authorized by this design. Do not refresh
+credentials or use real requests in tests.
 
 Accordingly, the UI and documentation must describe a **Fast request**, not
 verified entitlement or guaranteed acceleration. Account-list membership only
 proves model listing. The variant is an opt-in request mode with unverified
-subscription-tier availability; failures remain visible. Do not advertise a
-successful live Fast test or a subscription cost multiplier.
+subscription-tier availability; actual failures remain visible. Do not turn the
+qualified performance experiment into an entitlement or acceleration guarantee,
+or advertise a verified subscription cost multiplier.
 
 ## Capability evidence (revised scope)
 
@@ -211,14 +221,18 @@ retains its existing aborted/timeout classification. Include a concise actionabl
 Fast recovery hint directing users to choose the normal model explicitly,
 while retaining upstream diagnostics without leaking credentials.
 
-On both accepted terminal paths (`response.completed` and output-token-limit
-`response.incomplete`), check the reported tier before reconciliation and
-`message_end`. If Fast explicitly reports `default`, `standard`, or `flex`,
-fail clearly rather than silently accept normal/slower processing. Do not
-persist the rejected assistant reply, execute its tools, or start a normal
-fallback or summarizer thinking retry. `priority` and `fast` report Fast.
-A missing/unknown tier is not proof of Fast; the UI continues to say requested,
-not confirmed. Do not infer processing tier from latency or cached tokens.
+**Superseded gate:** the original design rejected `default`, `standard`, or `flex`
+on both accepted terminal paths (`response.completed` and output-token-limit
+`response.incomplete`). Batch 1 removes only that rejection: valid responses
+complete normally, and the existing summary thinking retry remains available.
+Actual stream/terminal/replay errors and incomplete/invalid tool safety remain
+unchanged. HTTP 200 is not by itself successful completion. Request `priority`
+without fallback; retain bounded terminal observations unchanged as
+`AssistantMessage.serviceTier`, with `requested:"omitted"|"priority"` and optional
+`reported`. No reported value proves internal processing or charges. `/status`
+may show only the LAST matching base-model assistant observation, with no older
+substitution and no per-turn warning. See the approved batch 1 design for exact
+parser and display rules. Do not infer processing tier from latency or cached tokens.
 
 Keep catalog estimates as base-model estimates; the Fast selection should
 make clear that additional allowance/cost may apply and estimates are not the
@@ -238,8 +252,9 @@ Cover at least:
 2. Picker ordering/deduplication, normal plus Fast, empty/offline/unconfigured
    accounts, clear cost/availability wording, and visible selected suffix.
 3. Normal/Fast request body, unchanged thinking, same-tier retries, meaningful
-   rejection, explicit backend downgrade rejection on completed and incomplete
-   terminal paths (including no summarizer thinking retry), and no fallback request.
+   rejection, and no fallback request. The original downgrade-rejection cases on
+   completed and incomplete paths are superseded by batch 1 acceptance/observation
+   tests, while actual failures and tool safety remain covered.
 4. Session and default/CLI selection round trips, old-session normal, speed-only
    changes, normal clearing, and failed-persistence atomicity.
 5. Run-entry and child-spawn snapshots, override rules, child continuation,
@@ -263,8 +278,10 @@ Two fresh-context adversarial code reviewers covered separate scopes:
   normal three-failure tolerance path. The first fix exposed a second case:
   summary-origin context overflow was mistaken for task overflow. Preserve
   summary-error origin and fail the child before that classifier. Twelve
-  regression cases cover stored/in-memory, automatic/overflow, and downgrade,
-  unsupported-parameter, and context-overflow errors; a mistaken second summary
+  regression cases originally covered stored/in-memory, automatic/overflow, and
+  downgrade, unsupported-parameter, and context-overflow errors. Batch 1 replaces
+  the locally synthesized downgrade error fixture with an actual upstream
+  tier-unavailable error; a mistaken second summary
   would succeed, proving the original failure cannot be hidden by recovery.
   Normal-mode tolerance and abort/timeout behavior remain covered.
 

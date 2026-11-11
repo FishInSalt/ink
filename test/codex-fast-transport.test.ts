@@ -6,7 +6,6 @@ import type { AgentMessage } from "../src/core/messages.js";
 import { createSession } from "../src/core/session/manager.js";
 import { getCodexAccessToken } from "../src/provider/codex-auth.js";
 import { CodexResponseError, createCodexResponsesProvider } from "../src/provider/codex-responses.js";
-import { CodexOutput } from "../src/provider/responses-output.js";
 import type { LLMEvent, LLMRequest } from "../src/provider/types.js";
 import { mkTempDir } from "./helpers/mktemp.js";
 
@@ -195,7 +194,7 @@ describe("Fast wire identity and replay", () => {
 				content: [{ type: "output_text", text: "answer" }],
 			};
 			const { provider, fetch } = harness([
-				() => streamResponse([terminal("completed", "priority", { output: [reasoning, message] })]),
+				() => streamResponse([terminal("completed", "default", { output: [reasoning, message] })]),
 				() => streamResponse([terminal()]),
 				() => streamResponse([terminal()]),
 				() => streamResponse([terminal()]),
@@ -204,6 +203,10 @@ describe("Fast wire identity and replay", () => {
 			const end = initial.at(-1);
 			if (end?.type !== "message_end") throw new Error("missing fixture message");
 			expect(end.message.provenance).toEqual({ version: 1, provider: "openai-codex", model: "gpt-5.5" });
+			expect(end.message.serviceTier).toEqual({
+				requested: speed === "fast" ? "priority" : "omitted",
+				reported: "default",
+			});
 			expect(end.message).not.toHaveProperty("speed");
 			for (const next of [undefined, "fast"] as const) {
 				await collect(provider.stream(request({ speed: next, messages: [end.message] })));
@@ -375,7 +378,9 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 				retryable: false,
 			});
 			expect((caught as Error).message).toMatch(/Priority refused.*Fast.*\/model.*normal/);
-			expect((caught as Error).message).not.toMatch(/fake-subscription-access|hidden-secret/);
+			expect((caught as Error).message).not.toMatch(
+				/fake-subscription-access|hidden-secret|API error 200|(?:failed|incomplete|error) 200:/,
+			);
 			expect(events.some((event) => event.type === "message_end")).toBe(false);
 			expect(auth).toHaveBeenCalledTimes(1);
 			expect(fetch).toHaveBeenCalledTimes(1);
@@ -443,7 +448,7 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 });
 
 const terminalKinds = ["completed", "incomplete"] as const;
-const downgradeCases = terminalKinds.flatMap((kind) =>
+const differingTierCases = terminalKinds.flatMap((kind) =>
 	["default", "standard", "flex"].map((tier) => ({ kind, tier })),
 );
 const tool = {
@@ -462,73 +467,216 @@ const toolFrames = () => [
 	frame("response.output_item.done", { output_index: 0, item: tool }),
 ];
 
-describe("Fast terminal tier validation", () => {
-	it.each(downgradeCases)(
-		"rejects $kind tier=$tier before reconciliation or message_end",
-		async ({ kind, tier }) => {
-			const reconcile = vi.spyOn(CodexOutput.prototype, "reconcile");
-			const { provider, fetch } = harness([
-				() =>
-					streamResponse([
-						terminal(kind, tier, {
-							output: [{ type: "message", content: [{ type: "output_text", text: "must not reconcile" }] }],
-						}),
-					]),
-			]);
-			const events: LLMEvent[] = [];
-			await expect(collect(provider.stream(request()), events)).rejects.toMatchObject({
-				name: "CodexResponseError",
-				code: "service_tier_downgrade",
-				param: "service_tier",
-				reason: tier,
-				retryable: false,
-				message: expect.stringMatching(new RegExp(`service_tier="${tier}".*Fast.*\\/model.*normal`)),
+describe("Fast terminal tier observations", () => {
+	it.each([undefined, "fast"] as const)(
+		"observes the actual sent body even if the caller mutates speed=%s",
+		async (speed) => {
+			const req = request({ speed });
+			let sent: Record<string, unknown> | undefined;
+			const provider = createCodexResponsesProvider({
+				auth: async () => ({ accessToken: TOKEN }),
+				fetch: async (_url, init) => {
+					sent = body(init);
+					req.speed = speed === "fast" ? undefined : "fast";
+					return streamResponse([terminal("completed", "default")]);
+				},
 			});
-			expect(reconcile).not.toHaveBeenCalled();
-			expect(events).toEqual([]);
-			expect(fetch).toHaveBeenCalledTimes(1);
+			const events = await collect(provider.stream(req));
+			expect(sent?.service_tier).toBe(speed === "fast" ? "priority" : undefined);
+			expect(events.at(-1)).toMatchObject({
+				message: {
+					serviceTier: {
+						requested: speed === "fast" ? "priority" : "omitted",
+						reported: "default",
+					},
+				},
+			});
 		},
 	);
 
-	it.each(downgradeCases)(
-		"$kind tier=$tier cannot execute tools or persist the streamed assistant",
-		async ({ kind, tier }) => {
-			const execute = vi.fn(async () => ({ output: "must not execute" }));
+	it.each(
+		terminalKinds.flatMap((kind) =>
+			[
+				"priority",
+				"default",
+				"standard",
+				"flex",
+				"fast",
+				"future-tier",
+				undefined,
+				null,
+				{},
+				42,
+				"",
+				"priority\n",
+				"bad tier",
+				"x".repeat(161),
+			].flatMap((tier) => [undefined, "fast" as const].map((speed) => ({ kind, tier, speed }))),
+		),
+	)("accepts $kind tier=$tier speed=$speed without fallback or rewriting", async ({ kind, tier, speed }) => {
+		const { provider, fetch } = harness([
+			() =>
+				streamResponse([
+					frame("response.created", { response: { service_tier: "created-only" } }),
+					terminal(kind, tier, { service_tier: tier }),
+				]),
+		]);
+		const events = await collect(provider.stream(request({ speed })));
+		expect(events).toEqual([expect.objectContaining({ type: "message_end" })]);
+		const end = events.at(-1);
+		if (end?.type !== "message_end") throw new Error("missing fixture message");
+		const valid =
+			typeof tier === "string" &&
+			["priority", "default", "standard", "flex", "fast", "future-tier"].includes(tier);
+		expect(end.message.serviceTier).toEqual({
+			requested: speed === "fast" ? "priority" : "omitted",
+			...(valid ? { reported: tier } : {}),
+		});
+		expect(end.message.stopReason).toBe(kind === "incomplete" ? "max_tokens" : "end_turn");
+		expect(end.message).not.toHaveProperty("speed");
+		expect(end.message).not.toHaveProperty("service_tier");
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(body(fetch.mock.calls[0]?.[1])).toMatchObject({ model: "gpt-5.5" });
+		if (speed === "fast") expect(body(fetch.mock.calls[0]?.[1]).service_tier).toBe("priority");
+		else expect(body(fetch.mock.calls[0]?.[1])).not.toHaveProperty("service_tier");
+	});
+
+	it.each([TOKEN, `tier_${TOKEN}`])("does not persist a credential echoed as a tier (%s)", async (tier) => {
+		const { provider } = harness([() => streamResponse([terminal("completed", tier)])]);
+		const events = await collect(provider.stream(request()));
+		expect(events.at(-1)).toMatchObject({ message: { serviceTier: { requested: "priority" } } });
+		expect(JSON.stringify(events)).not.toContain(TOKEN);
+	});
+
+	it.each(["default", "standard", "flex"])(
+		"persists and executes valid completed tools with tier=%s",
+		async (tier) => {
+			const execute = vi.fn(async () => ({ output: "executed" }));
 			const { provider, fetch } = harness([
-				() => streamResponse([...toolFrames(), terminal(kind, tier, { output: [tool] })]),
+				() => streamResponse([...toolFrames(), terminal("completed", tier, { output: [tool] })]),
+				() => streamResponse([terminal("completed", tier)]),
 			]);
+			const root = mkTempDir("ink-session-");
+			const session = createSession(root, root);
 			const history: AgentMessage[] = [];
-			const persisted: AgentMessage[] = [];
 			const events: AgentEvent[] = [];
-			await expect(
-				runAgentLoop({
-					provider,
-					model: "gpt-5.5",
-					speed: "fast",
-					system: "test",
-					userMessage: "probe",
-					history,
-					tools: [{ name: "probe", description: "test", parameters: Type.Object({}), execute }],
-					onMessage: (message) => {
-						persisted.push(message);
-					},
-					onEvent: (event) => {
-						events.push(event);
-					},
-				}),
-			).rejects.toHaveProperty("code", "service_tier_downgrade");
-			expect(events.some((event) => event.type === "tool_call_start")).toBe(true);
-			expect(events.some((event) => ["message_end", "tool_start", "tool_end"].includes(event.type))).toBe(
-				false,
-			);
-			expect(execute).not.toHaveBeenCalled();
-			expect(history).toEqual([{ role: "user", content: "probe" }]);
-			expect(persisted).toEqual(history);
-			expect(fetch).toHaveBeenCalledTimes(1);
+			await runAgentLoop({
+				provider,
+				model: "gpt-5.5",
+				modelReference: "openai-codex/gpt-5.5",
+				speed: "fast",
+				system: "test",
+				userMessage: "probe",
+				history,
+				tools: [{ name: "probe", description: "test", parameters: Type.Object({}), execute }],
+				onMessage: (message) => {
+					session.appendMessage(message);
+				},
+				onEvent: (event) => {
+					events.push(event);
+				},
+			});
+			expect(execute).toHaveBeenCalledTimes(1);
+			expect(fetch).toHaveBeenCalledTimes(2); // tool continuation, never a tier fallback
+			expect(events.filter((event) => event.type === "message_end")).toHaveLength(2);
+			expect(session.buildContext().messages).toEqual(history);
+			const assistants = history.filter((message) => message.role === "assistant");
+			expect(assistants).toHaveLength(2);
+			for (const message of assistants) {
+				expect(message.modelReference).toBe("openai-codex/gpt-5.5");
+				expect(message.serviceTier).toEqual({ requested: "priority", reported: tier });
+			}
+			for (const [, init] of fetch.mock.calls) expect(body(init).service_tier).toBe("priority");
 		},
 	);
 
-	it("cancels a held response body on downgrade instead of waiting for EOF or retrying", async () => {
+	it.each([
+		"truncated",
+		"invalid-json",
+		"unfinished",
+		"conflicting",
+		"failed",
+		"cancelled",
+		"error",
+		"filtered",
+		"bad-status",
+		"terminal-error",
+	])("tier=default never conceals %s or executes/persists its tool batch", async (failure) => {
+		const execute = vi.fn(async () => ({ output: "must not execute" }));
+		const closed = failure === "invalid-json" ? { ...tool, arguments: "{" } : tool;
+		const frames = [toolFrames()[0]!];
+		if (failure !== "unfinished")
+			frames.push(frame("response.output_item.done", { output_index: 0, item: closed }));
+		if (failure === "failed" || failure === "cancelled") frames.push(terminal(failure, "default"));
+		else if (failure === "error")
+			frames.push(frame("error", { error: { code: "stream_failed", message: "refused" } }));
+		else if (failure !== "truncated")
+			frames.push(
+				terminal(failure === "filtered" ? "incomplete" : "completed", "default", {
+					output: [failure === "conflicting" ? { ...tool, arguments: '{"different":true}' } : closed],
+					...(failure === "filtered" ? { incomplete_details: { reason: "content_filter" } } : {}),
+					...(failure === "bad-status" ? { status: "failed" } : {}),
+					...(failure === "terminal-error" ? { error: { code: "terminal_failed" } } : {}),
+				}),
+			);
+		const { provider, fetch } = harness([() => streamResponse(frames)]);
+		const history: AgentMessage[] = [];
+		const persisted: AgentMessage[] = [];
+		await expect(
+			runAgentLoop({
+				provider,
+				model: "gpt-5.5",
+				speed: "fast",
+				system: "test",
+				userMessage: "probe",
+				history,
+				tools: [{ name: "probe", description: "test", parameters: Type.Object({}), execute }],
+				onMessage: (message) => {
+					persisted.push(message);
+				},
+			}),
+		).rejects.toBeInstanceOf(CodexResponseError);
+		expect(execute).not.toHaveBeenCalled();
+		expect(history).toEqual([{ role: "user", content: "probe" }]);
+		expect(persisted).toEqual(history);
+		expect(fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("accepts max_output_tokens text but never executes an incomplete tool batch", async () => {
+		const { provider, fetch } = harness([
+			() => streamResponse([toolFrames()[0]!, terminal("incomplete", "default", { output: [tool] })]),
+			() => streamResponse([terminal("completed", "default")]),
+		]);
+		const execute = vi.fn(async () => ({ output: "must not execute" }));
+		const history: AgentMessage[] = [];
+		await runAgentLoop({
+			provider,
+			model: "gpt-5.5",
+			speed: "fast",
+			system: "test",
+			userMessage: "probe",
+			history,
+			tools: [{ name: "probe", description: "test", parameters: Type.Object({}), execute }],
+		});
+		expect(execute).not.toHaveBeenCalled();
+		expect(history[1]).toMatchObject({
+			role: "assistant",
+			stopReason: "max_tokens",
+			serviceTier: { requested: "priority", reported: "default" },
+		});
+		// Partial tool data remains inspectable, but max_tokens is never executable.
+		expect(history[1]).toHaveProperty(
+			"blocks",
+			expect.arrayContaining([expect.objectContaining({ type: "toolCall" })]),
+		);
+		expect(history[2]).toMatchObject({
+			role: "toolResult",
+			results: [{ isError: true, content: expect.stringContaining("not executed") }],
+		});
+		expect(fetch).toHaveBeenCalledTimes(2); // existing tool re-issue continuation, not a tier fallback
+	});
+
+	it("cancels a held accepted body immediately instead of waiting for EOF", async () => {
 		const cancel = vi.fn();
 		const { provider, fetch } = harness([
 			() =>
@@ -543,16 +691,16 @@ describe("Fast terminal tier validation", () => {
 					}),
 				),
 		]);
-		await expect(collect(provider.stream(request()))).rejects.toHaveProperty(
-			"code",
-			"service_tier_downgrade",
-		);
+		expect((await collect(provider.stream(request()))).at(-1)).toMatchObject({
+			type: "message_end",
+			message: { stopReason: "max_tokens" },
+		});
 		expect(cancel).toHaveBeenCalledTimes(1);
 		expect(fetch).toHaveBeenCalledTimes(1);
 	});
 
-	it("also rejects a completed event whose response status is output-token-limit incomplete", async () => {
-		const { provider } = harness([
+	it("also accepts a completed event with output-token-limit incomplete status", async () => {
+		const { provider, fetch } = harness([
 			() =>
 				streamResponse([
 					terminal("completed", "default", {
@@ -561,98 +709,60 @@ describe("Fast terminal tier validation", () => {
 					}),
 				]),
 		]);
-		await expect(collect(provider.stream(request()))).rejects.toHaveProperty(
-			"code",
-			"service_tier_downgrade",
-		);
-	});
-
-	it.each(
-		terminalKinds.flatMap((kind) =>
-			["priority", "fast", undefined, "future-tier", null, {}, 42].map((tier) => ({ kind, tier })),
-		),
-	)("accepts $kind tier=$tier; unknown/missing tier does not claim verification", async ({ kind, tier }) => {
-		const { provider } = harness([() => streamResponse([terminal(kind, tier, { service_tier: tier })])]);
-		const events = await collect(provider.stream(request()));
-		expect(events).toEqual([expect.objectContaining({ type: "message_end" })]);
-		expect(events.at(-1)).toMatchObject({
+		expect((await collect(provider.stream(request()))).at(-1)).toMatchObject({
 			type: "message_end",
-			message: { stopReason: kind === "incomplete" ? "max_tokens" : "end_turn" },
+			message: { stopReason: "max_tokens", serviceTier: { requested: "priority", reported: "default" } },
 		});
-		const end = events.at(-1);
-		if (end?.type !== "message_end") throw new Error("missing fixture message");
-		expect(end.message).not.toHaveProperty("service_tier");
-		expect(end.message).not.toHaveProperty("speed");
+		expect(fetch).toHaveBeenCalledTimes(1);
 	});
 
-	it.each(downgradeCases)("normal accepts $kind tier=$tier unchanged", async ({ kind, tier }) => {
-		const { provider, fetch } = harness([() => streamResponse([terminal(kind, tier)])]);
-		const events = await collect(provider.stream(request({ speed: undefined })));
-		expect(events.at(-1)).toMatchObject({
-			type: "message_end",
-			message: { stopReason: kind === "incomplete" ? "max_tokens" : "end_turn" },
-		});
-		expect(body(fetch.mock.calls[0]?.[1])).not.toHaveProperty("service_tier");
-	});
-
-	it.each(downgradeCases)(
-		"$kind tier=$tier cannot start a branch-summary thinking retry",
+	it.each(differingTierCases)(
+		"$kind tier=$tier summarizes with only the existing thinking retry",
 		async ({ kind, tier }) => {
-			const { provider, fetch } = harness([
-				() =>
-					streamResponse([
-						terminal(kind, tier, {
-							output: [{ type: "message", content: [{ type: "output_text", text: "rejected summary" }] }],
-						}),
-					]),
-			]);
-			await expect(
-				summarizeBranchSegment({
-					provider,
-					model: "gpt-5.5",
-					speed: "fast",
-					thinking: "high",
-					messages: [{ role: "user", content: "old work" }],
-				}),
-			).rejects.toHaveProperty("code", "service_tier_downgrade");
-			expect(fetch).toHaveBeenCalledTimes(1);
-			expect(body(fetch.mock.calls[0]?.[1])).toMatchObject({
-				service_tier: "priority",
-				reasoning: { effort: "high", summary: "auto" },
+			const summary = (terminalKind: string) =>
+				streamResponse([
+					terminal(terminalKind, tier, {
+						output: [{ type: "message", content: [{ type: "output_text", text: "accepted summary" }] }],
+					}),
+				]);
+			const { provider, fetch } = harness([() => summary(kind), () => summary("completed")]);
+			const result = await summarizeBranchSegment({
+				provider,
+				model: "gpt-5.5",
+				speed: "fast",
+				thinking: "high",
+				messages: [{ role: "user", content: "old work" }],
 			});
+			expect(result?.summary).toBe("accepted summary");
+			expect(fetch).toHaveBeenCalledTimes(kind === "incomplete" ? 2 : 1);
+			for (const [, init] of fetch.mock.calls)
+				expect(body(init)).toMatchObject({ model: "gpt-5.5", service_tier: "priority" });
+			if (kind === "incomplete") expect(body(fetch.mock.calls[1]?.[1]).reasoning).toEqual({ effort: "none" });
 		},
 	);
 
-	it.each(downgradeCases)(
-		"$kind tier=$tier cannot persist a compaction checkpoint or retry thinking",
-		async ({ kind, tier }) => {
-			const root = mkTempDir("ink-session-");
-			const session = createSession(root, root);
-			session.appendMessage({ role: "user", content: "older work ".repeat(20) });
-			session.appendMessage({ role: "user", content: "latest work ".repeat(20) });
-			const original = session.buildContext();
-			const append = vi.spyOn(session, "appendCompaction");
-			const { provider, fetch } = harness([
-				() =>
-					streamResponse([
-						terminal(kind, tier, {
-							output: [{ type: "message", content: [{ type: "output_text", text: "rejected checkpoint" }] }],
-						}),
-					]),
-			]);
-			await expect(
-				compactSession({
-					session,
-					provider,
-					model: "gpt-5.5",
-					speed: "fast",
-					thinking: "high",
-					settings: { reserveTokens: 64, keepRecentTokens: 1, contextWindow: 4096 },
+	it.each(differingTierCases)("$kind tier=$tier permits a compaction checkpoint", async ({ kind, tier }) => {
+		const root = mkTempDir("ink-session-");
+		const session = createSession(root, root);
+		session.appendMessage({ role: "user", content: "older work ".repeat(20) });
+		session.appendMessage({ role: "user", content: "latest work ".repeat(20) });
+		const summary = (terminalKind: string) =>
+			streamResponse([
+				terminal(terminalKind, tier, {
+					output: [{ type: "message", content: [{ type: "output_text", text: "accepted checkpoint" }] }],
 				}),
-			).rejects.toHaveProperty("code", "service_tier_downgrade");
-			expect(fetch).toHaveBeenCalledTimes(1);
-			expect(append).not.toHaveBeenCalled();
-			expect(session.buildContext()).toEqual(original);
-		},
-	);
+			]);
+		const { provider, fetch } = harness([() => summary(kind), () => summary("completed")]);
+		await compactSession({
+			session,
+			provider,
+			model: "gpt-5.5",
+			speed: "fast",
+			thinking: "high",
+			settings: { reserveTokens: 64, keepRecentTokens: 1, contextWindow: 4096 },
+		});
+		expect(fetch).toHaveBeenCalledTimes(kind === "incomplete" ? 2 : 1);
+		expect(session.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+		for (const [, init] of fetch.mock.calls) expect(body(init).service_tier).toBe("priority");
+	});
 });

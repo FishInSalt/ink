@@ -10,6 +10,7 @@ import { runSubagent, type SubagentOptions } from "../src/core/subagent.js";
 import { createTaskTool, type TaskToolOptions } from "../src/core/tools/task.js";
 import type { Tool, ToolExecuteResult } from "../src/core/tools/types.js";
 import * as worktree from "../src/core/worktree.js";
+import { createCodexResponsesProvider } from "../src/provider/codex-responses.js";
 import { CodexResponseError } from "../src/provider/responses-errors.js";
 import type { LLMProvider, LLMRequest, ModelSpeed } from "../src/provider/types.js";
 import { assistant, gate, scriptedProvider, user } from "./helpers/fakes.js";
@@ -443,10 +444,94 @@ const sentinelTool: Tool = {
 };
 
 describe("Fast child compaction and retries", () => {
+	it.each([false, true].flatMap((persisted) => [false, true].map((overflow) => ({ persisted, overflow }))))(
+		"accepts real adapter default-tier summaries/answers in persisted=$persisted overflow=$overflow",
+		async ({ persisted, overflow }) => {
+			const dir = mkTempDir("ink-fast-child-summary-");
+			const session = persisted ? SessionStore.create(path.join(dir, "child.jsonl"), dir) : undefined;
+			const history = [
+				user(`old task ${"x".repeat(6000)}`),
+				assistant([{ type: "text", text: "old answer" }], "end_turn", { inputTokens: 6000, outputTokens: 5 }),
+			];
+			for (const message of history) session?.appendMessage(message);
+			const summaryBodies: Record<string, unknown>[] = [];
+			const taskBodies: Record<string, unknown>[] = [];
+			const provider = createCodexResponsesProvider({
+				auth: async () => ({ accessToken: "fake-child-access" }),
+				fetch: async (_url, init) => {
+					const body = JSON.parse(String(init?.body));
+					const isTask = body.input[0]?.type === "additional_tools";
+					(isTask ? taskBodies : summaryBodies).push(body);
+					const failed = isTask && overflow && taskBodies.length === 1;
+					const incomplete = !isTask && summaryBodies.length === 1;
+					const terminal = failed
+						? {
+								type: "response.failed",
+								response: { error: { code: "context_length_exceeded", message: "too long" } },
+							}
+						: {
+								type: incomplete ? "response.incomplete" : "response.completed",
+								response: {
+									status: incomplete ? "incomplete" : "completed",
+									service_tier: "default",
+									...(incomplete ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
+									usage: { input_tokens: 10, output_tokens: 5 },
+									output: [
+										{
+											type: "message",
+											content: [{ type: "output_text", text: isTask ? "done" : "SUMMARY" }],
+										},
+									],
+								},
+							};
+					return new Response(`data: ${JSON.stringify(terminal)}\n\n`);
+				},
+			});
+			const outcome = await runSubagent({
+				provider,
+				model: MODEL,
+				modelReference: REFERENCE,
+				speed: "fast",
+				thinking: "high",
+				system: SYSTEM,
+				tools: [sentinelTool],
+				prompt: "continue",
+				initialHistory: history,
+				autoCompact: !overflow,
+				settings: { reserveTokens: 200, keepRecentTokens: 1, contextWindow: 1200 },
+				...(session
+					? {
+							session,
+							onMessage: (message) => {
+								session.appendMessage(message);
+							},
+						}
+					: {}),
+			});
+			expect(outcome, outcome.reason).toMatchObject({ status: "completed" });
+			expect(summaryBodies).toHaveLength(2);
+			expect(taskBodies).toHaveLength(overflow ? 2 : 1);
+			for (const body of [...summaryBodies, ...taskBodies])
+				expect(body).toMatchObject({ model: MODEL, service_tier: "priority" });
+			expect(summaryBodies.map((body) => body.reasoning)).toEqual([
+				{ effort: "high", summary: "auto" },
+				{ effort: "low", summary: "auto" },
+			]);
+			if (session) {
+				expect(session.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+				expect(SessionStore.open(session.filePath).buildContext().messages.at(-1)).toMatchObject({
+					role: "assistant",
+					modelReference: REFERENCE,
+					serviceTier: { requested: "priority", reported: "default" },
+				});
+			}
+		},
+	);
+
 	it.each(
 		[false, true].flatMap((persisted) =>
 			[false, true].flatMap((overflow) =>
-				["service_tier_downgrade", "unsupported_parameter", "context_length_exceeded"].map((code) => ({
+				["tier_unavailable", "unsupported_parameter", "context_length_exceeded"].map((code) => ({
 					persisted,
 					overflow,
 					code,
