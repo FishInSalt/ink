@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runAgentLoop } from "../src/core/loop.js";
 import { CodexResponseError, createCodexResponsesProvider } from "../src/provider/codex-responses.js";
+import { postResponses } from "../src/provider/responses-transport.js";
 import type { LLMEvent, LLMRequest } from "../src/provider/types.js";
 
 const req = (): LLMRequest => ({
@@ -599,7 +600,7 @@ describe("Responses endpoint and retry policy", () => {
 		});
 		await expect(collect(provider.stream(req()))).rejects.toThrow("invalid UTF-8 frame");
 	});
-	it("bounds network retries to three attempts and never exposes the network error", async () => {
+	it("bounds network retries to five attempts and never exposes the network error", async () => {
 		vi.useFakeTimers();
 		let calls = 0;
 		const provider = createCodexResponsesProvider({
@@ -614,7 +615,8 @@ describe("Responses endpoint and retry policy", () => {
 		const error = await pending;
 		expect(error).toMatchObject({ code: "connection_failed", retryable: true });
 		expect((error as Error).message).not.toContain("PRIVATE_NETWORK_DATA");
-		expect(calls).toBe(3);
+		expect((error as Error).message).toContain("5 attempts");
+		expect(calls).toBe(5);
 	});
 	it("passes cancellation through auth and ends without connecting", async () => {
 		const controller = new AbortController();
@@ -646,5 +648,409 @@ describe("Responses endpoint and retry policy", () => {
 		});
 		expect(await collect(provider.stream({ ...req(), signal: controller.signal }))).toEqual([]);
 		expect(calls).toBe(1);
+	});
+});
+
+describe("pre-stream retry budget", () => {
+	const post = (fetchImpl: typeof fetch, signal?: AbortSignal, redactions?: string[]) =>
+		postResponses({
+			url: "https://api.openai.com/v1/responses",
+			headers: { "content-type": "application/json" },
+			body: "{}",
+			signal,
+			fetch: fetchImpl,
+			redactions,
+		});
+
+	const hangingFetch = () =>
+		vi.fn<typeof globalThis.fetch>(
+			(_url, init) =>
+				new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+						once: true,
+					});
+				}),
+		);
+
+	const jsonError = (status: number, code: string) =>
+		new Response(JSON.stringify({ error: { code } }), { status });
+
+	const stalled = (status: number) =>
+		new Response(new ReadableStream<Uint8Array>({ start() {} }), { status });
+
+	it("uses five attempts with 1/2/4/8 s pauses and a closed cause label", async () => {
+		vi.useFakeTimers();
+		const times: number[] = [];
+		const fetchImpl = vi.fn<typeof globalThis.fetch>(async () => {
+			times.push(Date.now());
+			const error = new Error("PRIVATE_NETWORK_DATA");
+			Object.defineProperty(error, "cause", { value: { code: "ECONNRESET" } });
+			throw error;
+		});
+		const pending = post(fetchImpl).catch((error: unknown) => error);
+		await vi.runAllTimersAsync();
+		const error = (await pending) as Error;
+		expect(error).toMatchObject({ code: "connection_failed", retryable: true });
+		expect(error.message).toContain("5 attempts");
+		expect(error.message).toContain("last: ECONNRESET");
+		expect(error.message).not.toContain("PRIVATE_NETWORK_DATA");
+		expect(fetchImpl).toHaveBeenCalledTimes(5);
+		expect(times.slice(1).map((time, index) => time - times[index]!)).toEqual([1000, 2000, 4000, 8000]);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("drops non-allowlisted, redacted, and unreadable cause codes", async () => {
+		vi.useFakeTimers();
+		const failWith = (error: Error) =>
+			vi.fn<typeof globalThis.fetch>(async () => {
+				throw error;
+			});
+
+		const shaped = new Error("PRIVATE_NETWORK_DATA");
+		Object.defineProperty(shaped, "cause", { value: { code: "PRIVATE_NETWORK_DATA" } });
+		let pending = post(failWith(shaped)).catch((error: unknown) => error);
+		await vi.runAllTimersAsync();
+		let error = (await pending) as Error;
+		expect(error.message).toContain("5 attempts");
+		expect(error.message).not.toContain("last:");
+		expect(error.message).not.toContain("PRIVATE_NETWORK_DATA");
+
+		const redacted = new Error("private");
+		Object.defineProperty(redacted, "cause", { value: { code: "ECONNRESET" } });
+		pending = post(failWith(redacted), undefined, ["ECONNRESET"]).catch((error: unknown) => error);
+		await vi.runAllTimersAsync();
+		error = (await pending) as Error;
+		expect(error.message).toContain("5 attempts");
+		expect(error.message).not.toContain("ECONNRESET");
+
+		const hostile = new Error("private");
+		Object.defineProperty(hostile, "cause", {
+			get() {
+				throw new Error("boom");
+			},
+		});
+		pending = post(failWith(hostile)).catch((error: unknown) => error);
+		await vi.runAllTimersAsync();
+		error = (await pending) as Error;
+		expect(error).toMatchObject({ code: "connection_failed", retryable: true });
+		expect(error.message).toContain("5 attempts");
+		expect(error.message).not.toContain("boom");
+	});
+
+	it("recovers on the fifth attempt", async () => {
+		vi.useFakeTimers();
+		let calls = 0;
+		const fetchImpl = vi.fn<typeof globalThis.fetch>(async () => {
+			calls++;
+			if (calls < 5) throw new Error("transient");
+			return ok();
+		});
+		const pending = post(fetchImpl);
+		await vi.runAllTimersAsync();
+		const response = await pending;
+		expect(calls).toBe(5);
+		expect(response).toBeInstanceOf(Response);
+		await response?.body?.cancel().catch(() => {});
+	});
+
+	it("stops an all-timeout run at the 95 s opening budget after three attempts", async () => {
+		vi.useFakeTimers();
+		const fetchImpl = hangingFetch();
+		const pending = post(fetchImpl).catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(2_000);
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(2_000);
+		const error = (await pending) as Error;
+		expect(fetchImpl).toHaveBeenCalledTimes(3);
+		expect(error.message).toContain("3 attempts");
+		expect(error.message).toContain("last: deadline");
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("labels a fifth-attempt timeout after four fast failures", async () => {
+		vi.useFakeTimers();
+		let calls = 0;
+		const fetchImpl = vi.fn<typeof globalThis.fetch>((_url, init) => {
+			calls++;
+			if (calls < 5) return Promise.reject(new Error("fast"));
+			return new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+					once: true,
+				});
+			});
+		});
+		const pending = post(fetchImpl).catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(15_000);
+		await vi.advanceTimersByTimeAsync(30_000);
+		const error = (await pending) as Error;
+		expect(fetchImpl).toHaveBeenCalledTimes(5);
+		expect(error.message).toContain("5 attempts");
+		expect(error.message).toContain("last: timeout");
+	});
+
+	it("lets the deadline abort a fifth hanging attempt", async () => {
+		vi.useFakeTimers();
+		let calls = 0;
+		const fetchImpl = vi.fn<typeof globalThis.fetch>((_url, init) => {
+			calls++;
+			if (calls === 3 || calls === 4) return Promise.reject(new Error("fast"));
+			return new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+					once: true,
+				});
+			});
+		});
+		const pending = post(fetchImpl).catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(2_000);
+		await vi.advanceTimersByTimeAsync(4_000);
+		await vi.advanceTimersByTimeAsync(8_000);
+		await vi.advanceTimersByTimeAsync(20_000);
+		const error = (await pending) as Error;
+		expect(fetchImpl).toHaveBeenCalledTimes(5);
+		expect(error.message).toContain("5 attempts");
+		expect(error.message).toContain("last: deadline");
+	});
+
+	it("returns null when the user aborts during the first network backoff", async () => {
+		vi.useFakeTimers();
+		const controller = new AbortController();
+		let calls = 0;
+		const fetchImpl = vi.fn<typeof globalThis.fetch>(async () => {
+			calls++;
+			throw new Error("transient");
+		});
+		const pending = post(fetchImpl, controller.signal);
+		await vi.advanceTimersByTimeAsync(0);
+		controller.abort();
+		await vi.runAllTimersAsync();
+		expect(await pending).toBeNull();
+		expect(calls).toBe(1);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("returns null when the user aborts a hanging attempt", async () => {
+		vi.useFakeTimers();
+		const controller = new AbortController();
+		const fetchImpl = hangingFetch();
+		const pending = post(fetchImpl, controller.signal);
+		await vi.advanceTimersByTimeAsync(0);
+		controller.abort();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await pending).toBeNull();
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+	});
+
+	it("cancels the body and returns null when the user aborts as headers arrive", async () => {
+		vi.useFakeTimers();
+		const controller = new AbortController();
+		const cancel = vi.fn<() => void>();
+		const fetchImpl = vi.fn<typeof globalThis.fetch>(async () => {
+			controller.abort();
+			return new Response(new ReadableStream<Uint8Array>({ cancel }), { status: 200 });
+		});
+		const pending = post(fetchImpl, controller.signal);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(await pending).toBeNull();
+		expect(cancel).toHaveBeenCalledTimes(1);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("keeps temporary admission retries at three attempts", async () => {
+		vi.useFakeTimers();
+		const fetchImpl = vi.fn<typeof globalThis.fetch>(async () => jsonError(503, "server_error"));
+		const pending = post(fetchImpl).catch((error: unknown) => error);
+		await vi.runAllTimersAsync();
+		const error = await pending;
+		expect(fetchImpl).toHaveBeenCalledTimes(3);
+		expect(error).toMatchObject({ status: 503 });
+	});
+
+	it("applies each class schedule to mixed failures", async () => {
+		vi.useFakeTimers();
+		const times: number[] = [];
+		const responses = [
+			() => {
+				throw new Error("network");
+			},
+			() => jsonError(503, "server_error"),
+			() => {
+				throw new Error("network");
+			},
+			() => {
+				throw new Error("network");
+			},
+			() => ok(),
+		];
+		const fetchImpl = vi.fn<typeof globalThis.fetch>(async () => {
+			times.push(Date.now());
+			return responses.shift()!();
+		});
+		const pending = post(fetchImpl);
+		await vi.runAllTimersAsync();
+		const response = await pending;
+		expect(response).toBeInstanceOf(Response);
+		expect(fetchImpl).toHaveBeenCalledTimes(5);
+		expect(times.slice(1).map((time, index) => time - times[index]!)).toEqual([1000, 600, 2000, 4000]);
+		await response?.body?.cancel().catch(() => {});
+	});
+
+	it("stops when the admission class cap is exhausted in a mixed run", async () => {
+		vi.useFakeTimers();
+		const responses = [
+			() => {
+				throw new Error("network");
+			},
+			() => jsonError(503, "server_error"),
+			() => jsonError(503, "server_error"),
+			() => jsonError(503, "server_error"),
+		];
+		const fetchImpl = vi.fn<typeof globalThis.fetch>(async () => responses.shift()!());
+		const pending = post(fetchImpl).catch((error: unknown) => error);
+		await vi.runAllTimersAsync();
+		const error = await pending;
+		expect(fetchImpl).toHaveBeenCalledTimes(4);
+		expect(error).toMatchObject({ status: 503 });
+	});
+
+	it("stops a mixed run at the shared five-attempt cap", async () => {
+		vi.useFakeTimers();
+		const responses = [
+			() => jsonError(503, "server_error"),
+			() => {
+				throw new Error("network");
+			},
+			() => {
+				throw new Error("network");
+			},
+			() => {
+				throw new Error("network");
+			},
+			() => {
+				throw new Error("network");
+			},
+		];
+		const fetchImpl = vi.fn<typeof globalThis.fetch>(async () => responses.shift()!());
+		const pending = post(fetchImpl).catch((error: unknown) => error);
+		await vi.runAllTimersAsync();
+		const error = (await pending) as Error;
+		expect(fetchImpl).toHaveBeenCalledTimes(5);
+		expect(error.message).toContain("5 attempts");
+		expect(error).toMatchObject({ code: "connection_failed" });
+	});
+
+	it("lets a terminal 401 win when the deadline cuts its body read", async () => {
+		vi.useFakeTimers();
+		let calls = 0;
+		const fetchImpl = vi.fn<typeof globalThis.fetch>((_url, init) => {
+			calls++;
+			if (calls <= 2) {
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+						once: true,
+					});
+				});
+			}
+			if (calls === 3) return Promise.reject(new Error("fast"));
+			if (calls === 4) return Promise.resolve(stalled(503));
+			return Promise.resolve(stalled(401));
+		});
+		const pending = post(fetchImpl).catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(2_000);
+		await vi.advanceTimersByTimeAsync(4_000);
+		await vi.advanceTimersByTimeAsync(15_000);
+		await vi.advanceTimersByTimeAsync(600);
+		await vi.advanceTimersByTimeAsync(12_400);
+		const error = await pending;
+		expect(fetchImpl).toHaveBeenCalledTimes(5);
+		expect(error).toMatchObject({ status: 401 });
+		expect((error as Error).message).toContain("ink login");
+	});
+
+	it("lets a retryable 503 reach the deadline when its body read is cut", async () => {
+		vi.useFakeTimers();
+		let calls = 0;
+		const fetchImpl = vi.fn<typeof globalThis.fetch>((_url, init) => {
+			calls++;
+			if (calls <= 2) {
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+						once: true,
+					});
+				});
+			}
+			if (calls === 3) return Promise.reject(new Error("fast"));
+			if (calls === 4) return Promise.resolve(stalled(503));
+			return Promise.resolve(stalled(503));
+		});
+		const pending = post(fetchImpl).catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(1_000);
+		await vi.advanceTimersByTimeAsync(30_000);
+		await vi.advanceTimersByTimeAsync(2_000);
+		await vi.advanceTimersByTimeAsync(4_000);
+		await vi.advanceTimersByTimeAsync(15_000);
+		await vi.advanceTimersByTimeAsync(600);
+		await vi.advanceTimersByTimeAsync(12_400);
+		const error = (await pending) as Error;
+		expect(fetchImpl).toHaveBeenCalledTimes(5);
+		expect(error).toMatchObject({ code: "connection_failed", retryable: true });
+		expect(error.message).toContain("5 attempts");
+		expect(error.message).toContain("last: deadline");
+	});
+
+	it("reports a stream interruption when an abort lands with the headers", async () => {
+		vi.useFakeTimers();
+		const fetchImpl = vi.fn<typeof globalThis.fetch>(
+			(_url, _init) =>
+				new Promise<Response>((resolve) => {
+					setTimeout(() => {
+						const body = new ReadableStream<Uint8Array>({
+							start(controller) {
+								const cause = Object.assign(new Error("other side closed"), {
+									code: "UND_ERR_SOCKET",
+								});
+								controller.error(new TypeError("terminated", { cause }));
+							},
+						});
+						resolve(
+							new Response(body, {
+								status: 200,
+								headers: { "content-type": "text/event-stream" },
+							}),
+						);
+					}, 30_000);
+				}),
+		);
+		const provider = createCodexResponsesProvider({
+			auth: async () => ({ accessToken: "fake" }),
+			fetch: fetchImpl,
+		});
+		const pending = collect(provider.stream(req())).catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(30_000);
+		const error = (await pending) as Error;
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect(error.name).toBe("StreamInterruptedError");
+		expect(error.message).toContain("stream interrupted");
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("clears every timer after a successful response", async () => {
+		vi.useFakeTimers();
+		const fetchImpl = vi.fn<typeof globalThis.fetch>(async () => ok());
+		const pending = post(fetchImpl);
+		await vi.advanceTimersByTimeAsync(0);
+		const response = await pending;
+		expect(response).toBeInstanceOf(Response);
+		expect(vi.getTimerCount()).toBe(0);
+		await response?.body?.cancel().catch(() => {});
 	});
 });
