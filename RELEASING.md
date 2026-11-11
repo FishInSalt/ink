@@ -3,13 +3,11 @@
 Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/design/ink-rename-design.md)
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
-The selected candidate is **`ink-agent@0.6.0`**, with the sole `ink` executable.
-Version `0.6.0` is prepared but **not published**; npm `latest` still selects the
-published `0.5.1`. The dated `0.6.0` CHANGELOG section contains candidate release
-notes, not a publication claim. Preparation, review and verification are recorded
-in [`docs/design/release-0.6.0-preparation.md`](docs/design/release-0.6.0-preparation.md).
-The verified `0.5.1` publication record remains in
-[`docs/design/release-0.5.1-preparation.md`](docs/design/release-0.5.1-preparation.md#publication).
+The selected package/version is **`ink-agent@0.6.0`**, with the sole `ink`
+executable. Version `0.6.0` is published; npm `latest` selects it. The dated
+`0.6.0` CHANGELOG section contains the release notes; publication and verification
+evidence is recorded in
+[`docs/design/release-0.6.0-preparation.md`](docs/design/release-0.6.0-preparation.md#publication).
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -38,7 +36,7 @@ require their ordinary approvals. Preserve historical tags/workflow files and
 [`docs/design/publishing-design.md`](docs/design/publishing-design.md) is an archival design,
 not the current release procedure.
 
-## OIDC publication is live (through `0.5.1`)
+## OIDC publication is live (through `0.6.0`)
 
 The `latest` observations in the historical entries below describe each release's
 verification date; the current selection is stated above.
@@ -186,6 +184,27 @@ and its body matches the approved CHANGELOG notes. Full evidence is in
 Do not rerun the workflow or reuse its tag/version. Global installation was not
 performed and remains a separate operator action.
 
+`ink-agent@0.6.0` is published from merge commit `5a4056b`. Annotated tag
+`v0.6.0` was pushed on 2026-11-11 after Linux Node 22.19.0/24 CI passed. npm
+`latest` selects `0.6.0` with `gitHead` `5a4056b` and integrity
+`sha512-nG6ITWIfq5Th/cHDnQK4vZakH3EuB+4u2OfMVbuCZw5IL6I6ipMkavvr7a3rvKC5P13VLlnebDZeVn1jd6vYjA==`.
+[Release run `43020394926`](https://github.com/FishInSalt/ink/actions/runs/43020394926)
+first failed a pre-existing fixed-delay TUI test before publication; the owner
+approved one full rerun after non-publication was confirmed. Attempt 2 passed
+all gate checks and real npm publish, but failed the final 180-second registry
+visibility check. The registry version became visible afterward and was verified:
+all 442 published file bodies/modes match the reviewed candidate, isolated
+installed version/help pass on three local Node runtimes, local npm-exec passes,
+and both registry signatures plus publish/provenance attestations pass
+cryptographic verification with five negative controls. Provenance transparency-
+log index: `3810386530`. The non-prerelease
+[GitHub Release](https://github.com/FishInSalt/ink/releases/tag/v0.6.0) is Latest
+and its body matches the dated CHANGELOG notes. Full evidence and residual test/
+visibility-check follow-ups are recorded in
+[`docs/design/release-0.6.0-preparation.md`](docs/design/release-0.6.0-preparation.md#publication).
+Do not rerun the workflow or reuse its tag/version; no npm publication is pending.
+Global installation was not performed and remains a separate operator action.
+
 The binding must match `release.yml`: GitHub Actions, repository
 `FishInSalt/ink`, workflow filename `release.yml`, no environment. Ownership and
 publishability of `ink-agent` are established (registry presence is not
@@ -255,7 +274,7 @@ tests, design docs, or unexpected artifacts. Top-level English and zh-CN
 user documentation is intentionally shipped. It installs locally in a private
 temporary prefix with temporary HOME/cache, no credentials, no install
 scripts, and no network. It executes help and exact `Ink 0.6.0` version
-(for this candidate), then checks npm-exec's single-bin inference against the
+(for this release), then checks npm-exec's single-bin inference against the
 **local tarball from a neutral cwd**. It never invokes `npx ink` or modifies
 shared dependencies. The optional cache source is read-only; missing cached
 dependencies fail instead of fetching. Scratch paths are printed for
