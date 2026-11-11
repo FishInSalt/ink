@@ -719,11 +719,14 @@ Pinned behavior on resume:
   reference (fresh dispatch stamps the binding reference at task.ts:493).
   The resumed attempt's usage is therefore priced at the recorded identity,
   never the parent's current model.
-- Result text is attempt-scoped like usage (acceptance round 2, finding 3):
-  seeded messages are tracked by identity and excluded from the final-text
-  scan, so an immediately-failed or silent resumed attempt can never report
-  the previous attempt's answer as its partial result; message identities
-  survive a mid-attempt compaction splice (T31/T32).
+- Result text is attempt-scoped like usage (acceptance round 2, finding 3).
+  Update (2026-11-11): the original seeded-message identity filter is superseded
+  by [child attempt output isolation](child-attempt-output-fix.md). Persisted
+  compaction can copy retained assistants, so identities do not survive every
+  rebuild. Capture the last nonempty text accepted by this attempt's task loop,
+  independently of replay history. Silent or immediately-failed continuations
+  never return a prior answer or summary; genuine current partial text survives
+  compaction and overflow recovery (T31/T32/T33 and child-attempt-output tests).
 - Permissions: the LIVE gate (`options.onToolCall`) with
   `{ agent: launch.agent?.name, cwd: launch.cwd }` — never the record (§4.4
   of the SA-06 design). Events: same `onEvent` wiring with a fresh

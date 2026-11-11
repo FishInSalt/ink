@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentDefinition } from "../src/core/agents/registry.js";
 import { acquireChildLease } from "../src/core/child-lease.js";
 import { lifetimeUsageLine } from "../src/core/child-resume.js";
+import { estimateContextTokens, findCutIndex } from "../src/core/compaction.js";
 import { createSession, sessionsDirFor } from "../src/core/session/manager.js";
 import { SessionStore } from "../src/core/session/store.js";
 import { runSubagent } from "../src/core/subagent.js";
@@ -27,6 +28,7 @@ import { buildTaskRecord } from "../src/core/task-record.js";
 import { createTaskTool, type TaskToolOptions, taskResult } from "../src/core/tools/task.js";
 import type { Tool, ToolExecuteResult } from "../src/core/tools/types.js";
 import { createWriteTool } from "../src/core/tools/write.js";
+import { compactionSettingsFor } from "../src/provider/compaction-settings.js";
 import type { LLMProvider, LLMRequest } from "../src/provider/types.js";
 import { assistant, type ScriptStep, scriptedProvider, user } from "./helpers/fakes.js";
 import { mkTempDir, mkTempDirAsync } from "./helpers/mktemp.js";
@@ -1264,6 +1266,227 @@ describe("SA-07 resume", () => {
 		expect(outcome.status).toBe("completed");
 		expect(outcome.text).toBeUndefined(); // never the seeded answer
 	});
+
+	it.each(["silent", "immediate crash", "new multipart answer", "current partial then crash"] as const)(
+		"T33 (F3): default auto-compaction isolates output on the second resume (%s)",
+		async (mode) => {
+			const { base, cwd, parent } = await fixture();
+			const { tool, calls } = countingEcho();
+			const headPrompt = "head ".repeat(50_000);
+			const tailPrompt = "tail ".repeat(20_000);
+			const headAnswer = "HEAD RESPONSE TO SUMMARIZE";
+			const oldAnswer = "OLD ANSWER FROM PREVIOUS ATTEMPT";
+			const summary = "SUMMARY OF PRIOR WORK NOT AN ANSWER";
+			const resumePrompt = "check the third case";
+			const crashReason = "current attempt provider exploded";
+			const summaryUsage = {
+				inputTokens: 23,
+				outputTokens: 7,
+				cacheReadTokens: 3,
+				cacheWriteTokens: 5,
+			};
+			const currentUsage = {
+				inputTokens: 37,
+				outputTokens: 11,
+				cacheReadTokens: 13,
+				cacheWriteTokens: 17,
+			};
+			const crash = () => {
+				throw new Error(crashReason);
+			};
+			const currentText =
+				mode === "new multipart answer" ? "  NEW MULTIPART ANSWER\n" : "  CURRENT PARTIAL\n";
+			const currentSteps: ScriptStep[] =
+				mode === "immediate crash"
+					? [crash]
+					: mode === "current partial then crash"
+						? [
+								assistant(
+									[
+										{ type: "text", text: "  CURRENT " },
+										{
+											type: "toolCall",
+											id: "current-echo",
+											name: "echo",
+											arguments: { message: "partial work" },
+										},
+										{ type: "text", text: "PARTIAL\n" },
+									],
+									"tool_use",
+									currentUsage,
+								),
+								crash,
+							]
+						: [
+								assistant(
+									mode === "silent"
+										? []
+										: [
+												{ type: "text", text: "  NEW " },
+												{ type: "thinking", thinking: "not part of the answer" },
+												{ type: "text", text: "MULTIPART ANSWER\n" },
+											],
+									"end_turn",
+									currentUsage,
+								),
+							];
+			// Use the real task harness with NO settings/getAutoCompact overrides.
+			// The first usage anchor plus the long tail stays below the default
+			// trigger. Only the second resume sees the 100k anchor and compacts.
+			const { task, sink } = harness({
+				session: parent,
+				baseDir: base,
+				cwd,
+				tools: [tool],
+				scripts: [
+					assistant([{ type: "text", text: headAnswer }], "end_turn", {
+						inputTokens: 62_500,
+						outputTokens: 5,
+					}),
+					assistant([{ type: "text", text: oldAnswer }], "end_turn", {
+						inputTokens: 100_000,
+						outputTokens: 5,
+					}),
+					assistant([{ type: "text", text: summary }], "end_turn", summaryUsage),
+					...currentSteps,
+				],
+			});
+			const first = await task.execute({ prompt: headPrompt }, signal(), { toolCallId: "call-1" });
+			expect(first.isError ?? false).toBe(false);
+			expect(first.taskRecord).toMatchObject({ status: "completed", turns: 1, textPresent: true });
+			persistRecord(parent, first);
+			const childId = childIdOf(first);
+			const transcript = first.taskRecord?.transcript;
+			if (transcript === undefined || transcript.present === false) throw new Error("no transcript");
+
+			const second = await task.execute({ resume: childId, prompt: tailPrompt }, signal(), {
+				toolCallId: "call-2",
+			});
+			expect(second.isError ?? false).toBe(false);
+			expect(second.output).toContain(oldAnswer);
+			expect(second.taskRecord).toMatchObject({
+				childId,
+				status: "completed",
+				turns: 1,
+				textPresent: true,
+				usage: { inputTokens: 100_000, outputTokens: 5 },
+				transcript: { present: true, path: transcript.path },
+			});
+			persistRecord(parent, second, "call-2");
+			expect(sink).toHaveLength(2);
+			const before = SessionStore.open(transcript.path);
+			expect(before.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
+			const context = before.buildContext();
+			expect(context.messages).toHaveLength(4);
+			expect(context.compactionBoundary).toBe(0);
+			const settings = compactionSettingsFor("anthropic/parent-wire");
+			expect(settings).toEqual({
+				contextWindow: 131_072,
+				reserveTokens: 32_768,
+				triggerTokens: 98_304,
+				keepRecentTokens: 20_000,
+			});
+			const nextHistory = [...context.messages, user(resumePrompt)];
+			const estimate = estimateContextTokens(
+				nextHistory,
+				context.compactionBoundary,
+				"anthropic/parent-wire",
+			);
+			expect(estimate).toEqual({ tokens: 100_010, measured: true });
+			expect(estimate.tokens).toBeGreaterThan(settings.triggerTokens ?? 0);
+			expect(findCutIndex(nextHistory, settings.keepRecentTokens, "anthropic/parent-wire")).toBe(2);
+
+			const result = await task.execute({ resume: childId, prompt: resumePrompt }, signal(), {
+				toolCallId: "call-3",
+			});
+			persistRecord(parent, result, "call-3");
+			const partial = mode === "current partial then crash";
+			const immediateCrash = mode === "immediate crash";
+			const crashed = partial || immediateCrash;
+			expect(sink).toHaveLength(partial ? 5 : 4);
+			expect(
+				sink.map((request) => request.system.startsWith("You are a context summarization assistant.")),
+			).toEqual(partial ? [false, false, true, false, false] : [false, false, true, false]);
+			expect(sink.every((request) => request.model === "parent-wire")).toBe(true);
+			expect(JSON.stringify(sink[2]?.messages)).toContain(headAnswer);
+			expect(JSON.stringify(sink[2]?.messages)).not.toContain(oldAnswer);
+			expect(calls()).toBe(partial ? 1 : 0);
+
+			// Reopen the actual JSONL checkpoint, rather than inserting a synthetic
+			// compaction. In particular, the historical assistant MUST survive in
+			// retainedTail; otherwise silent/crash would miss the identity-copy bug.
+			const reopened = SessionStore.open(transcript.path);
+			const entries = reopened.getEntries();
+			const checkpoints = entries.filter((entry) => entry.type === "compaction");
+			expect(checkpoints).toHaveLength(1);
+			const checkpoint = checkpoints[0];
+			if (checkpoint?.type !== "compaction") throw new Error("no automatic checkpoint");
+			expect(checkpoint).toMatchObject({
+				summary,
+				tokensBefore: estimate.tokens,
+				usage: summaryUsage,
+				model: "parent-wire",
+				modelReference: "anthropic/parent-wire",
+			});
+			expect(checkpoint.usageMissing).toBeUndefined();
+			expect(checkpoint.retainedTail).toEqual(nextHistory.slice(2));
+			expect(checkpoint.retainedTail.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+			expect(checkpoint.retainedTail[1]).toEqual(context.messages[3]);
+			expect(JSON.stringify(checkpoint.retainedTail[1])).toContain(oldAnswer);
+			expect(sink[3]?.messages).toHaveLength(4);
+			expect(sink[3]?.messages.slice(1)).toEqual(checkpoint.retainedTail);
+			expect(JSON.stringify(sink[3]?.messages[0])).toContain(summary);
+			expect(JSON.stringify(sink[3]?.messages)).not.toContain(headAnswer);
+			if (partial) expect(JSON.stringify(sink[4]?.messages)).toContain("echo: partial work");
+			const afterCheckpoint = entries.slice(entries.indexOf(checkpoint) + 1);
+			expect(
+				afterCheckpoint.filter((entry) => entry.type === "message" && entry.message.role === "assistant"),
+			).toHaveLength(immediateCrash ? 0 : 1);
+			expect(entries.filter((entry) => entry.type === "summaryUsage")).toHaveLength(0);
+			expect(parent.getEntries().filter((entry) => entry.type === "summaryUsage")).toHaveLength(0);
+
+			// Only THIS attempt's reports count: one summary, zero/one task
+			// reports, and incompleteness for the unreported failed task stream.
+			expect(result.taskRecord).toMatchObject({
+				childId,
+				launched: true,
+				status: crashed ? "crash" : "completed",
+				turns: immediateCrash ? 0 : 1,
+				transcript: { present: true, path: transcript.path },
+			});
+			expect(result.taskRecord?.usage).toEqual({
+				...(immediateCrash
+					? summaryUsage
+					: { inputTokens: 60, outputTokens: 18, cacheReadTokens: 16, cacheWriteTokens: 22 }),
+				...(crashed ? { incomplete: true } : {}),
+			});
+			expect(
+				new Set([first.taskRecord?.attemptId, second.taskRecord?.attemptId, result.taskRecord?.attemptId])
+					.size,
+			).toBe(3);
+			if (crashed) expect(result.taskRecord?.reason).toBe(crashReason);
+			expect(result.output).toContain("(child lifetime: 3 attempts");
+			expect(result.output).not.toContain(summary);
+			expect(result.output).not.toContain(headAnswer);
+			expect.soft(result.output).not.toContain(oldAnswer);
+			expect.soft(result.taskRecord?.textPresent).toBe(mode !== "silent" && !immediateCrash);
+			expect.soft(result.isError ?? false).toBe(immediateCrash);
+			if (mode === "silent") {
+				expect.soft(result.output).toContain("(subagent completed with no output)");
+			} else if (immediateCrash) {
+				expect.soft(result.output).toContain(`task failed after 0 turns: ${crashReason}`);
+				expect.soft(result.output).not.toContain("partial result above.");
+			} else {
+				expect(result.output.startsWith(`${currentText}\n\n`)).toBe(true);
+				expect(result.output).not.toContain("not part of the answer");
+			}
+			if (!immediateCrash) expect(result.output).toContain("(child: 1 turns, 60 in / 18 out / 16 cache)");
+			if (partial)
+				expect(result.output).toContain(
+					`[task] child failed after 1 turns: ${crashReason}; partial result above.`,
+				);
+		},
+	);
 
 	it("T26b: a kept worktree child resumes in place — never auto-removed, prior disposition named", async () => {
 		const base = await mkTempDirAsync("ink-wt-resume-");

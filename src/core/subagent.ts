@@ -126,7 +126,7 @@ export interface SubagentUsageDetail {
 
 export interface SubagentOutcome {
 	status: SubagentStatus;
-	/** Last assistant text (backward scan); undefined when the child said nothing. */
+	/** Last nonempty assistant text accepted in THIS attempt; excludes history and summaries. */
 	text: string | undefined;
 	/** Crash reason (status === "crash" only). */
 	reason?: string;
@@ -192,13 +192,10 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 	// passes exactly what the store's buildContext rebuilt); a fresh child
 	// starts empty and the loop pushes its single instruction below.
 	const history: AgentMessage[] = options.initialHistory ? [...options.initialHistory] : [];
-	// SA-07 (acceptance round 2, finding 3): result extraction is scoped to
-	// THIS attempt. Seeded messages are tracked by identity so a session
-	// splice (compaction rebuilds the array from buildContext) can neither
-	// leak the previous attempt's answer as "partial text" nor hide the
-	// current attempt's messages.
-	const seeded =
-		options.initialHistory === undefined ? undefined : new Set<AgentMessage>(options.initialHistory);
+	// Keep output independent of replay history: compaction can copy seeded
+	// assistants or remove this attempt's partial text. Both loop launches
+	// share this string; restored messages and summaries never update it.
+	let lastAttemptText: string | undefined;
 	// SA-04 (design §3.3): one exactly-once attempt ledger. Created here, fed by
 	// the two provider-stream seams (task loop + summarizer), snapshotted into
 	// the outcome. Replaces the history-recomputation compensation — a replayed
@@ -398,7 +395,15 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 			// #loop-health: children are uncapped (owner decision A). Explicit
 			// Infinity is load-bearing — the loop's default floor is 100.
 			maxIterations: Number.POSITIVE_INFINITY,
-			onMessage: options.onMessage,
+			onMessage: (message) => {
+				if (message.role === "assistant") {
+					const text = finalAssistantText([message]);
+					if (text !== undefined) lastAttemptText = text;
+				}
+				// The loop has already accepted this message. Preserve its text even
+				// if transcript persistence fails, without retaining mutable blocks.
+				options.onMessage?.(message);
+			},
 			onToolCall: options.onToolCall,
 			// #loop-health: the monitor observes the same stream the caller
 			// relays; both overflow launches share it.
@@ -416,14 +421,10 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 	 *  recomputations. `turns` stays the task-turn count (reports observed). */
 	const settled = (status: SubagentStatus, reason?: string): SubagentOutcome => {
 		const snapshot = attemptUsageSnapshot(ledger);
-		// Attempt-scoped text: never fall back into restored history. A resumed
-		// attempt with no text of its own settles with text === undefined.
-		const attemptMessages =
-			seeded === undefined ? history : history.filter((message) => !seeded.has(message));
 		return {
 			status,
 			...(reason !== undefined ? { reason } : {}),
-			text: finalAssistantText(attemptMessages),
+			text: lastAttemptText,
 			turns: snapshot.taskReports,
 			usage: snapshot.totals,
 			...(snapshot.usagePricing === undefined ? {} : { usagePricing: snapshot.usagePricing }),
