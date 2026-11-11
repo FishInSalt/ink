@@ -91,6 +91,15 @@ incomplete pricing;
 see [Codex reference pricing](providers.md#codex-reference-pricing) and
 [sessions.md](sessions.md).
 
+The loop snapshots each task record's identity, binding, raw usage and pricing
+observations before exposing its result to `tool_settled` or `tool_end` observers.
+An observer can still change its own record, but neither immediate edits nor
+later edits through retained references change authoritative history or session
+accounting. Missing, invalid and future-version records stay unknown; malformed
+pricing alone does not discard valid raw usage. This does not make tool content
+immutable or turn event observation into an accounting rewrite hook, and is not
+a security boundary against host code editing history or store entries directly.
+
 ## Named agents
 
 Agent profiles are markdown files with hand-parsed frontmatter — no YAML

@@ -1,5 +1,7 @@
-import { type ChildModelBinding, isModelBinding } from "./child-model.js";
+import type { ChildModelBinding } from "./child-model.js";
 import type { HealthCode } from "./health.js";
+import type { ToolResult } from "./messages.js";
+import { isModelBinding } from "./model-binding.js";
 import { parseUsagePricing, type UsagePricingSlice } from "./service-tier-pricing.js";
 import type { SessionEntry } from "./session/store.js";
 
@@ -196,6 +198,34 @@ export function taskRecordsInEntry(entry: SessionEntry): TaskRecord[] {
 		if (record !== null) out.push(record);
 	}
 	return out;
+}
+
+/** An independent validated v1 snapshot, without restamping or rebounding.
+ *  Invalid/future records stay unknown; malformed advisory pricing never
+ *  erases otherwise valid raw usage. Parsing owns the structured vocabulary. */
+export function snapshotTaskRecord(value: unknown): TaskRecord | undefined {
+	return parseTaskRecord(value) ?? undefined;
+}
+
+/** Isolate only TaskRecord metadata. Historically some result paths alias
+ *  content/status even after persistence, so an ordinary enumerable view
+ *  forwards their current values (and writes) instead of snapshotting them.
+ *  The forwarding key set is captured now; taskRecord is NEVER forwarded. */
+export function taskRecordView(result: ToolResult, taskRecord: TaskRecord | undefined): ToolResult {
+	const view = {} as ToolResult;
+	for (const key of Object.keys(result)) {
+		if (key === "taskRecord") continue;
+		Object.defineProperty(view, key, {
+			enumerable: true,
+			configurable: true,
+			get: () => Reflect.get(result, key),
+			set: (value: unknown) => {
+				Reflect.set(result, key, value);
+			},
+		});
+	}
+	if (taskRecord !== undefined) view.taskRecord = taskRecord;
+	return view;
 }
 
 const STATUSES: readonly string[] = [

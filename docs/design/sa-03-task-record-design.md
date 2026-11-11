@@ -163,10 +163,19 @@ Plumbing (all explicit):
 
 1. `ToolExecuteResult.taskRecord?: TaskRecord` (`src/core/tools/types.ts`).
 2. `runTool` copies it into the returned `ToolResult`.
-3. `persistableResult` keeps it (it strips `display` only) — the persisted message entry
-   carries it verbatim; `ToolResult.taskRecord` gets the visibility doc-comment
-   (`src/core/messages.ts`).
-4. `tool_end` events carry it live (same object as (2)).
+3. **Superseded by the 2026-11-11 accounting-snapshot amendment:** the loop captures
+   a validated independent record in a private WeakMap before any result observer.
+   IDs/duration are stamped in place on the loop-owned projection, never by a spread
+   that would lose that association. Captured absent/invalid records use an explicit
+   sentinel and can never be replaced by observer-supplied accounting.
+4. Events retain the producer's live record; history uses the protected snapshot.
+   `persistableResult` strips event-only display/duration and otherwise keeps the
+   original plain-spread timing. The legacy serial path without display/duration
+   uses an ordinary metadata-only forwarding view: existing enumerable nonmetadata
+   fields read/write the original result, preserving immediate/delayed content and
+   status behavior. SessionStore independently snapshots records at append/read and
+   compaction-tail boundaries using the same view. No Proxy, freeze or deep content
+   copy is introduced. See [the approved revision](task-accounting-snapshots-fix.md).
 
 ### 2.3 Honesty rules (all testable)
 
@@ -197,7 +206,12 @@ Plumbing (all explicit):
 
 Exports `TASK_RECORD_VERSION`, the types above, `buildTaskRecord(input)` (stamps version
 + timestamp, bounds `reason`/`worktree.detail`, assembles presence) and
-`collectTaskRecords(entries)` (D4). The module owns the record vocabulary only; `task.ts`
+`collectTaskRecords(entries)` (D4). The accounting-snapshot amendment adds
+`snapshotTaskRecord` (reuse the parser without restamping/bounding) and
+`taskRecordView` (forward only nonmetadata fields). Binding validation imports the
+unchanged pure `isModelBinding` predicate from `core/model-binding.ts`, compatibly
+re-exported by `child-model.ts`, so store reads never load provider runtimes.
+The module owns the record vocabulary only; `task.ts`
 translates its internal `CleanupOutcome`/session states into it. No imports from
 `tools/task.ts` or `subagent.ts` (no cycles).
 
@@ -285,8 +299,9 @@ attempt id. A doc-comment on `ToolResult.taskRecord` states the rule.
 - SA-04 owns usage *semantics and values*: it may set `usage.incomplete` and add
   optional additive fields (e.g. a summarizer breakdown) within v1; it must not change
   the meaning of existing fields.
-- SA-05 consumes records via `collectTaskRecords` (rebuild) and `tool_end` events
-  (incremental); it must not rescan child transcripts for records.
+- SA-05 consumes records from raw session entries (`collectTaskRecords` for rebuild;
+  the append-only store tracker incrementally). Mutable event records are not an
+  authoritative accounting source; it must not rescan child transcripts for records.
 - SA-06 extends the record with launch-state fields (additive within v1 when optional;
   version bump for semantic changes). This design does not freeze SA-06's own additions.
 - **SA-06 precondition**: the record is the sole resumability advertisement. An
@@ -400,6 +415,21 @@ additive.
 - `reason`/`detail` truncation can cut context (bounded by design).
 - The record is readable in the session JSONL like any other content; it contains paths
   and identifiers, no credentials, no message text, no tool arguments.
+
+## Accounting-snapshot amendment (2026-11-11)
+
+The original live-reference transport in §2.2 is superseded by
+[task-accounting-snapshots-fix.md](task-accounting-snapshots-fix.md), independently
+approved in session `55b87451-39b9-4a14-9478-9c3294e4065b`. The initial always-independent
+envelope was rejected because it changed serial content/status observation behavior;
+implementation follows the revised metadata-only views and existing spread boundaries.
+Snapshot validation preserves original timestamps, IDs and valid raw usage, drops only
+malformed advisory pricing, and treats invalid/future records as unknown. Extra v1
+fields retain the parser's existing behavior; deep isolation is promised only for the
+known identity/accounting vocabulary. No schema, scheduler, token arithmetic, provider
+request or task outcome-classification change is included. This is accounting isolation,
+not a security boundary against direct host mutation of history/store entries.
+Independent implementation review remains pending.
 
 ## 7. Review record
 
