@@ -51,6 +51,28 @@ a child.
   hang guard in print/headless runs. A call's `timeoutMs` or an agent
   file's `timeout:` (seconds) always wins.
 
+## Usage accounting
+
+Child task records carry captured raw usage and optional per-call pricing
+observations, including the child's own summary calls and retry hops. Fresh and
+continued children preserve that attribution even when a task fails or transcript
+persistence is disabled. The parent's current selection, the child's final tier
+report, and a later resume do not relabel earlier calls. Normal/Fast mixtures are
+estimated per call against the producing base model's current catalog rates;
+raw token counters are never multiplied. These are reference estimates, not
+actual subscription charges or allowance measurements.
+
+The parent accounts for a child's summary usage through its task record only,
+not by scanning child transcripts or adding parent summary receipts. Repeated
+records for the same attempt are not counted again, and internal reports do not
+turn one contributing task record into multiple child-call counts. A child that
+never starts contributes no invented charge; started work without a usage report
+remains unknown, not zero. `!` still marks missing usage. When rates are known,
+legacy/unknown-tier Codex usage keeps base-only reference pricing with `~` for
+incomplete pricing;
+see [Codex reference pricing](providers.md#codex-reference-pricing) and
+[sessions.md](sessions.md).
+
 ## Named agents
 
 Agent profiles are markdown files with hand-parsed frontmatter — no YAML

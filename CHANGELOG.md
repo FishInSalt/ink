@@ -29,10 +29,30 @@ their original release identity.
   reports. `/status` shows only the last matching base-model response, never
   substitutes an older observation or confirms the current selection. Stream
   errors over successful HTTP retain typed status without `API error 200` text.
-  Pricing remains a base-model estimate; no Fast multiplier is introduced.
+  Completion/request behavior is unchanged by the per-call reference-pricing
+  update below.
+- **Rejected summary accounting.** Preserve already-captured parent compaction
+  and branch-summary usage in accounting-only `summaryUsage` receipts when the
+  summary is rejected, including earlier reports before a retry failure. Keep
+  rejected summary text out of receipts and context; do not move the active tree
+  position or count usage twice. Receipts stay with the original session file,
+  including same-file reopen. Never-started summaries add no invented charge;
+  unreported work remains unknown. Old session files remain readable without
+  rewriting; files with this new entry kind may not work with older binaries.
 
 ### Changed
 
+- **Codex per-call reference estimates.** Apply rules pinned to
+  [Pi revision 2cac4f1a9](https://github.com/earendil-works/pi/blob/2cac4f1a934cdc4a80b05a7d8ff2543cf5ee623c/packages/ai/src/api/openai-codex-responses.ts#L623-L660):
+  priority (`fast` alias) uses 2.5× for exact base ID `gpt-5.5`, otherwise a
+  Pi-compatible 2× assumption; flex uses 0.5×. Reported `default`/missing uses
+  the captured request only for estimation, never rewriting the raw report.
+  Preserve each call's attribution across mixed modes, history/reopen, children
+  and summary retries. Raw token counters are unchanged. Legacy/unknown-tier
+  Codex usage keeps a base-only estimate with `~` for incomplete reference
+  pricing; `!` still means missing usage, and unknown rates remain unpriced.
+  These current-catalog estimates are not actual allowance or billing evidence;
+  other providers, model identity, requests and error behavior are unchanged.
 - **Codex pre-stream retries.** Retry pre-stream connection failures up to five
   attempts with 1/2/4/8 s pauses under a 95 s opening budget (was three attempts
   with 600/1500 ms). Temporary admission errors keep their three-attempt

@@ -9,6 +9,7 @@ import { SessionStore } from "../src/core/session/store.js";
 import { buildTaskRecord } from "../src/core/task-record.js";
 import { ExtensionRegistry } from "../src/extensions/registry.js";
 import { loadCatalogCache, resetCatalogForTest } from "../src/provider/catalog.js";
+import * as modelRates from "../src/provider/models.js";
 import type { LLMProvider, LLMRequest } from "../src/provider/types.js";
 import type { RunnerOptions } from "../src/runner.js";
 import { createRunner, type Runner, resolveRunMode } from "../src/runner.js";
@@ -335,6 +336,35 @@ describe("Runner.runTurn", () => {
 		expect((runner as RunnerWithOutput).capturedOutput()).toContain(
 			"— model-b · 1 turns · in 10 / out 5 tokens\n",
 		);
+	});
+
+	it("printSessionStats forwards partial reference pricing independently of missing usage", async () => {
+		const { baseDir, cwd } = await setup();
+		const rates = vi
+			.spyOn(modelRates, "costFor")
+			.mockReturnValue({ input: 1, output: 1, cacheRead: 1, cacheWrite: 1, subscription: true });
+		const message = assistant([{ type: "text", text: "saved" }], "end_turn", {
+			inputTokens: 100000,
+			outputTokens: 0,
+		});
+		message.modelReference = "openai-codex/gpt-5.5";
+		message.usageMissing = true;
+		const store = createSession(cwd, baseDir);
+		store.appendMessage(message);
+		const runner = (await makeRunner({
+			provider: scriptedProvider([]),
+			cwd,
+			baseDir,
+			model: "openai-codex/gpt-5.5",
+			resume: store.header.id,
+		})) as RunnerWithOutput;
+		try {
+			runner.printSessionStats();
+			expect(runner.capturedOutput()).toContain("work ↑100k ↓0 ~$0.100 (sub)!");
+		} finally {
+			rates.mockRestore();
+			runner.close();
+		}
 	});
 
 	it("printRunStats/printSessionStats exact strings (cache↓ only when truthy)", async () => {

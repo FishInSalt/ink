@@ -5,6 +5,7 @@ import { type AgentRegistry, formatAgentsForPrompt, loadAgentDefinitions } from 
 import {
 	type CompactionSettings,
 	compactSession,
+	createSummaryUsageReceipt,
 	estimateContextTokens,
 	isContextOverflowError,
 	overflowGuidance,
@@ -17,10 +18,12 @@ import { createRunLogger, type RunLogger } from "./core/logger.js";
 import type { AgentEvent, RunAgentLoopResult } from "./core/loop.js";
 import { runAgentLoop, synthesizeMissingToolResults } from "./core/loop.js";
 import { type AgentMessage, contentText, type ImageBlock, type Usage } from "./core/messages.js";
+import type { UsagePricingSlice } from "./core/service-tier-pricing.js";
 import type { SessionInfo } from "./core/session/manager.js";
 import { createSession, listSessions, resolveSession, SessionNotFoundError } from "./core/session/manager.js";
 import type { MessageEntry, SessionEntry, SessionStore } from "./core/session/store.js";
 import { effectiveSettings, type InkSettings, saveSettings, settingsFilePath } from "./core/settings.js";
+import { createAttemptUsage } from "./core/usage-ledger.js";
 import {
 	priceUsageTotals,
 	type UsageTotals,
@@ -407,6 +410,9 @@ type RunContext = Readonly<{
 	sessionId: string;
 	/** SA-05: the fully qualified pricing identity from the same snapshot. */
 	modelReference: string;
+	/** Run-owned mutable history/floor, separate from the stable live view.
+	 * A session replacement must not replace the in-flight run's context. */
+	history: { messages: AgentMessage[]; estimateFloor: number };
 }>;
 
 class RunnerImpl implements Runner {
@@ -990,7 +996,7 @@ class RunnerImpl implements Runner {
 		const store = this.sessionStore;
 		if (store === null) throw new SessionNotFoundError("no session to navigate (sessions disabled)");
 		const target = store.getEntry(targetId);
-		if (target === undefined || target.type === "label") {
+		if (target === undefined || target.type === "label" || target.type === "summaryUsage") {
 			throw new SessionNotFoundError(`tree target ${targetId} not found`);
 		}
 		// noop only for a NON-user leaf target. A USER message that IS the
@@ -1021,12 +1027,26 @@ class RunnerImpl implements Runner {
 		// SA-05: the branch-summary call's usage + stamps, persisted with the
 		// branchSummary entry (producing model captured BEFORE the await).
 		let summaryUsage: Usage | undefined;
+		let summaryUsagePricing: UsagePricingSlice[] | undefined;
 		let summaryUsageMissing = false;
 		const summaryModel = this.model; // the producing model, not the post-await current one
 		const summarySpeed = this.speed;
 		// SA-05 round 2: live pair — safe only because /tree and /fork are
 		// allowedDuringRun:false. A mid-run gate change must snapshot instead.
 		const summaryReference = qualifiedReference(this.providerName, summaryModel);
+		const ledger = createAttemptUsage();
+		const receipt = createSummaryUsageReceipt({
+			session: store,
+			ledger,
+			model: summaryModel,
+			modelReference: summaryReference,
+			currentSession: () => this.sessionStore,
+			onReceiptError: (error) => {
+				const message = `summary usage receipt was not persisted: ${error instanceof Error ? error.message : String(error)}`;
+				this.logger.log("run_error", { source: "branch-summary-usage-receipt", message });
+				this.options.renderer.error(`ink: ${message}`);
+			},
+		});
 		if (opts?.summarize !== true || !this.branchSummaryEnabled) {
 			// no summary wanted or INK_BRANCH_SUMMARY=0
 		} else {
@@ -1046,11 +1066,14 @@ class RunnerImpl implements Runner {
 						thinking: this.level, // pi: the summarizer thinks at the session level
 						signal: opts?.signal,
 						customInstructions: opts?.customInstructions,
+						usageLedger: ledger,
 					});
 					summary = branch.summary;
 					summaryUsage = branch.usage;
+					summaryUsagePricing = branch.usagePricing;
 					summaryUsageMissing = branch.usageMissing;
 				} catch (err) {
+					receipt();
 					// Abort is abort of the NAVIGATION (review P1-3): distinguish by
 					// the signal, not the message — nothing moves, not a failure.
 					if (opts?.signal?.aborted) return { aborted: true };
@@ -1064,7 +1087,10 @@ class RunnerImpl implements Runner {
 		}
 		// Identity guard (review P2-2): a session swap during the await owns
 		// the mutation, not us.
-		if (this.sessionStore !== store) return { summary: "failed", messages: this.history.length };
+		if (this.sessionStore !== store) {
+			receipt();
+			return { summary: "failed", messages: this.history.length };
+		}
 		// A user-message target whose parent IS the current position ("re-type
 		// this message here") moves nothing — branchTo would rightly reject it.
 		const positionMoves = newLeaf !== store.getLeafId();
@@ -1072,15 +1098,17 @@ class RunnerImpl implements Runner {
 			store.branchTo(newLeaf);
 		}
 		if (summary !== undefined) {
-			if (this.sessionStore !== store) return { summary: "failed", messages: this.history.length };
+			if (this.sessionStore !== store) {
+				receipt();
+				return { summary: "failed", messages: this.history.length };
+			}
 			// SA-05 stamps: usage + producing model + missing flag ride the entry.
-			store.appendBranchSummary(
-				summary,
-				summaryUsage,
-				summaryUsageMissing
-					? { model: summaryModel, modelReference: summaryReference, usageMissing: true }
-					: { model: summaryModel, modelReference: summaryReference },
-			); // parentId = newLeaf — heads the new position
+			store.appendBranchSummary(summary, summaryUsage, {
+				model: summaryModel,
+				modelReference: summaryReference,
+				...(summaryUsageMissing ? { usageMissing: true } : {}),
+				...(summaryUsagePricing === undefined ? {} : { usagePricing: summaryUsagePricing }),
+			}); // parentId = newLeaf — heads the new position
 			outcome = "written";
 		}
 		// The editorText re-edit case may move nothing — history is already right.
@@ -1356,31 +1384,42 @@ class RunnerImpl implements Runner {
 		return this.estimateFloor;
 	}
 
+	private captureRunContext(): RunContext {
+		return {
+			model: this.model,
+			speed: this.speed,
+			provider: this.provider,
+			settings: this.settings,
+			session: this.sessionStore,
+			sessionId: this.sessionStore?.header.id ?? this.ephemeralSessionId,
+			modelReference: qualifiedReference(this.providerName, this.model),
+			history: { messages: [...this.history], estimateFloor: this.estimateFloor },
+		};
+	}
+
+	/** Mirror work into the stable public array only while this captured
+	 * conversation still owns the live view. /new and /resume keep their own
+	 * context; the old run continues and persists through its captured store. */
+	private syncRunHistory(context: RunContext, appended?: AgentMessage): void {
+		if (this.sessionStore !== context.session) return;
+		if (context.session === null && this.ephemeralSessionId !== context.sessionId) return;
+		// Ordinary messages append in constant time; only compaction rebuilds
+		// the live array. Avoid copying the full transcript for every report.
+		if (appended !== undefined) this.history.push(appended);
+		else this.history.splice(0, this.history.length, ...context.history.messages);
+		this.estimateFloor = context.history.estimateFloor;
+	}
+
 	runTurn(options: RunTurnOptions): Promise<RunAgentLoopResult> {
-		// Capture before run_start: /model mid-run affects only later runs.
-		// Provider and settings belong to the same snapshot (review P1-2): a
-		// family switch must not pair a new provider/window with the old model
-		// in this run's compaction seam or overflow retry.
-		const model = this.model;
-		const speed = this.speed;
-		const session = this.sessionStore;
+		// Capture before run_start: model/provider/settings/session/history
+		// remain one binding through compaction and overflow recovery.
+		const context = this.captureRunContext();
+		const { model, speed, session } = context;
 		// Login may retain the current deliberate selection rather than
 		// call setModel. Seed automatically before the first message write,
 		// including model-less resumed history, without a UI persistence hook.
 		if (this.providerName === "openai-codex" && this.modelCanBeSeeded())
 			session?.seedModel({ provider: this.providerName, modelId: model, speed });
-		const context: RunContext = {
-			model,
-			speed,
-			provider: this.provider,
-			settings: this.settings,
-			session,
-			// /new or /resume affects only the next run's identity.
-			sessionId: session?.header.id ?? this.ephemeralSessionId,
-			// SA-05 round 2 (delta review F1): pricing must use the SAME pair,
-			// never a live provider family with a captured old model id.
-			modelReference: qualifiedReference(this.providerName, model),
-		};
 		this.lastRunModel = model;
 		// run_start fires HERE, not in runTurnInner: entry-level is the one site
 		// both shells reach exactly once per run — the overflow retry below
@@ -1439,7 +1478,7 @@ class RunnerImpl implements Runner {
 		options: RunTurnOptions,
 		health: LoopHealthMonitor | undefined,
 	): Promise<RunAgentLoopResult> {
-		const { model, speed, provider, settings, modelReference } = context;
+		const { settings, modelReference } = context;
 		try {
 			return await this.runTurnInner(context, options, health);
 		} catch (err) {
@@ -1449,13 +1488,14 @@ class RunnerImpl implements Runner {
 			this.options.renderer.note("▪ context over the model's window — compacting once and retrying…");
 			let compacted = false;
 			try {
-				compacted = await this.compactAndSplice(provider, settings, model, modelReference, speed);
+				compacted = await this.compactAndSplice(context);
 			} catch (compactErr) {
 				const compactCause = compactErr instanceof Error ? compactErr.message : String(compactErr);
 				this.logger.log("run_error", { source: "compaction", message: compactCause });
 				throw new Error(
 					overflowGuidance(
-						estimateContextTokens(this.history, this.estimateFloor, modelReference).tokens,
+						estimateContextTokens(context.history.messages, context.history.estimateFloor, modelReference)
+							.tokens,
 						settings,
 						compactCause,
 					),
@@ -1464,7 +1504,8 @@ class RunnerImpl implements Runner {
 			if (!compacted) {
 				throw new Error(
 					overflowGuidance(
-						estimateContextTokens(this.history, this.estimateFloor, modelReference).tokens,
+						estimateContextTokens(context.history.messages, context.history.estimateFloor, modelReference)
+							.tokens,
 						settings,
 						"nothing safe to compact",
 					),
@@ -1491,7 +1532,8 @@ class RunnerImpl implements Runner {
 						// #compaction-ux F1: the splice above invalidated prior
 						// anchors — pass the floor or the guidance quotes the
 						// pre-compaction size (review P3-1).
-						estimateContextTokens(this.history, this.estimateFloor, modelReference).tokens,
+						estimateContextTokens(context.history.messages, context.history.estimateFloor, modelReference)
+							.tokens,
 						settings,
 						"still over the window after one compaction",
 					),
@@ -1535,7 +1577,7 @@ class RunnerImpl implements Runner {
 				sessionId,
 				system: this.system,
 				tools: this.tools,
-				history: this.history,
+				history: context.history.messages,
 				userMessage: options.userMessage,
 				userImages: options.userImages,
 				maxTokens: effectiveMaxTokens,
@@ -1545,9 +1587,19 @@ class RunnerImpl implements Runner {
 				// observers (M4c design §8.3) — after persistence, like everything
 				// else the wrapper does.
 				onMessage: (message) => {
-					this.sessionStore?.appendMessage(message);
+					session?.appendMessage(message);
+					this.syncRunHistory(context, message);
 					if (message.role === "assistant") {
-						this.options.extensions?.emitMessageEnd({ type: "message_end", message });
+						// Preserve shared content blocks and event ordering, but do not
+						// expose history-owned accounting to immediate or retained hooks.
+						this.options.extensions?.emitMessageEnd({
+							type: "message_end",
+							message: {
+								...message,
+								usage: { ...message.usage },
+								...(message.serviceTier === undefined ? {} : { serviceTier: { ...message.serviceTier } }),
+							},
+						});
 					}
 				},
 				// The gate seam: the registry chains "tool_call" handlers in load
@@ -1563,7 +1615,7 @@ class RunnerImpl implements Runner {
 							// #compaction-ux F1: the floor keeps pre-compaction tail
 							// usage from anchoring — without it a just-compacted
 							// session re-triggers on the stale ~window-sized reading.
-							const est = estimateContextTokens(history, this.estimateFloor, modelReference);
+							const est = estimateContextTokens(history, context.history.estimateFloor, modelReference);
 							if (!shouldCompact(est.tokens, settings)) return;
 							this.options.renderer.note(`▪ context ~${formatTokens(est.tokens)} tokens — compacting…`);
 							// #overflow-grace: a failed pre-prompt compaction must not surface
@@ -1571,7 +1623,7 @@ class RunnerImpl implements Runner {
 							// the 1M→272k switch-down deadlock: the summarization request
 							// itself can exceed the new model's input window).
 							try {
-								await this.compactAndSplice(provider, settings, model, modelReference, speed);
+								await this.compactAndSplice(context);
 							} catch (err) {
 								const cause = err instanceof Error ? err.message : String(err);
 								this.logger.log("run_error", { source: "compaction", message: cause });
@@ -1608,7 +1660,7 @@ class RunnerImpl implements Runner {
 				type: "run_end",
 				stopReason: result.stopReason,
 				turns: result.turns,
-				usage: result.usage,
+				usage: { ...result.usage }, // Hooks must not own the returned report's counters.
 			});
 			return result;
 		} catch (err) {
@@ -1620,25 +1672,15 @@ class RunnerImpl implements Runner {
 	}
 
 	async compactNow(signal?: AbortSignal): Promise<CompactOutcome> {
-		// SA-05 round 2: this reads a LIVE providerName/model pair — safe only
-		// because /compact is allowedDuringRun:false (no switch can land
-		// mid-call). If that gate ever changes, thread a snapshot like runTurn.
-		// #compaction-ux F3: the signal IS forwarded now. The old "never
-		// forward" rule (superseded design §7.4) assumed an aborted stream
-		// would persist a half checkpoint — the abort quality gate added later
-		// (compaction.ts: "summarizer aborted — incomplete, rejected") throws
-		// BEFORE appendCompaction, so an abort leaves the session untouched.
-		// Same channel /tree has used since its review (P1-3).
-		if (!this.sessionStore) return "no-session";
+		// Capture provider/model/session/history before awaiting. A later
+		// /new or /resume owns the live view, not this invocation's checkpoint.
+		// The abort quality gate rejects incomplete checkpoint text before
+		// appendCompaction; an accounting-only receipt can still retain already
+		// reported usage without changing the conversation or its position.
+		const context = this.captureRunContext();
+		if (!context.session) return "no-session";
 		try {
-			const compacted = await this.compactAndSplice(
-				this.provider,
-				this.settings,
-				this.model,
-				qualifiedReference(this.providerName, this.model),
-				this.speed,
-				signal,
-			);
+			const compacted = await this.compactAndSplice(context, signal);
 			return compacted ? "compacted" : "nothing-to-compact";
 		} catch (err) {
 			// Classify by the ERROR, not the signal's current state (review
@@ -1652,17 +1694,8 @@ class RunnerImpl implements Runner {
 		}
 	}
 
-	private async compactAndSplice(
-		provider: LLMProvider,
-		settings: CompactionSettings,
-		model: string,
-		/** SA-05 round 2: the FULLY QUALIFIED producer reference for the entry
-		 *  stamp; `model` stays the wire id. */
-		modelReference: string,
-		speed?: ModelSpeed,
-		signal?: AbortSignal,
-	): Promise<boolean> {
-		const session = this.sessionStore;
+	private async compactAndSplice(context: RunContext, signal?: AbortSignal): Promise<boolean> {
+		const { session, provider, settings, model, modelReference, speed } = context;
 		if (!session) return false;
 		const compacted = await compactSession({
 			session,
@@ -1676,10 +1709,21 @@ class RunnerImpl implements Runner {
 			// never a live model that may have changed during this run.
 			modelMaxTokens: modelMaxTokensFor(modelReference),
 			thinking: this.level, // pi: the summarizer thinks at the session level
+			currentSession: () => this.sessionStore,
+			onReceiptError: (error) => {
+				const message = `summary usage receipt was not persisted: ${error instanceof Error ? error.message : String(error)}`;
+				this.logger.log("run_error", { source: "compaction-usage-receipt", message });
+				this.options.renderer.error(`ink: ${message}`);
+			},
 		});
 		if (compacted) {
-			this.history.splice(0, this.history.length, ...session.buildContext().messages);
-			this.syncEstimateFloor(); // the splice invalidated every prior anchor
+			const rebuilt = session.buildContext();
+			context.history.messages.splice(0, context.history.messages.length, ...rebuilt.messages);
+			context.history.estimateFloor = rebuilt.compactionBoundary;
+			// Success belongs to the captured run even after a session swap.
+			// Only its live mirror is conditional; never reject or receipt an
+			// accepted checkpoint merely because another session is now active.
+			this.syncRunHistory(context);
 			this.options.renderer.note(
 				`▪ compacted: ~${formatTokens(compacted.tokensBefore)} → ~${formatTokens(compacted.tokensAfter)} tokens (${compacted.retainedCount} msgs kept verbatim)`,
 			);
@@ -1750,6 +1794,7 @@ class RunnerImpl implements Runner {
 			const priced = priceUsageTotals(totals, costFor);
 			const money = usageMoneySegment({
 				usd: priced.usd,
+				pricingIncomplete: priced.pricingIncomplete,
 				subscription: priced.subscription,
 				unpricedTokens:
 					priced.unpriced.inputTokens +

@@ -422,6 +422,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
 					worktree: rec.worktree,
 					health: rec.health,
 					usage: terminal.usage,
+					usagePricing: terminal.usagePricing,
 				}),
 			});
 
@@ -671,6 +672,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
 						turns: outcome.turns,
 						textPresent: outcome.text !== undefined,
 						usage: outcome.usageDetail.incomplete ? { ...outcome.usage, incomplete: true } : outcome.usage,
+						...(outcome.usagePricing === undefined ? {} : { usagePricing: outcome.usagePricing }),
 					};
 
 					// §4.3: result composition (base classification + resume lines).
@@ -925,6 +927,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
 				// SA-04: totals + the reserved incompleteness flag (shape frozen by
 				// SA-03; the flag appears only when a started request never reported).
 				usage: outcome.usageDetail.incomplete ? { ...outcome.usage, incomplete: true } : outcome.usage,
+				...(outcome.usagePricing === undefined ? {} : { usagePricing: outcome.usagePricing }),
 			};
 			const base = taskResult(outcome, session, effectiveTimeout, String(args.prompt));
 			if (cleanup === undefined || cleanup.state === "removed") return finish(base, terminal);

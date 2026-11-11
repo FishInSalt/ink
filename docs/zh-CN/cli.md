@@ -71,6 +71,12 @@ INK_MODEL='openai-codex/gpt-6.1-terra·fast' ink
 明确显示，不会回退到普通模式或其他计费路径。能力及验证限制见
 [提供商](providers.md)。
 
+Codex 费用显示使用逐次调用的参考估算，不根据当前 `·fast` 后缀选择倍率。原始 token
+计数不变。`~` 表示参考定价不完整（包括旧记录或未知档位的仅基础费率估算）；
+`!` 仍表示缺失用量。这些数值不衡量实际订阅额度或计费。规则及固定版本的 Pi 来源见
+[Codex 参考费用估算](providers.md#codex-reference-pricing)；持久化和被拒绝摘要的用量
+统计见[会话](sessions.md)。不新增定价参数或全局 Fast 设置。
+
 ## 选项
 
 | 参数 | 说明 |

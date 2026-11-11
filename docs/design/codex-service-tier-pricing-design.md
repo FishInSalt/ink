@@ -1,8 +1,11 @@
 # Codex service-tier reference pricing (batch 2)
 
-Status: independently approved after accounting-ownership revisions in review
-session `ac8e07a5-b117-497b-a7fd-c823a6af6e9d`. Implementation starts only after
-integration of the approved batch-1 completion/observation changes.
+Status: implemented after independent design approval in session
+`ac8e07a5-b117-497b-a7fd-c823a6af6e9d`. Both independent implementation reviews
+approved: pricing/accounting `c95462e7-b07e-48dd-ba81-b384fc7b02f7` and
+persistence/compaction/runner `37e12b7e-d8fc-49a0-8b67-428ee221d87e`.
+Verification: 4,870 tests passed across 170 files; build, source/test typecheck,
+lint and diff checks passed. Batch 1 was integrated before implementation.
 Worktree/branch: `.worktrees/ink-fast-pricing`, `feat/codex-service-tier-pricing`.
 
 ## Goal and boundaries
@@ -103,6 +106,10 @@ all captured reports and missing flags, then preserve the original error. Null
 (no summary call) creates no receipt. A successful summary is accounted ONLY in
 the accepted compaction entry. Do not create failure receipts around a successful
 checkpoint append, where write-error ambiguity could duplicate persisted usage.
+The current-store resolver routes FAILED receipts only; it must not invalidate a
+successful run-owned compaction. Accepted checkpoints and continuation history
+belong to the captured run/store even after /new or /resume. Only mirroring into
+the currently displayed history is conditional on still owning that live view.
 
 For Runner.navigateTree, capture the original store, base model and reference
 before the await, pass a local ledger to summarizeBranchSegment, and persist one
@@ -179,3 +186,26 @@ CHANGELOG and superseded Fast design statements in this batch. Run build,
 typecheck, lint, full tests and diff checks. Obtain independent code reviews of
 accounting/persistence and pricing/display scopes before completion. Main merge
 uses --no-ff; no push/global installation is included.
+
+## Implementation review and regression record
+
+Full integration first exposed two existing Codex conversation-affinity tests:
+blanket invalidation of successful compaction on /new or /resume broke captured
+run continuation. Remove that extra gate and preserve captured session/history;
+four gated automatic/overflow regressions now protect the origin and replacement
+views. The 23 original affinity tests remain unchanged and pass.
+
+Independent review then reproduced accounting mutation through observers. The
+accepted parent message now snapshots all counters, missing status and strict
+copied tier metadata before provider-event observers. Persistence owns copied
+usage/tier data, and extension message_end/run_end payloads do not own history or
+returned accounting. Content-block sharing and event order are unchanged. Eighteen
+parent-observer and twelve real Runner/ExtensionRegistry regressions cover
+immediate, replacement and delayed mutation, live/rebuilt/reopened totals, prices
+and context anchors. The reviewers independently repeated the failing probes and
+confirmed both fixes before approval.
+
+Final worktree verification report: /tmp/ink-fast-pricing-check.keWvPI/tests.json
+(4,870 passed, 0 failed, 0 skipped; 170 files). The independent pricing reviewer
+also exercised malformed observations, invalid sidecars and mixed grouping;
+the persistence reviewer independently ran 303 tests across 10 files.

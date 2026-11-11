@@ -15,6 +15,7 @@ import { setTrust } from "../src/core/trust.js";
 import { clearApiKey, loadApiKey, saveApiKey } from "../src/provider/auth-store.js";
 import { loadCodexCredential, loginCodex } from "../src/provider/codex-auth.js";
 import { familyConfigured } from "../src/provider/discover.js";
+import * as modelRates from "../src/provider/models.js";
 import { parseModelRef } from "../src/provider/resolve.js";
 import type { LLMProvider, LLMRequest } from "../src/provider/types.js";
 import type { CommandContext } from "../src/repl/commands.js";
@@ -940,6 +941,52 @@ describe("md commands during a run (review)", () => {
 });
 
 describe("/status (M11)", () => {
+	it.each(["legacy", "unknown", "priority"])(
+		"explains %s Codex reference pricing separately from missing usage",
+		async (tier) => {
+			const modelReference = "openai-codex/gpt-5.5";
+			const message = {
+				...assistant([{ type: "text" as const, text: "saved" }], "end_turn", {
+					inputTokens: 100000,
+					outputTokens: 0,
+				}),
+				modelReference,
+				usageMissing: true as const,
+				...(tier === "legacy"
+					? {}
+					: {
+							serviceTier: {
+								requested: "priority" as const,
+								reported: tier === "unknown" ? "future-tier" : "priority",
+							},
+						}),
+			};
+			const rates = vi
+				.spyOn(modelRates, "costFor")
+				.mockReturnValue({ input: 1, output: 1, cacheRead: 1, cacheWrite: 1, subscription: true });
+			const env = await makeEnv({ model: modelReference, seed: [message] });
+			try {
+				await dispatchCommand("/status", env.ctx);
+				const out = env.output();
+				expect(out).toContain(tier === "priority" ? "$0.250 (sub)!" : "~$0.100 (sub)!");
+				expect(out).toContain("pi-2cac4f1a9");
+				expect(out).toContain("exact gpt-5.5 ×2.5");
+				expect(out).toContain("flex ×0.5");
+				expect(out).toContain("default/unreported uses captured request");
+				expect(out).toContain("standard/auto/scale use base");
+				expect(out).toContain("not actual charges");
+				if (tier !== "priority") {
+					expect(out).toContain("base rates only");
+					expect(out).toContain("! means missing usage");
+				}
+				expect(env.requests).toHaveLength(0);
+			} finally {
+				rates.mockRestore();
+				env.runner.close();
+			}
+		},
+	);
+
 	it("updates native context estimates when switching away and back without inference", async () => {
 		const target = "openai-codex/status-model";
 		const env = await makeEnv({ model: target, noSession: true });

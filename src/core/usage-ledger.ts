@@ -11,6 +11,13 @@
  * flows through the surrounding contract (ChildModelBinding → TaskRecord).
  */
 import { addUsage, emptyUsage, type Usage } from "./messages.js";
+import type { ServiceTierReport } from "./service-tier.js";
+import {
+	parsePricingServiceTier,
+	parseUsagePricing,
+	pricingSlice,
+	type UsagePricingSlice,
+} from "./service-tier-pricing.js";
 
 export type UsageReportKind = "task" | "summarizer";
 
@@ -27,6 +34,8 @@ export interface AttemptUsage {
 	summarizerCalls: number;
 	/** At least one started stream produced no captured usage report. */
 	incomplete: boolean;
+	/** Conserved report-level attribution, including legacy reports once present. */
+	usagePricing?: UsagePricingSlice[];
 }
 
 export interface AttemptUsageSnapshot {
@@ -36,6 +45,7 @@ export interface AttemptUsageSnapshot {
 	taskReports: number;
 	summarizerCalls: number;
 	incomplete: boolean;
+	usagePricing?: UsagePricingSlice[];
 }
 
 export function createAttemptUsage(): AttemptUsage {
@@ -54,8 +64,22 @@ export function recordUsageReport(
 	ledger: AttemptUsage | undefined,
 	kind: UsageReportKind,
 	usage: Usage,
+	serviceTier?: ServiceTierReport,
 ): void {
 	if (ledger === undefined) return;
+	const observation = parsePricingServiceTier(serviceTier);
+	if (ledger.usagePricing === undefined && observation !== undefined) {
+		// Previous reports had no observation; never apply this report's tier to them.
+		const previous = ledger.totals;
+		ledger.usagePricing =
+			previous.inputTokens !== 0 ||
+			previous.outputTokens !== 0 ||
+			(previous.cacheReadTokens ?? 0) !== 0 ||
+			(previous.cacheWriteTokens ?? 0) !== 0
+				? [pricingSlice(previous)]
+				: [];
+	}
+	ledger.usagePricing?.push(pricingSlice(usage, observation));
 	addUsage(kind === "task" ? ledger.task : ledger.summarizer, usage);
 	addUsage(ledger.totals, usage);
 	if (kind === "task") ledger.taskReports += 1;
@@ -77,6 +101,7 @@ export function recordMissingUsageReport(ledger: AttemptUsage | undefined): void
 
 /** Deep copy — the outcome must not expose the live, still-mutable ledger. */
 export function attemptUsageSnapshot(ledger: AttemptUsage): AttemptUsageSnapshot {
+	const usagePricing = parseUsagePricing(ledger.usagePricing, ledger.totals);
 	return {
 		totals: { ...ledger.totals },
 		task: { ...ledger.task },
@@ -84,5 +109,6 @@ export function attemptUsageSnapshot(ledger: AttemptUsage): AttemptUsageSnapshot
 		taskReports: ledger.taskReports,
 		summarizerCalls: ledger.summarizerCalls,
 		incomplete: ledger.incomplete,
+		...(usagePricing === undefined ? {} : { usagePricing }),
 	};
 }
