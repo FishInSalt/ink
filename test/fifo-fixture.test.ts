@@ -30,7 +30,7 @@ function owned(outcome: FifoOutcome, holderCount: number): void {
 	expect(outcome.pgid).toBeGreaterThan(1);
 	// tsx may also own an esbuild helper; audit it too, without mistaking it
 	// for one of the explicitly reported and externally verified FIFO holders.
-	expect(outcome.ownership.length).toBeGreaterThanOrEqual(holderCount + 1);
+	expect(outcome.ownership.length, JSON.stringify(outcome)).toBeGreaterThanOrEqual(holderCount + 1);
 	expect(outcome.holderPids).toHaveLength(holderCount);
 	expect(outcome.ownership.every((member) => member.pgid === outcome.pgid)).toBe(true);
 	expect(outcome.ownership.some((member) => member.pid === outcome.pgid)).toBe(true);
@@ -170,9 +170,11 @@ describe("isolated native FIFO fixture containment", () => {
 	});
 
 	it("the parent watchdog contains a worker with a holder blocked in open", async () => {
-		const outcome = await runFifoFixture("child", { control: "watchdog", watchdogMs: 1800 });
+		// Keep the 10s absolute startup/scenario cap; inject the shorter fault
+		// only after externally observing the worker and holder ownership.
+		const outcome = await runFifoFixture("child", { control: "watchdog", faultWatchdogMs: 1800 });
 		expect(outcome.ok).toBe(false);
-		expect(outcome.failure).toBe("FIFO scenario watchdog expired (1800ms)");
+		expect(outcome.failure, JSON.stringify(outcome)).toBe("FIFO post-ownership watchdog expired (1800ms)");
 		expect(outcome.cleanup.signal).toBe("SIGKILL");
 		owned(outcome, 1);
 		cleaned(outcome);

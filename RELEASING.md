@@ -295,7 +295,12 @@ node node_modules/vitest/vitest.mjs run test/package-metadata.test.ts test/packa
 CI checks the exact Node 22.19.0 minimum and Node 24. Both CI and the release
 gate provision `rg`/`fd` and fail if search-test prerequisites are missing.
 Their shared `scripts/install-ci-search-tools.sh` uses the current Ubuntu
-amd64 codename and isolated APT sources/lists/cache below `RUNNER_TEMP`.
+amd64 codename and an owned APT sources/lists/cache root under canonical `/tmp`,
+so private runner-home ancestors cannot block `_apt`. Only the newly created
+public-metadata root is made traversable; existing directory permissions stay
+unchanged. A noninteractive `_apt` read check must pass before APT runs, and
+both APT calls explicitly select `_apt` plus the owned archives directory.
+The runner-only `fd` alias stays under a separate `RUNNER_TEMP` root.
 Every source is signed, official HTTPS and amd64-only, even if foreign
 architectures are registered. It bypasses the image's mirror list and
 third-party indexes without modifying global sources or DNS. Update failure

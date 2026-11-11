@@ -1,7 +1,16 @@
 # CI and release-verification reliability maintenance
 
 Date: 2026-11-11
-Status: design and implementation independently approved; local verification passed; hosted Linux acceptance pending.
+Status: design and implementation independently approved; merged/pushed as df22aac; first hosted run requires follow-up.
+
+Hosted run 43063656223 installed the required tools on both Node jobs, but
+reported `_apt` access failures and unsandboxed root downloads. Node 24 passed
+all gates (5186 tests passed, two existing platform skips); Node 22 failed one
+pre-existing FIFO watchdog ownership assertion (5185 passed, one failed, two
+existing platform skips). Pages 43063656247 deployed successfully. The approved
+[hosted follow-up](ci-hosted-followup.md) supersedes only the APT scratch-root
+placement and short FIFO fault-timer assumptions. This document's execution
+record below describes the original pre-push candidate, not final acceptance.
 Branch/worktree: `maintenance/ci-release-reliability`, `.worktrees/ink-ci-release-reliability`.
 Base: `9b8bb53aeca723850cb13255bb3e5344a1f038c6` (clean local/remote main).
 Evidence root: `/tmp/ink-ci-release-reliability.EmQ1Go/`.

@@ -1,5 +1,11 @@
 # Isolate native FIFO concurrency fixtures
 
+Hosted follow-up: [ci-hosted-followup.md](ci-hosted-followup.md) supersedes only
+the short watchdog fault-test assumption after CI 43063656223 observed no
+ownership snapshot by the pre-ownership 1800 ms expiry. The hard 10000 ms cap
+including startup, 2000 ms cleanup and 15000 ms test deadline remain unchanged;
+only the injected short fault timer waits for external ownership verification.
+
 Status: approved for implementation after independent adversarial review.
 Date: 2026-11-11
 Baseline: `main@ebf4278`

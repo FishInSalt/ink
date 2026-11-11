@@ -75,7 +75,9 @@ function provision(overrides: NodeJS.ProcessEnv = {}) {
 	const root = mkTempDir("ink-search-prerequisites-");
 	const bin = join(root, "bin");
 	const runner = join(root, "runner temp with spaces");
-	for (const directory of [bin, runner, join(root, "home"), join(root, "tmp")]) mkdirSync(directory);
+	const aptParent = join(root, "canonical tmp with spaces");
+	for (const directory of [bin, runner, aptParent, join(root, "home"), join(root, "tmp")])
+		mkdirSync(directory, { mode: 0o700 });
 	const output = join(root, "github path");
 	const log = join(root, "calls.jsonl");
 	const networkLog = join(root, "blocked-network.log");
@@ -92,12 +94,34 @@ function provision(overrides: NodeJS.ProcessEnv = {}) {
 		"dpkg",
 		'console.log(process.argv[2] === "--print-architecture" ? (process.env.TEST_ARCH || "amd64") : (process.env.TEST_FOREIGN || ""));',
 	);
+	// Map the exact production templates into owned fixtures. Never create
+	// loose local /tmp roots or execute a different mktemp program.
+	stub(
+		"mktemp",
+		`
+const fs = require("node:fs"), path = require("node:path");
+const args = process.argv.slice(2);
+if (args.length !== 2 || args[0] !== "-d") process.exit(99);
+let prefix;
+if (args[1] === "/tmp/ink-ci-search.XXXXXX") prefix = path.join(process.env.TEST_APT_PARENT, "ink-ci-search.");
+else if (args[1] === path.join(process.env.TEST_RUNNER_ROOT, "ink-ci-tools.XXXXXX")) prefix = path.join(process.env.TEST_RUNNER_ROOT, "ink-ci-tools.");
+else process.exit(99);
+fs.appendFileSync(process.env.TEST_CALL_LOG, JSON.stringify({tool:"mktemp",args}) + "\\n");
+console.log(fs.mkdtempSync(prefix));
+`,
+	);
 	// This sudo stub records arguments and returns fixture statuses. It NEVER
 	// imports child_process or executes apt, even when passed an unknown command.
 	stub(
 		"sudo",
 		`
 const fs = require("node:fs");
+const full = process.argv.slice(2);
+if (full[0] === "-n") {
+  if (full.length !== 6 || full[1] !== "-u" || full[2] !== "_apt" || full[3] !== "/usr/bin/test" || full[4] !== "-r") process.exit(99);
+  fs.appendFileSync(process.env.TEST_CALL_LOG, JSON.stringify({tool:"sudo",args:full,action:"access-check"}) + "\\n");
+  process.exit(process.env.TEST_FAIL === "access-check" ? 4 : 0);
+}
 if (process.argv[2] !== "apt-get") process.exit(99);
 const args = process.argv.slice(3), options = {};
 let i = 0;
@@ -106,6 +130,7 @@ while (args[i] === "-o") {
   options[value.slice(0, equal)] = value.slice(equal + 1); i += 2;
 }
 const action = args[i];
+if (action !== "update" && action !== "install") process.exit(99);
 fs.appendFileSync(process.env.TEST_CALL_LOG, JSON.stringify({
   tool: "sudo", args: process.argv.slice(2), action, options,
   sources: fs.readFileSync(options["Dir::Etc::sourcelist"], "utf8"),
@@ -136,6 +161,8 @@ console.log(${JSON.stringify(`${name} synthetic version`)});
 			RUNNER_TEMP: runner,
 			GITHUB_PATH: output,
 			TEST_CALL_LOG: log,
+			TEST_APT_PARENT: aptParent,
+			TEST_RUNNER_ROOT: runner,
 			NODE_OPTIONS: `--require ${JSON.stringify(NETWORK_PRELOAD)}`,
 			INK_TEST_NETWORK_LOG: networkLog,
 			...overrides,
@@ -150,7 +177,7 @@ console.log(${JSON.stringify(`${name} synthetic version`)});
 				.split("\n")
 				.map((line) => JSON.parse(line) as ProvisionCall)
 		: [];
-	return { result, root, runner, bin, output: readFileSync(output, "utf8"), calls };
+	return { result, root, runner, aptParent, bin, output: readFileSync(output, "utf8"), calls };
 }
 
 describe("isolated CI apt provisioning (non-executing privilege mocks)", () => {
@@ -166,8 +193,21 @@ describe("isolated CI apt provisioning (non-executing privilege mocks)", () => {
 	it.each(["", "arm64\ni386"])("uses only signed amd64 sources with foreign registrations %j", (foreign) => {
 		const env = provision({ TEST_FOREIGN: foreign });
 		expect(env.result.status, env.result.stderr).toBe(0);
-		const apt = env.calls.filter((call) => call.tool === "sudo");
-		expect(apt.map((call) => call.action)).toEqual(["update", "install"]);
+		const privilege = env.calls.filter((call) => call.tool === "sudo");
+		expect(privilege.map((call) => call.action)).toEqual(["access-check", "update", "install"]);
+		const apt = privilege.slice(1);
+		expect(privilege[0]!.args).toEqual([
+			"-n",
+			"-u",
+			"_apt",
+			"/usr/bin/test",
+			"-r",
+			apt[0]!.options!["Dir::Etc::sourcelist"],
+		]);
+		expect(env.calls.filter((call) => call.tool === "mktemp").map((call) => call.args)).toEqual([
+			["-d", "/tmp/ink-ci-search.XXXXXX"],
+			["-d", join(env.runner, "ink-ci-tools.XXXXXX")],
+		]);
 		expect(apt[0]!.options).toEqual(apt[1]!.options);
 		const options = apt[0]!.options!;
 		expect(options).toMatchObject({
@@ -176,10 +216,14 @@ describe("isolated CI apt provisioning (non-executing privilege mocks)", () => {
 			"Acquire::http::Timeout": "15",
 			"Acquire::https::Timeout": "15",
 			"APT::Update::Error-Mode": "any",
+			"APT::Sandbox::User": "_apt",
 		});
-		for (const field of ["Dir::Etc::sourcelist", "Dir::State::lists", "Dir::Cache"]) {
-			expect(options[field]?.startsWith(`${env.runner}/`)).toBe(true);
+		for (const field of ["Dir::Etc::sourcelist", "Dir::State::lists", "Dir::Cache", "Dir::Cache::archives"]) {
+			expect(options[field]?.startsWith(`${env.aptParent}/`)).toBe(true);
+			expect(options[field]?.startsWith(`${env.runner}/`)).toBe(false);
 		}
+		expect(options["Dir::Cache::archives"]).toBe(join(options["Dir::Cache"]!, "archives"));
+		expect(statSync(join(options["Dir::Etc::sourcelist"]!, "..")).mode & 0o777).toBe(0o755);
 		const sources = apt[0]!.sources!;
 		expect(sources.trim().split("\n")).toEqual([
 			"deb [arch=amd64 signed-by=/usr/share/keyrings/ubuntu-archive-keyring.gpg] https://archive.ubuntu.com/ubuntu noble main universe",
@@ -195,15 +239,14 @@ describe("isolated CI apt provisioning (non-executing privilege mocks)", () => {
 			"ripgrep",
 			"fd-find",
 		]);
-		expect(env.calls.filter((call) => call.tool !== "sudo").map((call) => call.tool)).toEqual([
-			"rg",
-			"fdfind",
-			"fdfind",
-		]);
+		expect(
+			env.calls.filter((call) => call.tool === "rg" || call.tool === "fdfind").map((call) => call.tool),
+		).toEqual(["rg", "fdfind", "fdfind"]);
 		const tools = env.output.trim();
 		expect(tools.startsWith(`${env.runner}/`)).toBe(true);
 		expect(readFileSync(join(tools, "fd"), "utf8")).toBe(readFileSync(join(env.bin, "fdfind"), "utf8"));
-		expect(statSync(join(tools, "..")).mode & 0o777).toBe(0o755);
+		expect(statSync(tools).mode & 0o777).toBe(0o700);
+		expect(statSync(env.runner).mode & 0o777).toBe(0o700);
 	});
 
 	it.each([
@@ -223,13 +266,22 @@ describe("isolated CI apt provisioning (non-executing privilege mocks)", () => {
 		expect(env.output).toBe("");
 	});
 
+	it("keeps a failed sandbox-user access check fatal before APT or PATH publication", () => {
+		const env = provision({ TEST_FAIL: "access-check" });
+		expect(env.result.status).toBe(4);
+		expect(env.calls.filter((call) => call.tool === "sudo").map((call) => call.action)).toEqual([
+			"access-check",
+		]);
+		expect(env.output).toBe("");
+	});
+
 	it.each(["update", "install", "rg", "fdfind"])(
 		"keeps %s failure fatal and never publishes PATH",
 		(failure) => {
 			const env = provision({ TEST_FAIL: failure });
 			expect(env.result.status).toBe(failure === "update" || failure === "install" ? 100 : 3);
 			expect(env.output).toBe("");
-			const apt = env.calls.filter((call) => call.tool === "sudo");
+			const apt = env.calls.filter((call) => call.action === "update" || call.action === "install");
 			expect(apt.map((call) => call.action)).toEqual(
 				failure === "update" ? ["update"] : ["update", "install"],
 			);

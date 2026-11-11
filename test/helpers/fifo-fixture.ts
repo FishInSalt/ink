@@ -14,6 +14,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { onTestFinished } from "vitest";
 import { NETWORK_PRELOAD } from "./cli-fixture.js";
+import { startFifoWatchdog } from "./fifo-watchdog.js";
 
 export type FifoScenario = "overlap" | "abort" | "child";
 export type FifoControl =
@@ -185,11 +186,19 @@ export function assertNoFifoBlockedNetwork(outcome: Pick<FifoOutcome, "failure" 
 /** Owns one detached process group and its paths. No caller-supplied PGID API. */
 export async function runFifoFixture(
 	scenario: FifoScenario,
-	options: { control?: FifoControl; watchdogMs?: number } = {},
+	options: { control?: FifoControl; watchdogMs?: number; faultWatchdogMs?: number } = {},
 ): Promise<FifoOutcome> {
 	if (process.platform === "win32") throw new Error("FIFO fixtures require POSIX process groups");
 	const watchdogMs = options.watchdogMs ?? 10_000;
-	if (!(watchdogMs > 0 && watchdogMs <= 10_000)) throw new Error("Invalid FIFO watchdog budget");
+	if (!Number.isSafeInteger(watchdogMs) || watchdogMs <= 0 || watchdogMs > 10_000)
+		throw new Error("Invalid FIFO watchdog budget");
+	const faultWatchdogMs = options.control === "watchdog" ? (options.faultWatchdogMs ?? 1800) : undefined;
+	if (
+		(options.faultWatchdogMs !== undefined && options.control !== "watchdog") ||
+		(faultWatchdogMs !== undefined &&
+			(!Number.isSafeInteger(faultWatchdogMs) || faultWatchdogMs <= 0 || faultWatchdogMs > watchdogMs))
+	)
+		throw new Error("Invalid FIFO fault watchdog budget");
 	const bodyDeadline = Date.now() + watchdogMs;
 	const prefix = { overlap: "ink-parallel-", abort: "ink-abort-", child: "ink-child-" }[scenario];
 	// Not mkTempDir: inconclusive cleanup MUST retain the FIFO paths.
@@ -352,6 +361,7 @@ export async function runFifoFixture(
 						return fail("worker/holder not observed in owned process group");
 					}
 					ownershipVerified = true;
+					watchdog.armAfterOwnership();
 					if (child.connected)
 						child.send({ type: "proceed" }, (error) => {
 							if (error) fail(`worker IPC send: ${error.message}`);
@@ -417,9 +427,10 @@ export async function runFifoFixture(
 			observeOwnerLoss();
 		else fail("owner-loss control disconnected before its witness");
 	});
-	const watchdog = setTimeout(
-		() => fail(`FIFO scenario watchdog expired (${watchdogMs}ms)`),
-		Math.max(0, bodyDeadline - Date.now()),
+	const watchdog = startFifoWatchdog(
+		{ deadline: bodyDeadline, scenarioMs: watchdogMs, afterOwnershipMs: faultWatchdogMs },
+		(phase, ms) =>
+			fail(`FIFO ${phase === "scenario" ? "scenario" : "post-ownership"} watchdog expired (${ms}ms)`),
 	);
 
 	const collectBlockedNetwork = () => {
@@ -433,6 +444,8 @@ export async function runFifoFixture(
 	let cleanupPending: Promise<void> | undefined;
 	let groupAbsent = false;
 	const cleanup = (): Promise<void> => {
+		// Ordinary completion AND onTestFinished fallback seal against late arming.
+		watchdog.stop();
 		if (outcome.cleanup.conclusive) return Promise.resolve();
 		if (cleanupPending) return cleanupPending;
 		cleanupPending = (async () => {
@@ -526,7 +539,7 @@ export async function runFifoFixture(
 	});
 	await body;
 	await ownerObservation;
-	clearTimeout(watchdog);
+	watchdog.stop();
 	await cleanup();
 	outcome.ok = outcome.failure === "" && outcome.blockedNetwork === "" && outcome.cleanup.conclusive;
 	return outcome;

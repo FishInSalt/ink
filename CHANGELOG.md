@@ -13,7 +13,12 @@ their original release identity.
 - **CI search prerequisites.** Use isolated, signed official Ubuntu sources
   with explicit amd64 filtering and bounded acquisition instead of the hosted
   image's mirror list. Installation failures and required-tool checks remain
-  fatal; this does not claim to repair every hosted DNS failure.
+  fatal; this does not claim to repair every hosted DNS failure. Keep public
+  metadata outside private runner-home ancestors and require actual `_apt`
+  access before acquisition, without widening existing directory permissions.
+- **FIFO watchdog readiness.** Start the short fixture fault countdown only after
+  externally verifying worker/holder ownership. Keep the independent ten-second
+  startup/scenario cap, cleanup budget and test deadline unchanged.
 - **Login test readiness.** Observe saved-key UI completion instead of assuming
   durable credential writes finish in one render interval. A gated real-save
   regression covers delayed persistence without changing production auth.
