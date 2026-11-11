@@ -102,6 +102,9 @@ describe("release guards", () => {
 		expect(yaml).toContain("vars.INK_NPM_PACKAGE");
 		expect(yaml).not.toMatch(/vars\.NPM_PUBLISH_ENABLED|inputs\.dry_run|npm install -g/);
 		expect(yaml).toContain('git merge-base --is-ancestor "$REF_SHA" origin/main');
+		expect(yaml).toContain("run: npm publish --ignore-scripts --provenance --access public");
+		expect(yaml).toContain("run: npm publish --dry-run --ignore-scripts --access public");
+		expect(yaml).not.toContain("gh run rerun");
 	});
 	it("keeps both workflows on the shared isolated artifact smoke", () => {
 		for (const workflow of ["ci", "release"]) {

@@ -32,12 +32,8 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - name: install search test prerequisites
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ripgrep fd-find
-          mkdir "$RUNNER_TEMP/ink-test-tools"
-          ln -s "$(command -v fdfind)" "$RUNNER_TEMP/ink-test-tools/fd"
-          echo "$RUNNER_TEMP/ink-test-tools" >> "$GITHUB_PATH"
+        timeout-minutes: 10
+        run: bash scripts/install-ci-search-tools.sh
       - name: verify search test prerequisites
         run: |
           rg --version

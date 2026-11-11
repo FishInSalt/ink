@@ -255,8 +255,9 @@ node scripts/package-smoke.mjs --cache-source "$HOME/.npm"
 git diff --check
 ```
 
-`npm run lint` also runs `lint:scripts`, which syntax-checks both package and
-release guard scripts with `node --check`. Both CI workflows use this gate.
+`npm run lint` also runs `lint:scripts`, which syntax-checks the package,
+release-guard and registry-verification scripts with `node --check`, and the
+CI provisioning helper with `bash -n`. Both CI workflows use this gate.
 
 Use the controlled offline test boundary in the rename design: no production
 credentials or provider endpoints. Never run `npm ci` against a shared
@@ -293,6 +294,14 @@ node node_modules/vitest/vitest.mjs run test/package-metadata.test.ts test/packa
 
 CI checks the exact Node 22.19.0 minimum and Node 24. Both CI and the release
 gate provision `rg`/`fd` and fail if search-test prerequisites are missing.
+Their shared `scripts/install-ci-search-tools.sh` uses the current Ubuntu
+amd64 codename and isolated APT sources/lists/cache below `RUNNER_TEMP`.
+Every source is signed, official HTTPS and amd64-only, even if foreign
+architectures are registered. It bypasses the image's mirror list and
+third-party indexes without modifying global sources or DNS. Update failure
+is fatal; acquisition retries/timeouts and a 10-minute step timeout are
+bounded. Missing tools must never be ignored. Local tests use non-executing
+privilege mocks, not actual sudo/APT; they cannot certify hosted installation.
 Local checks on a different Node version do not substitute for those CI runs. Independently review code and
 artifact results before declaring a release ready; merge to main only with
 `--no-ff`.
@@ -313,11 +322,34 @@ does not implicitly install a moving `npm@latest` globally. Use a separately
 reviewed runner/toolchain update if required. No local global npm upgrade is
 authorized by editing a workflow.
 
-Registry visibility checks and provenance URLs derive from the validated
-selected package/version. After a real publication, verify the expected
-registry version/artifact/provenance; do not infer success from a green
-skipped run. Global installation and release-page publication need separate
-approval and an appropriate isolated/production acceptance plan.
+After real publication, the workflow first records the fixed distinction:
+**npm publish returned success; registry verification is pending; do not
+rerun publication.** This notice precedes git/verifier setup and is also
+written to the step summary on a best-effort basis.
+
+`scripts/check-registry-visibility.mjs` validates the selected package/version
+and explicitly peeled source commit, then performs only unauthenticated
+exact-version metadata GETs against `registry.npmjs.org`. It does not follow
+redirects or read npm credentials. It requires matching name, version,
+`gitHead` and official tarball URL, not just HTTP 200 or `latest`. The total
+monotonic budget is 10 minutes, each request including its body is limited
+to 15 seconds and 256 KiB, and pauses increase from 5/10/20 to at most 30
+seconds without exceeding the deadline. The step has a separate 12-minute
+containment timeout.
+
+404/429/5xx, network timeouts and consistent incomplete metadata are retried;
+identity mismatches, redirects, malformed/oversized responses and other
+terminal HTTP errors fail verification. A deadline/final failure is nonzero
+and retains the already-published distinction in stderr and the summary.
+A summary-write failure warns without replacing the verification outcome.
+**Never rerun the tag workflow to remedy a failed visibility check.**
+
+Metadata visibility is not cryptographic artifact/provenance verification.
+Separately verify the expected registry artifact, integrity and provenance;
+do not infer publication from a green skipped run. Global installation and
+release-page publication need separate approval and an appropriate
+isolated/production acceptance plan. Historical refs retain their original
+workflows and 180-second windows; do not move or reuse their tags.
 
 ## Documentation site and Search Console
 
@@ -338,6 +370,11 @@ indexing or search ranking.
 
 ## Troubleshooting
 
+- **Search-prerequisite DNS/install failure:** inspect the chosen Ubuntu
+  codename/architecture, official-source diagnostics and strict APT error.
+  Isolated sources avoid the image mirror list but cannot repair arbitrary
+  hosted DNS failures. Do not disable signature/TLS checks, use stale indexes,
+  skip required tools or repeatedly rerun without new evidence.
 - **Publication skipped:** confirm event is a tag push, new gate equals
   `true`, and new package variable equals `ink-agent`. Do not enable gates
   before the approved bootstrap/binding or legacy retirement. A rerun of a
