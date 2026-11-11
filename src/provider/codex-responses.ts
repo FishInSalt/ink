@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { StopReason, Usage } from "../core/messages.js";
+import { parseServiceTierReport, type ServiceTierReport } from "../core/service-tier.js";
 import { getCodexAccessToken } from "./codex-auth.js";
 import { canRequestFastMode } from "./model-speed.js";
 import {
@@ -184,6 +185,7 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 			let sawUsage = false;
 			let stopReason: StopReason = null;
 			let terminal = false;
+			let serviceTier: ServiceTierReport | undefined;
 			for await (const sse of abortSafe(
 				wrapStreamInterruptions(parseResponsesSse(response.body!, request.signal), "Codex"),
 				request.signal,
@@ -247,22 +249,18 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 						}
 						if (record(final.error))
 							throw responseError(final, { ...errorFields, label: "Codex response failed" });
-						// Both accepted terminal paths must reject an explicit downgrade
-						// before reconciliation can yield output or a message_end can
-						// persist tools/text or trigger a capped-summary thinking retry.
+						// Fast requests priority, not priority-or-error. Keep the terminal
+						// report unchanged; created-event metadata is not authoritative.
 						const tier = final.service_tier;
-						if (request.speed === "fast" && (tier === "default" || tier === "standard" || tier === "flex")) {
-							throw responseError(
-								{
-									error: {
-										code: "service_tier_downgrade",
-										param: "service_tier",
-										message: `Fast requested, but Codex reported service_tier="${tier}"`,
-									},
-								},
-								{ ...errorFields, reason: tier },
-							);
-						}
+						serviceTier = parseServiceTierReport({
+							requested: body.service_tier === "priority" ? "priority" : "omitted",
+							reported:
+								typeof tier === "string" &&
+								credential.accessToken !== "" &&
+								tier.includes(credential.accessToken)
+									? undefined
+									: tier,
+						});
 						({ usage, sawUsage } = usageFromResponse(final.usage));
 						stopReason = incomplete ? "max_tokens" : "end_turn";
 						events = output.reconcile(final.output, incomplete);
@@ -301,6 +299,7 @@ export function createCodexResponsesProvider(options: CodexResponsesProviderOpti
 					blocks,
 					usage,
 					stopReason,
+					serviceTier,
 					provenance: { version: 1, provider: "openai-codex", model: request.model },
 					...(sawUsage ? {} : { usageMissing: true as const }),
 				},

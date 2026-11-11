@@ -1,5 +1,6 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import type { AssistantMessage } from "../src/core/messages.js";
 import * as catalog from "../src/provider/catalog.js";
 import { bundledCodexFastModeSupport } from "../src/provider/codex-speed-catalog.js";
 import * as discovery from "../src/provider/discover.js";
@@ -212,6 +213,71 @@ async function commandFixture() {
 	};
 	return { runner, ctx, output, requests };
 }
+
+describe("/status service tier observations", () => {
+	const observed = (serviceTier: unknown, modelReference: string | undefined = BASE): AssistantMessage =>
+		({ ...assistant([{ type: "text", text: "answer" }]), modelReference, serviceTier }) as AssistantMessage;
+
+	it.each([undefined, "fast"] as const)(
+		"labels the last matching response, not current speed=%s",
+		async (speed) => {
+			const { runner, ctx, output } = await commandFixture();
+			if (speed) await dispatchCommand(`/model ${FAST}`, ctx);
+			runner.history.push(
+				observed({ requested: "priority", reported: "older" }),
+				observed({ requested: "omitted", reported: "default" }),
+				observed({ requested: "priority", reported: "other-model" }, "openai-codex/other"),
+				observed({ requested: "priority", reported: "other-provider" }, "openai/gpt-6.1-sol"),
+			);
+			await dispatchCommand("/status", ctx);
+			expect(output()).toContain(
+				"LAST response service tier · requested omitted · reported default (not confirmation of current selection)",
+			);
+			expect(output()).not.toMatch(/reported (older|other-model|other-provider)/);
+		},
+	);
+
+	it.each([undefined, null, {}, { requested: "fast", reported: "default" }, { reported: "default" }])(
+		"never substitutes an older report for latest metadata %j",
+		async (value) => {
+			const { runner, ctx, output } = await commandFixture();
+			runner.history.push(observed({ requested: "priority", reported: "older" }), observed(value));
+			await dispatchCommand("/status", ctx);
+			expect(output()).not.toContain("LAST response service tier");
+		},
+	);
+
+	it.each([undefined, "default\n", "\u001b[31m", "x".repeat(161), {}])(
+		"shows unreported for invalid/missing reported tier %j without stale reuse",
+		async (reported) => {
+			const { runner, ctx, output } = await commandFixture();
+			runner.history.push(
+				observed({ requested: "priority", reported: "older" }),
+				observed({ requested: "priority", reported }),
+			);
+			await dispatchCommand("/status", ctx);
+			expect(output()).toContain("LAST response service tier · requested priority · reported unreported");
+			expect(output()).not.toContain("reported older");
+		},
+	);
+
+	it("does not infer identity from model/provenance or use another provider's observation", async () => {
+		const { runner, ctx, output } = await commandFixture();
+		const legacy = observed({ requested: "priority", reported: "legacy" });
+		delete legacy.modelReference;
+		legacy.model = "gpt-6.1-sol";
+		legacy.provenance = { version: 1, provider: "openai-codex", model: "gpt-6.1-sol" };
+		runner.history.push(
+			legacy,
+			observed({ requested: "priority", reported: "foreign" }, "openai/gpt-6.1-sol"),
+		);
+		await dispatchCommand("/status", ctx);
+		expect(output()).not.toContain("LAST response service tier");
+		await runner.setModel("openai/gpt-6.1-sol");
+		await dispatchCommand("/status", ctx);
+		expect(output()).not.toContain("LAST response service tier");
+	});
+});
 
 describe("Fast selection commands", () => {
 	it("manual selection keeps thinking, shows Fast and a preserving default hint, then clears normally", async () => {

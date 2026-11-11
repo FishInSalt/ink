@@ -275,7 +275,7 @@ describe("Responses endpoint and retry policy", () => {
 			status: 200,
 			code: "invalid_response",
 			requestId: expected,
-			message: "Invalid Codex response 200: expected a response stream body",
+			message: "Invalid Codex response: expected a response stream body",
 			retryable: false,
 		});
 		expect(fetch).toHaveBeenCalledTimes(1);

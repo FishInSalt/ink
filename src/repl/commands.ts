@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename } from "node:path";
 import { estimateContextTokens } from "../core/compaction.js";
 import type { AssistantBlock } from "../core/messages.js";
+import { parseServiceTierReport } from "../core/service-tier.js";
 import { sessionsRoot as sessionsRootDir } from "../core/session/manager.js";
 import * as sessionsPrune from "../core/session/prune.js";
 import type { SessionStore } from "../core/session/store.js";
@@ -1920,6 +1921,19 @@ export const COMMANDS: readonly SlashCommand[] = [
 			ctx.renderer.note(
 				`▪ model ${runner.modelUsable() ? formatModelSelection(runner.model, runner.speed) : noModelText(runner.hasConfiguredProviders(), true)}`,
 			);
+			if (runner.providerName === "openai-codex") {
+				// Inspect ONLY the last exact-model assistant: a legacy/malformed
+				// observation must not cause substitution of an older report.
+				const last = runner.history.findLast(
+					(message) => message.role === "assistant" && message.modelReference === runner.modelReference(),
+				);
+				const report = parseServiceTierReport(last?.role === "assistant" ? last.serviceTier : undefined);
+				if (report) {
+					ctx.renderer.note(
+						`▪ LAST response service tier · requested ${report.requested} · reported ${report.reported ?? "unreported"} (not confirmation of current selection)`,
+					);
+				}
+			}
 			const session = runner.session;
 			if (session === null) {
 				ctx.renderer.note("▪ session none (--no-session)");

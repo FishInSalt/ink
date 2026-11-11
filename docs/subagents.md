@@ -26,7 +26,11 @@ started, the child keeps its own resolved speed through tool follow-ups,
 auto-compaction and overflow summaries, including summarizer thinking retries.
 In Fast mode, a failed summary is reported immediately as a child failure; the
 child does not silently continue uncompressed or retry at later tool boundaries.
-Normal mode retains its existing summarizer-failure tolerance.
+Normal mode retains its existing summarizer-failure tolerance. A valid Codex
+summary or child answer is not a failure solely because its terminal tier differs
+from the requested priority tier; actual failures and incomplete-tool safety are
+unchanged. Child assistant observations persist separately from the base binding
+and do not enter replay or summary prompts; see [providers.md](providers.md).
 
 ## Loop health
 

@@ -72,6 +72,16 @@ native replay history. Exact provider/base-model replay checks are unchanged;
 the suffix is not part of assistant provenance or usage/pricing identity.
 Thinking is independent of speed.
 
+New Codex assistant messages also retain optional `serviceTier` observations:
+`requested:"omitted"|"priority"` and optional bounded terminal `reported` text.
+They do not enter provider replay, summary prompts, context estimates or prices.
+Old messages without observations are unchanged. `/status` can show the **LAST
+response** for the current exact provider/base model in active history; if its
+latest assistant has no valid observation, no older one is substituted. It is
+not confirmation of the current selection or actual processing/billing. Valid
+responses are not rejected solely for a different reported tier; actual errors
+and non-execution of incomplete tool batches remain unchanged.
+
 Each top-level run captures provider, model, and speed at entry, before
 `run_start`. Its tool follow-ups and overflow recovery keep that snapshot;
 changing `/model` affects the next top-level run, not the active main loop.
