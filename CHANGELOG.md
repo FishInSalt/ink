@@ -19,6 +19,15 @@ their original release identity.
   more allowance; subscription-tier access and acceleration remain unverified
   after an inconclusive HTTP 400 live probe.
 
+### Changed
+
+- **Codex pre-stream retries.** Retry pre-stream connection failures up to five
+  attempts with 1/2/4/8 s pauses under a 95 s opening budget (was three attempts
+  with 600/1500 ms). Temporary admission errors keep their three-attempt
+  policy. A final network error now appends the attempt count and a closed
+  allowlist cause (`timeout`, `deadline`, `ECONNRESET`, …) without exposing raw
+  network messages. Mid-stream interruptions are still not replayed.
+
 ## [0.5.1] - 2026-11-10
 
 ### Fixed

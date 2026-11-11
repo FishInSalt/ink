@@ -261,7 +261,7 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 		const fail = () => {
 			throw new Error(`Bearer ${TOKEN}`);
 		};
-		const { provider, auth, fetch } = harness([fail, fail, fail]);
+		const { provider, auth, fetch } = harness([fail, fail, fail, fail, fail]);
 		const req = request();
 		const failure = expect(collect(provider.stream(req))).rejects.toMatchObject({
 			name: "CodexResponseError",
@@ -272,7 +272,7 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 		await vi.runAllTimersAsync();
 		await failure;
 		expect(auth).toHaveBeenCalledTimes(1);
-		expect(fetch).toHaveBeenCalledTimes(3);
+		expect(fetch).toHaveBeenCalledTimes(5);
 		expect(req).toEqual(request());
 		for (const [url, init] of fetch.mock.calls) {
 			expect(url).toBe(ENDPOINT);
