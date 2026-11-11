@@ -7,10 +7,10 @@
   reviewer, adversarial). Implementation starts only after the design
   review closes.
 - Start EVERY repository change (code, docs, config — no size or type
-  threshold) by creating a dedicated worktree, before the first edit; if a
-  worktree is not workable, use a dedicated branch instead. Merge to `main`
-  with `--no-ff` by default; any exception must state the reason and get
-  confirmation first.
+  threshold), before the first edit, in its own worktree or branch: prefer a
+  dedicated worktree per batch of changes, otherwise use a dedicated branch.
+  Merge to `main` with `--no-ff` by default; any exception must state the
+  reason and get confirmation first.
 - A feature change that alters user-visible behavior must update the
   matching page under `docs/` (the published user-facing set — see
   docs/index.md) in the same batch: the model routes questions through
