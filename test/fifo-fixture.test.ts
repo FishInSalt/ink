@@ -92,6 +92,44 @@ describe("isolated native FIFO fixture containment", () => {
 		await parentReadSentinel();
 	});
 
+	it.each([
+		["owner-startup-loss", "startup"],
+		["owner-before-open", "before-open"],
+		["owner-paired-read", "paired-read"],
+	] as const)("worker self-contains %s before supervisor cleanup can mask it", async (control, phase) => {
+		const outcome = await runFifoFixture("child", { control });
+		// Emergency termination is NOT successful execution of a read scenario.
+		expect(outcome.ok).toBe(false);
+		expect(outcome.failure, JSON.stringify(outcome)).toBe("owner-loss control: supervisor IPC disconnected");
+		expect(outcome.report).toBeUndefined();
+		expect(outcome.ownerLoss, JSON.stringify(outcome)).toMatchObject({
+			phase,
+			observed: true,
+			directClosedBeforeCleanup: true,
+			signalsBeforeObservation: 0,
+			error: "",
+		});
+		expect(outcome.ownerLoss!.members.every((member) => member.stat.startsWith("Z"))).toBe(true);
+		expect(outcome.cleanup.signal).toBe("SIGKILL");
+		expect(outcome.cleanup.code).toBeNull();
+		expect(outcome.cleanup.containmentSignals).toBe(0);
+		if (phase === "startup") {
+			expect(outcome.holderPids).toEqual([]);
+		} else {
+			owned(outcome, 1);
+			if (phase === "paired-read") {
+				expect(outcome.ownerLoss!.witness).toMatchObject({
+					eofSent: false,
+					executed: ["k1"],
+					executeSettled: [],
+				});
+				expect(outcome.ownerLoss!.witness!.holders[0]).toMatchObject({ ready: true, closed: false });
+			}
+		}
+		cleaned(outcome);
+		await parentReadSentinel();
+	});
+
 	it("an actual serial child read fails the probe witness BEFORE any EOF release", async () => {
 		const outcome = await runFifoFixture("child", { control: "serial" });
 		expect(outcome.ok).toBe(false);

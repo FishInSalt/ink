@@ -156,6 +156,103 @@ describe("Codex Fast raw request boundary", () => {
 	});
 });
 
+describe("Fast recovery hints preserve original errors", () => {
+	const cases: { name: string; make: () => unknown; hint: boolean }[] = [
+		{ name: "ordinary Error", make: () => new Error("adapter failed"), hint: true },
+		{
+			name: "typed Codex error",
+			make: () =>
+				new CodexResponseError("adapter failed", { status: 503, code: "adapter_error", retryable: true }),
+			hint: true,
+		},
+		{ name: "native AbortError", make: () => new DOMException("adapter aborted", "AbortError"), hint: true },
+		{
+			name: "native TimeoutError",
+			make: () => new DOMException("adapter timed out", "TimeoutError"),
+			hint: true,
+		},
+		{ name: "frozen Error", make: () => Object.freeze(new Error("immutable failure")), hint: false },
+		{
+			name: "non-configurable message",
+			make: () =>
+				Object.defineProperty(new Error("immutable failure"), "message", {
+					writable: false,
+					configurable: false,
+				}),
+			hint: false,
+		},
+		{
+			name: "throwing message getter",
+			make: () =>
+				Object.defineProperty(new Error(), "message", {
+					get() {
+						throw new Error("getter failed");
+					},
+				}),
+			hint: false,
+		},
+		{
+			name: "throwing message setter",
+			make: () =>
+				Object.defineProperty(new Error(), "message", {
+					get: () => "adapter failed",
+					set() {
+						throw new Error("setter failed");
+					},
+					configurable: true,
+				}),
+			hint: true,
+		},
+		{ name: "non-Error object", make: () => ({ reason: "adapter failed" }), hint: false },
+		{ name: "non-Error string", make: () => "adapter failed", hint: false },
+	];
+	for (const { name, make, hint } of cases) {
+		it.each([undefined, "fast"] as const)(
+			`keeps ${name} identity from injected auth (speed=%s)`,
+			async (speed) => {
+				const original = make();
+				const auth = vi.fn(async () => {
+					throw original;
+				});
+				const fetch = vi.fn<typeof globalThis.fetch>();
+				const provider = createCodexResponsesProvider({ auth, fetch });
+				const actual = await collect(provider.stream(request({ speed }))).catch((error: unknown) => error);
+				// Avoid coercing a hostile message accessor even in assertion output.
+				expect(actual === original).toBe(true);
+				expect(auth).toHaveBeenCalledTimes(1);
+				expect(fetch).not.toHaveBeenCalled();
+				if (hint && original instanceof Error) {
+					expect(original.message.includes("Fast was requested")).toBe(speed === "fast");
+				}
+				if (original instanceof CodexResponseError) {
+					expect(original).toMatchObject({ status: 503, code: "adapter_error", retryable: true });
+				}
+			},
+		);
+	}
+
+	it.each([undefined, "fast"] as const)(
+		"keeps an injected body's native AbortError (speed=%s)",
+		async (speed) => {
+			const original = new DOMException("adapter body aborted", "AbortError");
+			const { provider, fetch } = harness([
+				() =>
+					new Response(
+						new ReadableStream({
+							start(controller) {
+								controller.error(original);
+							},
+						}),
+					),
+			]);
+			const actual = await collect(provider.stream(request({ speed }))).catch((error: unknown) => error);
+			expect(actual === original).toBe(true);
+			expect(original.message.includes("Fast was requested")).toBe(speed === "fast");
+			expect(fetch).toHaveBeenCalledTimes(1);
+		},
+	);
+});
+
 describe("Fast wire identity and replay", () => {
 	it.each(["off", "minimal", "low", "high", "max"] as const)(
 		"keeps thinking=%s and every normal field unchanged",

@@ -8,6 +8,8 @@ their original release identity.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-11
+
 ### Added
 
 - **Codex Fast requests.** Offer `·fast` selections for all account-listed Codex
@@ -22,6 +24,14 @@ their original release identity.
 
 ### Fixed
 
+- **Fast recovery hints.** Preserve the original exception and typed diagnostics
+  when an injected adapter supplies a read-only or immutable error. Best-effort
+  recovery hints cannot replace the failure with an annotation error; request,
+  retry and cancellation behavior are unchanged.
+- **FIFO fixture supervisor loss.** Contain the worker's own process group when
+  its supervisor IPC disconnects unexpectedly, including already-disconnected
+  startup and blocked native reads. Regression probes observe containment before
+  supervisor fallback cleanup. This is test-only, not a production read fix.
 - **FIFO concurrency test isolation.** Run real FIFO fixtures in owned process
   groups, replace fixed-delay writer shutdown with readiness handshakes, and
   drain actual reads and holders before success. Bound failure cleanup and
