@@ -1,6 +1,16 @@
 # 只读工具并行化(roster 扩展 + catalog 披露 + queued 行显示)
 
 - 状态:draft(待评审)
+- FIFO 测试修订(2026-11-11):见
+  [FIFO fixture isolation fix](fifo-test-isolation-fix.md)。本说明取代下文
+  §4.3 关于原 FIFO 夹具收敛性的历史解释,不修改生产并发或宽限契约。
+  `tool_running` 不代表操作系统已打开 FIFO;在配对前杀掉写端会让
+  native open 持续阻塞,宽限期结束也不会取消它,并可占满线程池影响
+  后续用例。五个 open 在四线程池中仍可能全部配对,不能断言第五个
+  必须等待前四个关闭才可打开。三个真实 FIFO 场景现由独立 OS 进程组承载;
+  写端打开后确认就绪,然后处理预先排入的 EOF 命令。成功要求实际
+  execute、写端和 worker 均结束;失败需审计整个所属进程组,确认无
+  活进程后再删除路径。child 并发见证不再依赖固定 300ms 等待。
 - 前置:sliding-window-concurrency-design.md(已实现,merged `83e7f9d`);
   abort-grace-design.md §6b.2 已关闭(keep-alive × SIGINT 系 fixture
   假象——宽限机制在双血统下验证完整);grace re-baseline 批
