@@ -32,6 +32,16 @@ from the requested priority tier; actual failures and incomplete-tool safety are
 unchanged. Child assistant observations persist separately from the base binding
 and do not enter replay or summary prompts; see [providers.md](providers.md).
 
+Results contain only the last nonempty assistant text accepted during the
+current attempt, for both fresh and continued children. Compaction and overflow
+recovery cannot substitute a previous attempt's answer or a summary. A continued
+attempt that completes without text reports no output; one that fails before
+producing text is a tool error. On a crash, genuine partial text from the current
+attempt remains available with its failure diagnostic, even after compaction
+removes it from the replay context. Abort and timeout still return an error and
+handoff information rather than inline partial text. Streamed text without an
+accepted final message is not a saved partial result.
+
 ## Loop health
 
 A shared loop-health monitor (same signals for the main loop and children)

@@ -22,6 +22,12 @@ their original release identity.
 
 ### Fixed
 
+- **Child results after compaction.** Keep task output scoped to the current
+  attempt, including persisted child continuations and overflow recovery.
+  Silent or immediately-failed attempts no longer return a previous answer
+  after retained messages are copied. Preserve genuine current-attempt partial
+  text even when compaction removes it from replay history; summaries never
+  become task output. Usage accounting and failure classification are unchanged.
 - **Codex Fast completion.** Accept valid terminal responses regardless of their
   reported service tier, including the existing `max_output_tokens` incomplete
   path; keep actual stream/tool/replay failures and retry policies unchanged.
