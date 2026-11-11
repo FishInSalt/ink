@@ -1,4 +1,12 @@
 import type { ModelCost } from "../provider/models.js";
+import type { Usage } from "./messages.js";
+import {
+	parsePricingServiceTier,
+	parseUsagePricing,
+	pricingSlice,
+	serviceTierPricing,
+	type UsagePricingSlice,
+} from "./service-tier-pricing.js";
 import type { SessionEntry } from "./session/store.js";
 import { parseTaskRecord } from "./task-record.js";
 
@@ -40,6 +48,8 @@ export interface ModelUsage {
 	 *  legacy entry without a declared identity — unpriced, never inferred. */
 	reference: string | null;
 	bucket: UsageBucket;
+	/** When present, covers all four raw bucket counters, including legacy work. */
+	usagePricing?: UsagePricingSlice[];
 }
 
 export interface UsageTotals {
@@ -48,8 +58,8 @@ export interface UsageTotals {
 	/** Task records (all attempts, deduped by attemptId). The child's own
 	 *  summarizer usage is inside TaskRecord.usage — counted exactly once. */
 	child: UsageBucket;
-	/** Main-session compaction + branchSummary entries only; child-session
-	 *  compaction entries live in the child file and are unreachable here. */
+	/** Main-session summary entries + accounting-only summaryUsage receipts;
+	 *  child-session compaction entries live in the child file and are unreachable here. */
 	summarizer: UsageBucket;
 	total: UsageBucket;
 	byModel: ModelUsage[];
@@ -74,6 +84,10 @@ export interface PricedUsageTotals {
 	/** Counted usage without a resolvable rate. */
 	unpriced: UsageBucket;
 	byModel: PricedModelUsage[];
+	/** Base-only estimate for positive Codex usage with unknown attribution. */
+	pricingIncomplete?: boolean;
+	/** Pinned adjustment rules used by contributing Codex reference estimates. */
+	serviceTierPricingVersion?: string;
 }
 
 export interface UsageTotalsTracker {
@@ -113,21 +127,31 @@ interface MutableState {
 	parent: UsageBucket;
 	child: UsageBucket;
 	summarizer: UsageBucket;
-	byModel: Map<string | null, UsageBucket>;
+	byModel: Map<string | null, ModelUsage>;
 	incomplete: { parent: boolean; child: boolean; summarizer: boolean };
 }
 
 function addToModel(
 	state: MutableState,
 	reference: string | null,
-	usage: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number },
+	usage: Usage,
+	usagePricing?: UsagePricingSlice[],
 ): void {
-	let bucket = state.byModel.get(reference);
-	if (bucket === undefined) {
-		bucket = emptyBucket();
-		state.byModel.set(reference, bucket);
+	let model = state.byModel.get(reference);
+	if (model === undefined) {
+		model = { reference, bucket: emptyBucket() };
+		state.byModel.set(reference, model);
 	}
-	addUsage(bucket, usage);
+	// Validation is all-or-nothing, so malformed sidecars retain their raw
+	// contribution as legacy/base-only rather than pricing a partial subset.
+	const slices = parseUsagePricing(usagePricing, usage);
+	if (slices !== undefined && model.usagePricing === undefined) {
+		model.usagePricing = model.bucket.calls === 0 ? [] : [pricingSlice(model.bucket)];
+	}
+	if (model.usagePricing !== undefined) {
+		for (const slice of slices ?? [pricingSlice(usage)]) model.usagePricing.push(slice);
+	}
+	addUsage(model.bucket, usage);
 }
 
 /** One entry → its contribution. See design §4.1 (evidence model). */
@@ -146,7 +170,13 @@ function applyEntry(
 			// source — the wire `model` is never consulted (a legacy wire id
 			// can itself contain '/', so the field, not the string shape,
 			// distinguishes an identity). Absent → unpriced.
-			addToModel(state, message.modelReference ?? null, message.usage);
+			const observation = parsePricingServiceTier(message.serviceTier);
+			addToModel(
+				state,
+				message.modelReference ?? null,
+				message.usage,
+				observation === undefined ? undefined : [pricingSlice(message.usage, observation)],
+			);
 		} else if (message.role === "toolResult") {
 			for (const result of message.results) {
 				const record = parseTaskRecord(result.taskRecord);
@@ -173,19 +203,19 @@ function applyEntry(
 				}
 				addUsage(state.child, record.usage);
 				if (record.usage.incomplete === true) state.incomplete.child = true;
-				addToModel(state, record.binding?.reference ?? null, record.usage);
+				addToModel(state, record.binding?.reference ?? null, record.usage, record.usagePricing);
 			}
 		}
 		return;
 	}
-	if (entry.type === "compaction" || entry.type === "branchSummary") {
+	if (entry.type === "compaction" || entry.type === "branchSummary" || entry.type === "summaryUsage") {
 		if (entry.usage === undefined) return; // legacy entry without a report field (L1)
 		addUsage(state.summarizer, entry.usage);
 		if (entry.usageMissing === true) state.incomplete.summarizer = true;
 		// SA-05 §11.7: entries price by their DECLARED identity field only
 		// (`model` holds the wire id for debugging; pre-fix entries — either
 		// cohort — have no modelReference and price as unknown).
-		addToModel(state, entry.modelReference ?? null, entry.usage);
+		addToModel(state, entry.modelReference ?? null, entry.usage, entry.usagePricing);
 	}
 }
 
@@ -198,8 +228,14 @@ function snapshot(state: MutableState): UsageTotals {
 	addBucket(total, child);
 	addBucket(total, summarizer);
 	const byModel: ModelUsage[] = [];
-	for (const [reference, bucket] of state.byModel) {
-		byModel.push({ reference, bucket: copyBucket(bucket) });
+	for (const model of state.byModel.values()) {
+		byModel.push({
+			reference: model.reference,
+			bucket: copyBucket(model.bucket),
+			...(model.usagePricing === undefined
+				? {}
+				: { usagePricing: model.usagePricing.map((slice) => pricingSlice(slice.usage, slice.serviceTier)) }),
+		});
 	}
 	return {
 		parent,
@@ -264,24 +300,53 @@ export function usageTotalsTracker(entries: readonly SessionEntry[]): UsageTotal
 export function priceUsageTotals(totals: UsageTotals, rateFor: RateLookup): PricedUsageTotals {
 	let usd = 0;
 	let subscription = false;
+	let pricingIncomplete = false;
+	let serviceTierPricingVersion: string | undefined;
 	const unpriced = emptyBucket();
 	const byModel: PricedModelUsage[] = [];
 	for (const model of totals.byModel) {
+		const pricing = parseUsagePricing(model.usagePricing, model.bucket);
+		const copied: ModelUsage = {
+			reference: model.reference,
+			bucket: copyBucket(model.bucket),
+			...(pricing === undefined ? {} : { usagePricing: pricing }),
+		};
 		const rates = model.reference === null ? undefined : rateFor(model.reference);
 		if (rates === undefined) {
 			addBucket(unpriced, model.bucket);
-			byModel.push({ ...model, priced: false, subscription: false });
+			byModel.push({ ...copied, priced: false, subscription: false });
 			continue;
 		}
 		const sub = rates.subscription === true;
 		if (sub) subscription = true;
-		usd +=
-			(model.bucket.inputTokens * rates.input +
-				model.bucket.outputTokens * rates.output +
-				model.bucket.cacheReadTokens * rates.cacheRead +
-				model.bucket.cacheWriteTokens * rates.cacheWrite) /
-			1_000_000;
-		byModel.push({ ...model, priced: true, subscription: sub });
+		const slices = pricing ?? [pricingSlice(model.bucket)];
+		for (const slice of slices) {
+			const adjustment = serviceTierPricing(model.reference, slice.serviceTier);
+			const positive =
+				slice.usage.inputTokens > 0 ||
+				slice.usage.outputTokens > 0 ||
+				(slice.usage.cacheReadTokens ?? 0) > 0 ||
+				(slice.usage.cacheWriteTokens ?? 0) > 0;
+			if (positive) {
+				if (adjustment.incomplete) pricingIncomplete = true;
+				if (adjustment.version !== undefined) serviceTierPricingVersion = adjustment.version;
+			}
+			usd +=
+				((slice.usage.inputTokens * rates.input +
+					slice.usage.outputTokens * rates.output +
+					(slice.usage.cacheReadTokens ?? 0) * rates.cacheRead +
+					(slice.usage.cacheWriteTokens ?? 0) * rates.cacheWrite) *
+					adjustment.multiplier) /
+				1_000_000;
+		}
+		byModel.push({ ...copied, priced: true, subscription: sub });
 	}
-	return { usd, subscription, unpriced, byModel };
+	return {
+		usd,
+		subscription,
+		unpriced,
+		byModel,
+		...(pricingIncomplete ? { pricingIncomplete: true } : {}),
+		...(serviceTierPricingVersion === undefined ? {} : { serviceTierPricingVersion }),
+	};
 }

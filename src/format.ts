@@ -253,7 +253,8 @@ export function renderMarkdownLite(text: string, ansi = process.stdout.isTTY ===
 
 /** SA-05 (#sa-05-usage-totals): the money segment for the footer and the
  *  session lines. `$0.123` = complete; `~$0.123` = partial pricing (counted
- *  tokens without a known rate); `…!` = known-missing usage; `$?` / `$?!` =
+ *  tokens without a known rate, or incomplete tier adjustment); `…!` =
+ *  known-missing usage; `$?` / `$?!` =
  *  nothing could be priced. Rates are the current catalog's — an estimate,
  *  not an invoice. null = nothing to show. See docs/design/sa-05-usage-totals-design.md §4.5. */
 export function usageMoneySegment(args: {
@@ -263,10 +264,12 @@ export function usageMoneySegment(args: {
 	unpricedTokens: number;
 	/** Any known-missing usage in the aggregate. */
 	incomplete: boolean;
+	/** Base-only service-tier estimates; independent of known-missing usage. */
+	pricingIncomplete?: boolean;
 }): string | null {
-	const known = args.usd > 0 || args.subscription;
 	const hasUnpriced = args.unpricedTokens > 0;
+	const known = args.usd > 0 || args.subscription || (args.pricingIncomplete === true && !hasUnpriced);
 	if (!known && !hasUnpriced && !args.incomplete) return null;
 	if (!known) return args.incomplete ? "$?!" : "$?";
-	return `${hasUnpriced ? "~" : ""}$${args.usd.toFixed(3)}${args.subscription ? " (sub)" : ""}${args.incomplete ? "!" : ""}`;
+	return `${hasUnpriced || args.pricingIncomplete === true ? "~" : ""}$${args.usd.toFixed(3)}${args.subscription ? " (sub)" : ""}${args.incomplete ? "!" : ""}`;
 }

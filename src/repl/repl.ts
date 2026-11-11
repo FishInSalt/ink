@@ -1014,6 +1014,7 @@ class ReplMachine {
 			const priced = priceUsageTotals(totals, costFor);
 			const money = usageMoneySegment({
 				usd: priced.usd,
+				pricingIncomplete: priced.pricingIncomplete,
 				subscription: priced.subscription,
 				unpricedTokens:
 					priced.unpriced.inputTokens +

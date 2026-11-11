@@ -11,6 +11,7 @@ import {
 	type ToolResult,
 	type Usage,
 } from "./messages.js";
+import { pricingSlice } from "./service-tier-pricing.js";
 import type { Tool } from "./tools/types.js";
 import type { AttemptUsage } from "./usage-ledger.js";
 import { recordMissingUsageReport, recordUsageReport } from "./usage-ledger.js";
@@ -422,21 +423,32 @@ async function streamAssistant(args: {
 		for await (const event of provider.stream(request)) {
 			if (request.signal?.aborted) return null;
 			if (event.type === "message_end") {
+				// Observers receive mutable provider objects. Capture accounting once,
+				// including a strictly validated tier copy, before exposing the event.
+				const accepted = pricingSlice(event.message.usage, event.message.serviceTier);
+				const usageMissing = event.message.usageMissing === true;
 				reported = true;
-				addUsage(usage, event.message.usage);
-				recordUsageReport(ledger, "task", event.message.usage);
+				addUsage(usage, accepted.usage);
+				recordUsageReport(ledger, "task", accepted.usage, accepted.serviceTier);
 				// SA-04 round 2: the adapter may have had NO usage data on the
 				// wire (its zeros are initialization, not a report) — keep the
 				// known numbers, disclose the unknown.
-				if (event.message.usageMissing === true) recordMissingUsageReport(ledger);
+				if (usageMissing) recordMissingUsageReport(ledger);
 				onEvent?.(event);
-				// stamp the producer model for cost attribution (footer $ segment)
-				return {
+				// Preserve other observer/output semantics and producer model stamps,
+				// but never persist observer-owned accounting objects or substitutions.
+				const message: AssistantMessage = {
 					...event.message,
+					usage: accepted.usage,
 					model: request.model,
 					// SA-05: the fully qualified pricing identity (when supplied).
 					...(modelReference !== undefined && { modelReference }),
 				};
+				delete message.usageMissing;
+				delete message.serviceTier;
+				if (usageMissing) message.usageMissing = true;
+				if (accepted.serviceTier !== undefined) message.serviceTier = accepted.serviceTier;
+				return message;
 			}
 			onEvent?.(event);
 		}

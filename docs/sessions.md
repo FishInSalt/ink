@@ -42,6 +42,8 @@ requests login; it never silently switches the session to API-key billing.
 Large `edit` insertions and deletions retain a short success receipt in model
 history, while the detailed diff is display-only.
 
+## Usage and reference cost
+
 The interactive status bar's `↑` (ordinary input), `↓` (output), `R` (cache
 read), and `W` (cache write) counts are cumulative across the whole session,
 including all branches, subagent attempts, and summarization. Zero `R`/`W`
@@ -55,6 +57,22 @@ resuming restores them, while `/new` starts fresh. Without a session
 (`--no-session`), these usage segments are absent. The rate reflects recorded
 usage only: unreported cache counters contribute zero, and missing usage is
 not reconstructed.
+
+Reference cost uses each producer's base provider/model and current catalog
+rates, with Codex service-tier adjustments attributed to the original call.
+Normal/Fast/normal calls under one base model keep their separate observations;
+changing the selection, navigating history, compacting, or reopening does not
+relabel earlier work. Child attempts and summary retry hops likewise retain
+their own per-call observations, not just the final hop's report. Pricing never
+multiplies raw input, output, cache-read or cache-write counters.
+
+`~` marks incomplete reference pricing, including positive Codex usage with
+unknown tiers or absent/invalid legacy observations priced at base rates.
+`!` still marks known-missing usage; the two signals are independent. Valid raw
+usage survives invalid pricing metadata. Unknown catalog rates remain unpriced;
+no estimate reconstructs unreported work or measures actual subscription
+allowance/billing. The rules and pinned source are in
+[Codex reference pricing](providers.md#codex-reference-pricing).
 
 ## Model selection and Fast
 
@@ -74,8 +92,10 @@ Thinking is independent of speed.
 
 New Codex assistant messages also retain optional `serviceTier` observations:
 `requested:"omitted"|"priority"` and optional bounded terminal `reported` text.
-They do not enter provider replay, summary prompts, context estimates or prices.
-Old messages without observations are unchanged. `/status` can show the **LAST
+They do not enter provider replay, summary prompts or context estimates; they
+can adjust the local reference cost as described above. Old messages remain
+readable without observations and use legacy base-only Codex pricing when rates
+are known, with the incomplete-pricing marker. `/status` can show the **LAST
 response** for the current exact provider/base model in active history; if its
 latest assistant has no valid observation, no older one is substituted. It is
 not confirmation of the current selection or actual processing/billing. Valid
@@ -139,6 +159,29 @@ speed. Manual `/compact` and branch summaries capture the current selection
 when they start; child summaries use the child's own captured speed. A
 summarizer retry that changes thinking keeps the same speed. Fast errors never
 cause a normal-speed fallback summary.
+
+Accepted summaries carry all captured usage and per-call pricing observations
+in their existing checkpoint/branch-summary entry. Rejected parent summaries
+(for example, capped, empty, failed or aborted summaries, or branch summaries
+that cannot be installed after a session change) can instead append a
+`summaryUsage` accounting-only receipt for already-captured usage and missing
+report flags. A later retry failure does not discard an earlier hop's report.
+The receipt never contains rejected summary text and never supplies context or
+provider replay. It is not a tree node or navigation target, does not move the
+active position, and does not count as a user/assistant turn.
+
+Receipts belong to the session file where the summary started, even if another
+session becomes active. Reopening that same file during the operation routes the
+single receipt through the reopened store, so live and reopened totals agree.
+Installed summaries are counted only in their accepted entries; child summary
+usage reaches the parent only through the child's task record, not an additional
+parent receipt or a scan of the child's transcript.
+
+No receipt or charge estimate is invented for a summary that never started.
+Work whose usage was never reported remains unknown, not zero-cost. Receipt
+write failures are diagnosed, not proof of durable accounting. Existing session
+files remain readable without rewriting or a header-version change, but files
+containing the new `summaryUsage` entry kind may not work with older binaries.
 
 ## Multi-line input and terminal behavior
 

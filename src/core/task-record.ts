@@ -1,5 +1,6 @@
 import { type ChildModelBinding, isModelBinding } from "./child-model.js";
 import type { HealthCode } from "./health.js";
+import { parseUsagePricing, type UsagePricingSlice } from "./service-tier-pricing.js";
 import type { SessionEntry } from "./session/store.js";
 
 /**
@@ -80,6 +81,8 @@ export interface TaskRecordTerminal {
 	turns: number;
 	textPresent: boolean;
 	usage?: TaskRecordUsage;
+	/** Optional conserved attribution for the entire usage aggregate. */
+	usagePricing?: UsagePricingSlice[];
 }
 
 export interface TaskRecordInput extends TaskRecordTerminal {
@@ -154,7 +157,11 @@ export function buildTaskRecord(input: TaskRecordInput): TaskRecord {
 				? { ...input.worktree }
 				: { ...input.worktree, detail: bound(input.worktree.detail) };
 	}
-	if (input.usage !== undefined) record.usage = { ...input.usage };
+	if (input.usage !== undefined) {
+		record.usage = { ...input.usage };
+		const pricing = parseUsagePricing(input.usagePricing, input.usage);
+		if (pricing !== undefined) record.usagePricing = pricing;
+	}
 	if (input.health !== undefined && input.health.length > 0) {
 		record.health = input.health.map((signal) => ({ ...signal }));
 	}
@@ -311,13 +318,20 @@ export function parseTaskRecord(value: unknown): TaskRecord | null {
 	}
 	if (!isBinding(r.binding) || !isOptionalStringArray(r.tools)) return null;
 	if (!isTranscript(r.transcript) || !isWorktree(r.worktree) || !isUsage(r.usage)) return null;
-	// #loop-health (design §4.3): a malformed `health` is DROPPED, never
-	// record-nulling. The drop works on a shallow copy — the parser must not
-	// mutate its input (post-merge review round 2, O3).
-	if (!isHealth(r.health)) {
-		const copy: Record<string, unknown> = { ...r };
-		delete copy.health;
-		return copy as unknown as TaskRecord;
+	// Advisory metadata cannot invalidate authoritative raw usage. Copy all
+	// structured fields so callers cannot mutate a persisted record via a view.
+	const copy = { ...r } as unknown as TaskRecord;
+	if (copy.binding !== undefined) copy.binding = { ...copy.binding };
+	if (copy.tools !== undefined) copy.tools = [...copy.tools];
+	if (copy.transcript !== undefined) copy.transcript = { ...copy.transcript };
+	if (copy.worktree !== undefined) copy.worktree = { ...copy.worktree };
+	if (!isHealth(r.health)) delete copy.health;
+	else if (copy.health !== undefined) copy.health = copy.health.map((signal) => ({ ...signal }));
+	delete copy.usagePricing;
+	if (copy.usage !== undefined) {
+		copy.usage = { ...copy.usage };
+		const pricing = parseUsagePricing(r.usagePricing, copy.usage);
+		if (pricing !== undefined) copy.usagePricing = pricing;
 	}
-	return r as unknown as TaskRecord;
+	return copy;
 }

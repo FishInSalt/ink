@@ -18,6 +18,7 @@ import {
 import { createLoopHealth, type HealthSignal, healthEnabled } from "./health.js";
 import { type RunAgentLoopOptions, type RunAgentLoopResult, runAgentLoop } from "./loop.js";
 import type { AgentMessage, Usage } from "./messages.js";
+import type { UsagePricingSlice } from "./service-tier-pricing.js";
 import { type SessionStore, summaryToMessage } from "./session/store.js";
 import type { Tool } from "./tools/types.js";
 import { attemptUsageSnapshot, createAttemptUsage } from "./usage-ledger.js";
@@ -132,6 +133,8 @@ export interface SubagentOutcome {
 	turns: number;
 	/** Attempt totals: task + summarizer reports received (SA-04). */
 	usage: Usage;
+	/** Attribution for the whole attempt, including task and summarizer reports. */
+	usagePricing?: UsagePricingSlice[];
 	/** SA-04 split (see SubagentUsageDetail). */
 	usageDetail: SubagentUsageDetail;
 	/** #loop-health: detection facts for this attempt (possibly empty). */
@@ -423,6 +426,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 			text: finalAssistantText(attemptMessages),
 			turns: snapshot.taskReports,
 			usage: snapshot.totals,
+			...(snapshot.usagePricing === undefined ? {} : { usagePricing: snapshot.usagePricing }),
 			usageDetail: {
 				task: snapshot.task,
 				summarizer: snapshot.summarizer,

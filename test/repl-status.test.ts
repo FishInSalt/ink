@@ -1,6 +1,7 @@
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AssistantMessage, emptyUsage, type Usage } from "../src/core/messages.js";
+import * as modelRates from "../src/provider/models.js";
 import type { LLMProvider } from "../src/provider/types.js";
 import { Renderer } from "../src/render.js";
 import { ReplInput } from "../src/repl/input.js";
@@ -256,6 +257,26 @@ describe("footer context percentage", () => {
 // ── footer: cumulative usage segments (R/W, CH, $) ──────────────────────
 
 describe("footer usage segments", () => {
+	it("shows partial Codex reference pricing and missing usage as independent markers", async () => {
+		const rates = vi
+			.spyOn(modelRates, "costFor")
+			.mockReturnValue({ input: 1, output: 1, cacheRead: 1, cacheWrite: 1, subscription: true });
+		const message = reply("saved", { inputTokens: 100000, outputTokens: 0 });
+		message.usageMissing = true; // No historical service-tier observation.
+		const env = await startTuiRepl([], "test-model");
+		env.runner.session!.appendMessage({ ...message, modelReference: "openai-codex/gpt-5.5" });
+		try {
+			await settle();
+			env.terminal.data("/help\r");
+			await waitUntil(() => env.terminal.frameSince(0).includes("↑100k ↓0"));
+			expect(env.terminal.frameSince(0)).toContain("~$0.100 (sub)!");
+		} finally {
+			env.terminal.data("/exit\r");
+			await env.repl;
+			rates.mockRestore();
+		}
+	});
+
 	it("cache hit rate uses raw session totals, weighted by full input tokens", async () => {
 		// Unequal prompt sizes distinguish token weighting from averaging rates.
 		const env = await startTuiRepl([

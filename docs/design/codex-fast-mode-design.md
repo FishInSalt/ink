@@ -5,8 +5,10 @@ passed two review rounds; after the user clarified that Fast must cover every
 supported Codex model, a fresh adversarial reviewer approved the capability-based
 revision. Child-dispatch decisions remain unchanged. **The terminal tier rejection
 below is superseded** by [batch 1 completion compatibility](codex-fast-completion-design.md):
-Fast requests priority, not priority-or-error. The original verification/review
-record below describes the earlier implementation, not approval of batch 1.
+Fast requests priority, not priority-or-error. **The base-estimate-only pricing
+rule below is superseded** by [batch 2 per-call reference pricing](codex-service-tier-pricing-design.md).
+The original verification/review record below describes the earlier
+implementation, not approval of batch 1 or batch 2.
 Implementation completed and both independent code-review scopes approved.
 Final verification: 4585 tests passed across 163 files; typecheck, lint and build
 passed for that earlier implementation. Subscription Fast entitlement/billing
@@ -234,9 +236,27 @@ may show only the LAST matching base-model assistant observation, with no older
 substitution and no per-turn warning. See the approved batch 1 design for exact
 parser and display rules. Do not infer processing tier from latency or cached tokens.
 
-Keep catalog estimates as base-model estimates; the Fast selection should
-make clear that additional allowance/cost may apply and estimates are not the
-actual subscription charge. Do not hardcode an unverified multiplier.
+**Superseded pricing rule:** this design originally kept catalog estimates at
+base-model rates without a Fast multiplier. The approved
+[batch 2 reference-pricing design](codex-service-tier-pricing-design.md) instead
+uses per-call observations with rules pinned to
+[Pi revision 2cac4f1a9](https://github.com/earendil-works/pi/blob/2cac4f1a934cdc4a80b05a7d8ff2543cf5ee623c/packages/ai/src/api/openai-codex-responses.ts#L623-L660).
+For `openai-codex` only, priority (including reported `fast`) multiplies the four
+monetary rate components by 2.5 for the exact base ID `gpt-5.5`, otherwise 2 as a
+Pi-compatible assumption; flex uses 0.5. Reported `default` or missing uses that
+call's captured request only for estimation; the raw report is never rewritten.
+Unknown tiers or missing/invalid legacy observations keep base-only estimates
+with incomplete-pricing marker `~`; `!` still indicates missing usage. Unknown
+catalog rates stay unpriced. Raw token counters are never multiplied, and mixed
+modes, history/reopen, children and summary retries retain original per-call
+attribution. Accounting-only receipts preserve already-reported usage from
+rejected parent summaries, never their rejected text or context; never-started
+work gets no invented charge and unreported work remains unknown. Old files
+remain readable, but the new receipt kind may not work with older binaries.
+These are current-catalog reference estimates, not actual subscription charges,
+allowance units or processing-tier confirmation. No unknown/future-model rate,
+entitlement or billing multiplier is verified. All model, capability, identity,
+selection, request and batch 1 completion/error behavior remains unchanged.
 
 ## Verification and rollout
 

@@ -82,6 +82,15 @@ higher usage may apply. Only `openai-codex` supports this request mode, not
 API-key `openai`. Errors remain visible without a normal-mode or billing-route
 fallback. See [providers.md](providers.md) for capability and verification limits.
 
+Codex cost displays use per-call reference estimates, not a multiplier chosen
+from the current `·fast` suffix. Raw token counts are unchanged. `~` marks
+incomplete reference pricing (including legacy/unknown-tier base-only estimates);
+`!` still marks missing usage. These figures do not measure actual subscription
+allowance or billing. Rules and the pinned Pi source are in
+[Codex reference pricing](providers.md#codex-reference-pricing); persistence and
+rejected-summary accounting are in [sessions.md](sessions.md). No new pricing
+flag or global Fast setting is introduced.
+
 ## Options
 
 | Flag | Description |

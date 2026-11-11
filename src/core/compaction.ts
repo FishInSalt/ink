@@ -16,9 +16,21 @@ import {
 	emptyUsage,
 	type Usage,
 } from "./messages.js";
-import { type SessionStore, SUMMARY_MARK } from "./session/store.js";
-import type { AttemptUsage } from "./usage-ledger.js";
-import { recordMissingUsageReport, recordSummarizerCall, recordUsageReport } from "./usage-ledger.js";
+import { pricingSlice, type UsagePricingSlice } from "./service-tier-pricing.js";
+import {
+	type SessionStore,
+	SUMMARY_MARK,
+	type SummaryUsageStamps,
+	summaryUsageOwner,
+} from "./session/store.js";
+import {
+	type AttemptUsage,
+	attemptUsageSnapshot,
+	createAttemptUsage,
+	recordMissingUsageReport,
+	recordSummarizerCall,
+	recordUsageReport,
+} from "./usage-ledger.js";
 
 /**
  * Context compaction: when the conversation nears the model's context window,
@@ -483,6 +495,7 @@ interface SummarizerRun {
 	summary: string;
 	finalText: string | undefined;
 	usage: Usage;
+	usagePricing?: UsagePricingSlice[];
 	/** SA-05: true when at least one started stream never delivered a report
 	 *  (mirrors the ledger's recordMissingUsageReport sites). */
 	usageMissing: boolean;
@@ -505,6 +518,7 @@ async function runSummarizer(args: {
 	usageLedger?: AttemptUsage;
 }): Promise<SummarizerRun> {
 	const usage = emptyUsage();
+	const slices: UsagePricingSlice[] = [];
 	let summary = "";
 	let finalText: string | undefined;
 	let stopReason: string | null | undefined;
@@ -526,7 +540,8 @@ async function runSummarizer(args: {
 			if (event.type === "message_end") {
 				reported = true;
 				addUsage(usage, event.message.usage);
-				recordUsageReport(args.usageLedger, "summarizer", event.message.usage);
+				slices.push(pricingSlice(event.message.usage, event.message.serviceTier));
+				recordUsageReport(args.usageLedger, "summarizer", event.message.usage, event.message.serviceTier);
 				// SA-04 round 2: message said it never saw usage data.
 				if (event.message.usageMissing === true) {
 					usageMissing = true;
@@ -547,7 +562,14 @@ async function runSummarizer(args: {
 			recordMissingUsageReport(args.usageLedger);
 		}
 	}
-	return { summary, finalText, usage, stopReason, usageMissing };
+	return {
+		summary,
+		finalText,
+		usage,
+		stopReason,
+		usageMissing,
+		...(slices.some((slice) => slice.serviceTier !== undefined) ? { usagePricing: slices } : {}),
+	};
 }
 
 /** Rank a level for the "did the retry actually lower anything" test; an
@@ -584,6 +606,8 @@ async function summarizeWithRetry(args: {
 	 *  compaction entry (never both summed). */
 	usageLedger?: AttemptUsage;
 }): Promise<SummarizerRun> {
+	// A pre-aborted operation never started a stream and needs no receipt.
+	if (args.signal?.aborted) throw new Error(args.abortedMessage);
 	const first = await runSummarizer(args);
 	// Abort gate is UNCONDITIONAL (pre-refactor parity): abortSafe streams end
 	// cleanly WITHOUT a message_end, so stopReason stays undefined — a partial
@@ -600,6 +624,13 @@ async function summarizeWithRetry(args: {
 		throw new Error(`${args.tokenCapMessage} (thinking=${args.thinking ?? "off"}; no lower level available)`);
 	}
 	const retry = await runSummarizer({ ...args, thinking: lowered });
+	// Cover legacy hops explicitly whenever either hop has attribution.
+	if (first.usagePricing !== undefined || retry.usagePricing !== undefined) {
+		retry.usagePricing = [
+			...(first.usagePricing ?? [pricingSlice(first.usage)]),
+			...(retry.usagePricing ?? [pricingSlice(retry.usage)]),
+		];
+	}
 	addUsage(retry.usage, first.usage); // honest accounting across both hops
 	retry.usageMissing = retry.usageMissing || first.usageMissing; // SA-05: OR of the hops
 	// Abort wins over the cap on the retry hop too (design §3).
@@ -629,7 +660,8 @@ export async function summarizeBranchSegment(args: {
 	/** #tree: the user's "Summarize with custom prompt" instructions,
 	 *  appended after the fixed prompt (pi's customInstructions). */
 	customInstructions?: string;
-}): Promise<{ summary: string; usage: Usage; usageMissing: boolean }> {
+	usageLedger?: AttemptUsage;
+}): Promise<{ summary: string; usage: Usage; usageMissing: boolean; usagePricing?: UsagePricingSlice[] }> {
 	const transcript = serializeForSummary(args.messages);
 	const suffix =
 		args.customInstructions !== undefined && args.customInstructions.trim() !== ""
@@ -650,11 +682,17 @@ export async function summarizeBranchSegment(args: {
 		signal: args.signal,
 		tokenCapMessage: "branch summary: hit the token cap — incomplete, rejected",
 		abortedMessage: "branch summary: summarizer aborted — incomplete, rejected",
+		usageLedger: args.usageLedger,
 	});
 	// The assembled final text may correct streamed deltas (Responses snapshots).
 	const summary = run.finalText ?? run.summary;
 	if (summary.trim() === "") throw new Error("branch summary: summarizer returned nothing");
-	return { summary: summary.trim(), usage: run.usage, usageMissing: run.usageMissing };
+	return {
+		summary: summary.trim(),
+		usage: run.usage,
+		usageMissing: run.usageMissing,
+		...(run.usagePricing === undefined ? {} : { usagePricing: run.usagePricing }),
+	};
 }
 
 // ============================================================================
@@ -669,6 +707,7 @@ export interface CompactResult {
 	/** Per-message estimate after compaction (summary + tail, no usage anchor). */
 	tokensAfter: number;
 	usage: Usage;
+	usagePricing?: UsagePricingSlice[];
 	/** SA-05: a summarizer stream ran without delivering a usage report. */
 	usageMissing: boolean;
 }
@@ -683,6 +722,7 @@ export interface CompactHistoryResult {
 	/** Per-message estimate after compaction (summary + tail, no usage anchor). */
 	tokensAfter: number;
 	usage: Usage;
+	usagePricing?: UsagePricingSlice[];
 	/** SA-05: a summarizer stream ran without delivering a usage report. */
 	usageMissing: boolean;
 }
@@ -789,6 +829,46 @@ export async function compactHistory(args: {
 		tokensAfter,
 		usage: run.usage,
 		usageMissing: run.usageMissing,
+		...(run.usagePricing === undefined ? {} : { usagePricing: run.usagePricing }),
+	};
+}
+
+/** One guarded failure-accounting path. Only parent-owned invocations call
+ * this: a child's shared attempt ledger is its sole parent-facing owner. */
+export function createSummaryUsageReceipt(args: {
+	session: SessionStore;
+	ledger: AttemptUsage;
+	model: string;
+	modelReference?: string;
+	currentSession?: () => SessionStore | null;
+	onReceiptError?: (error: unknown) => void;
+}): () => void {
+	let finalized = false;
+	return () => {
+		if (finalized) return;
+		finalized = true; // Never retry an uncertain append.
+		if (args.ledger.summarizerCalls === 0) return;
+		try {
+			const snapshot = attemptUsageSnapshot(args.ledger);
+			const owner = summaryUsageOwner(args.session, args.currentSession?.());
+			owner.appendSummaryUsage(snapshot.summarizer, {
+				model: args.model,
+				...(args.modelReference === undefined ? {} : { modelReference: args.modelReference }),
+				...(snapshot.usagePricing === undefined ? {} : { usagePricing: snapshot.usagePricing }),
+				...(snapshot.incomplete ? { usageMissing: true } : {}),
+			});
+		} catch (error) {
+			// Diagnostics themselves must not hide the primary summary failure.
+			try {
+				if (args.onReceiptError) args.onReceiptError(error);
+				else
+					process.stderr.write(
+						`ink: summary usage receipt was not persisted: ${error instanceof Error ? error.message : String(error)}\n`,
+					);
+			} catch {
+				/* Preserve the original summary error. */
+			}
+		}
 	};
 }
 
@@ -817,27 +897,43 @@ export async function compactSession(args: {
 	 *  the entry stamp — `model` stays the wire id (it feeds the provider
 	 *  call); absent → no stamp → the entry prices as unknown. */
 	modelReference?: string;
+	/** Resolve the writer for failed-usage receipts only. A successful
+	 * checkpoint still belongs to the captured session, even after resume/new. */
+	currentSession?: () => SessionStore | null;
+	onReceiptError?: (error: unknown) => void;
 }): Promise<CompactResult | null> {
 	const { messages, compactionBoundary } = args.session.buildContext();
-	const result = await compactHistory({
-		messages,
-		provider: args.provider,
-		model: args.model,
-		speed: args.speed,
-		modelReference: args.modelReference,
-		minAnchorIndex: compactionBoundary,
-		signal: args.signal,
-		settings: args.settings,
-		modelMaxTokens: args.modelMaxTokens,
-		thinking: args.thinking,
-		usageLedger: args.usageLedger,
-	});
+	const ledger = args.usageLedger ?? createAttemptUsage();
+	const receipt = args.usageLedger === undefined ? createSummaryUsageReceipt({ ...args, ledger }) : () => {}; // External child ledger owns every report, including failures.
+	let result: CompactHistoryResult | null;
+	try {
+		result = await compactHistory({
+			messages,
+			provider: args.provider,
+			model: args.model,
+			speed: args.speed,
+			modelReference: args.modelReference,
+			minAnchorIndex: compactionBoundary,
+			signal: args.signal,
+			settings: args.settings,
+			modelMaxTokens: args.modelMaxTokens,
+			thinking: args.thinking,
+			usageLedger: ledger,
+		});
+	} catch (error) {
+		receipt();
+		throw error;
+	}
 	if (result === null) return null;
+	// Unlike tree navigation, run-owned compaction is not discarded when the
+	// live session changes: the captured run must be able to compact and retry.
+	// The accepted checkpoint is its sole accounting entry, never a receipt.
 
 	// SA-05 §11.7 stamps: the wire id under `model`, the DECLARED pricing
 	// identity under `modelReference` + the missing-report flag; absent
 	// reference → the identity field is omitted (the entry prices as unknown).
-	const stamps: { model?: string; modelReference?: string; usageMissing?: true } = {};
+	const stamps: SummaryUsageStamps = {};
+	if (result.usagePricing !== undefined) stamps.usagePricing = result.usagePricing;
 	stamps.model = args.model;
 	if (args.modelReference !== undefined) stamps.modelReference = args.modelReference;
 	if (result.usageMissing) stamps.usageMissing = true;
@@ -855,5 +951,6 @@ export async function compactSession(args: {
 		tokensAfter: result.tokensAfter,
 		usage: result.usage,
 		usageMissing: result.usageMissing,
+		...(result.usagePricing === undefined ? {} : { usagePricing: result.usagePricing }),
 	};
 }

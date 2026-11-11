@@ -1948,6 +1948,7 @@ export const COMMANDS: readonly SlashCommand[] = [
 					const priced = priceUsageTotals(totals, costFor);
 					const money = usageMoneySegment({
 						usd: priced.usd,
+						pricingIncomplete: priced.pricingIncomplete,
 						subscription: priced.subscription,
 						unpricedTokens:
 							priced.unpriced.inputTokens +
@@ -1957,6 +1958,21 @@ export const COMMANDS: readonly SlashCommand[] = [
 						incomplete: totals.incomplete.parent || totals.incomplete.child || totals.incomplete.summarizer,
 					});
 					usagePart = ` · work ↑${formatTokens(totals.total.inputTokens)} ↓${formatTokens(totals.total.outputTokens)}${money === null ? "" : ` ${money}`}`;
+					if (priced.serviceTierPricingVersion !== undefined) {
+						ctx.renderer.note(
+							`▪ Codex reference pricing (${priced.serviceTierPricingVersion}): captured priority/fast ×2 (exact gpt-5.5 ×2.5), flex ×0.5; default/unreported uses captured request; standard/auto/scale use base. Other model priority rates are Pi-compatible assumptions.`,
+						);
+					}
+					if (priced.pricingIncomplete) {
+						ctx.renderer.note(
+							"▪ ~ incomplete reference pricing: legacy, invalid, or unknown service-tier observations use base rates only; never inferred from current Fast selection. ! means missing usage, not a tier adjustment.",
+						);
+					}
+					if (priced.serviceTierPricingVersion !== undefined || priced.pricingIncomplete) {
+						ctx.renderer.note(
+							"▪ Reference estimates use current catalog rates, not actual charges, subscription allowance units, or confirmation of processing tier.",
+						);
+					}
 				}
 				ctx.renderer.note(
 					`▪ session ${session.header.id.slice(0, 8)}${name ? ` · ${name}` : ""} · ${stats.messageCount} msgs (active branch)${usagePart}`,

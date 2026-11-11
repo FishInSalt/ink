@@ -5,13 +5,20 @@ import {
 	existsSync,
 	openSync,
 	readFileSync,
+	realpathSync,
 	truncateSync,
 	writeFileSync,
 } from "node:fs";
+import { resolve } from "node:path";
 import { firstLine } from "../../format.js";
 import { canRequestFastMode, type ModelSpeed } from "../../provider/model-speed.js";
 import type { ChildLaunchRecord } from "../child-launch.js";
 import { type AgentMessage, contentText, type Usage } from "../messages.js";
+import {
+	parsePricingServiceTier,
+	parseUsagePricing,
+	type UsagePricingSlice,
+} from "../service-tier-pricing.js";
 
 /**
  * JSONL session storage — a message tree in a file.
@@ -109,6 +116,7 @@ export interface BranchSummaryEntry extends EntryBase {
 	 *  round-2 missing flag and the producing identity. Absent on entries
 	 *  written by earlier versions (legacy rule L1). */
 	usage?: Usage;
+	usagePricing?: UsagePricingSlice[];
 	/** The WIRE model id that produced this summary (debugging/compat) — never
 	 *  a pricing identity (§11.7). */
 	model?: string;
@@ -127,6 +135,7 @@ export interface CompactionEntry extends EntryBase {
 	tokensBefore: number;
 	/** Usage of the LLM call that produced the summary, if known. */
 	usage?: Usage;
+	usagePricing?: UsagePricingSlice[];
 	/** The WIRE model id that produced this summary (debugging/compat) — never
 	 *  a pricing identity (§11.7). */
 	model?: string;
@@ -167,13 +176,31 @@ export interface LabelEntry extends EntryBase {
 	label: string;
 }
 
+/** File-level accounting only: never a tree node or a context/position fact. */
+export interface SummaryUsageEntry extends EntryBase {
+	type: "summaryUsage";
+	usage: Usage;
+	usagePricing?: UsagePricingSlice[];
+	model?: string;
+	modelReference?: string;
+	usageMissing?: true;
+}
+
+export interface SummaryUsageStamps {
+	model?: string;
+	modelReference?: string;
+	usageMissing?: true;
+	usagePricing?: UsagePricingSlice[];
+}
+
 export type SessionEntry =
 	| MessageEntry
 	| CompactionEntry
 	| BranchSummaryEntry
 	| ThinkingLevelChangeEntry
 	| SessionInfoEntry
-	| LabelEntry;
+	| LabelEntry
+	| SummaryUsageEntry;
 
 /** One node of the session tree (#tree): a content entry (label entries
  *  are folded into `label`, never nodes) with its children, oldest first. */
@@ -207,6 +234,34 @@ export class SessionError extends Error {
 		super(message);
 		this.name = "SessionError";
 	}
+}
+
+/** Own the accounting counters as well as validated attribution: callers and
+ * observers must not change live persisted facts through retained objects.
+ * Invalid attribution never erases raw usage or retains only requested priority. */
+function copyMessagePricing(message: AgentMessage): AgentMessage {
+	if (message.role !== "assistant") return message;
+	const { serviceTier: raw, ...rest } = message;
+	const serviceTier = parsePricingServiceTier(raw);
+	return { ...rest, usage: { ...message.usage }, ...(serviceTier === undefined ? {} : { serviceTier }) };
+}
+
+function copySummaryPricing(usage: Usage | undefined, value: unknown): UsagePricingSlice[] | undefined {
+	return usage === undefined ? undefined : parseUsagePricing(value, usage);
+}
+
+/** Route one receipt through a replacement store ONLY when it is the same
+ * canonical file and session identity, keeping that store's live totals current. */
+export function summaryUsageOwner(origin: SessionStore, current?: SessionStore | null): SessionStore {
+	if (!current || current === origin || current.header.id !== origin.header.id) return origin;
+	const canonical = (file: string): string => {
+		try {
+			return realpathSync(file);
+		} catch {
+			return resolve(file);
+		}
+	};
+	return canonical(origin.filePath) === canonical(current.filePath) ? current : origin;
 }
 
 /** Parse one JSONL line into an entry, with file/line context in errors. */
@@ -243,6 +298,10 @@ function parseEntryLine(line: string, lineNo: number): SessionEntry {
 		if (typeof entry.summary !== "string") {
 			throw new SessionError(`session line ${lineNo}: branchSummary entry missing summary`);
 		}
+	} else if (entry.type === "summaryUsage") {
+		if (parseUsagePricing([{ usage: entry.usage }], entry.usage as Usage) === undefined) {
+			throw new SessionError(`session line ${lineNo}: summaryUsage entry missing valid usage`);
+		}
 	} else if (entry.type === "thinkingLevelChange") {
 		if (typeof entry.thinkingLevel !== "string") {
 			throw new SessionError(`session line ${lineNo}: thinkingLevelChange entry missing level`);
@@ -258,7 +317,17 @@ function parseEntryLine(line: string, lineNo: number): SessionEntry {
 	} else {
 		throw new SessionError(`session line ${lineNo}: unknown entry type "${String(entry.type)}"`);
 	}
-	return entry as SessionEntry;
+	const result = entry as SessionEntry;
+	if (result.type === "message") result.message = copyMessagePricing(result.message);
+	if (result.type === "compaction" && Array.isArray(result.retainedTail)) {
+		result.retainedTail = result.retainedTail.map(copyMessagePricing);
+	}
+	if (result.type === "compaction" || result.type === "branchSummary" || result.type === "summaryUsage") {
+		const pricing = copySummaryPricing(result.usage, result.usagePricing);
+		delete result.usagePricing;
+		if (pricing !== undefined) result.usagePricing = pricing;
+	}
+	return result;
 }
 
 /** SA-07: the acceptance rule for a persisted session line, shared with
@@ -325,7 +394,7 @@ export class SessionStore {
 			else this.labelsById.set(entry.targetId, entry.label);
 			return;
 		}
-		this.leafId = entry.id;
+		if (entry.type !== "summaryUsage") this.leafId = entry.id;
 	}
 
 	/** Whether this store was successfully written or opened; not a durability guarantee. */
@@ -436,8 +505,10 @@ export class SessionStore {
 					explicitModelSelection ||= metadata.explicit;
 					continue;
 				}
-				entries.push(parseEntryLine(raw, i + 1));
-				lastEntryIndex = i;
+				const entry = parseEntryLine(raw, i + 1);
+				entries.push(entry);
+				// Receipts do not supersede a previous position marker on reopen.
+				if (entry.type !== "summaryUsage") lastEntryIndex = i;
 			} catch (err) {
 				// A torn FINAL line (crash mid-append) must not hide the whole session;
 				// interior corruption is still fatal — something is structurally wrong.
@@ -463,7 +534,9 @@ export class SessionStore {
 		// (corrupt edit) is ignored — the last entry is the safe fallback.
 		if (lastPosition !== null && lastPosition.index > lastEntryIndex) {
 			const leafId = lastPosition.leafId;
-			if (leafId === null || store.byId.has(leafId)) store.leafId = leafId;
+			if (leafId === null || (store.byId.has(leafId) && store.byId.get(leafId)?.type !== "summaryUsage")) {
+				store.leafId = leafId;
+			}
 		}
 		return store;
 	}
@@ -545,7 +618,7 @@ export class SessionStore {
 			id: this.nextId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
-			message,
+			message: copyMessagePricing(message),
 		};
 		this.append(entry);
 		return entry.id;
@@ -655,17 +728,19 @@ export class SessionStore {
 		usage?: Usage,
 		/** SA-05: wire `model` + declared `modelReference` + SA-04 round-2
 		 *  missing flag (omitted when absent, never set to undefined). */
-		stamps?: { model?: string; modelReference?: string; usageMissing?: true },
+		stamps?: SummaryUsageStamps,
 	): string {
+		const usagePricing = copySummaryPricing(usage, stamps?.usagePricing);
 		const entry: CompactionEntry = {
 			type: "compaction",
 			id: this.nextId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			summary,
-			retainedTail,
+			retainedTail: retainedTail.map(copyMessagePricing),
 			tokensBefore,
-			usage,
+			...(usage === undefined ? {} : { usage: { ...usage } }),
+			...(usagePricing === undefined ? {} : { usagePricing }),
 			...(stamps?.model !== undefined && { model: stamps.model }),
 			...(stamps?.modelReference !== undefined && { modelReference: stamps.modelReference }),
 			...(stamps?.usageMissing === true && { usageMissing: true }),
@@ -718,7 +793,7 @@ export class SessionStore {
 		const currentPathIds = new Set(this.getBranch().map((entry) => entry.id));
 		const tips: { id: string; label: string; count: number }[] = [];
 		for (const entry of this.entries) {
-			if (entry.type === "label") continue; // side-attachment, not a node
+			if (entry.type === "label" || entry.type === "summaryUsage") continue; // not a node
 			if (this.childrenOf(entry.id).length > 0) continue; // not a tip
 			if (currentPathIds.has(entry.id)) continue; // the current branch's own tip
 			const { other } = this.splitBranches(entry.id);
@@ -763,6 +838,8 @@ export class SessionStore {
 			const target = this.byId.get(entryId);
 			if (target === undefined) throw new SessionError(`branch target ${entryId} not found`);
 			if (target.type === "label") throw new SessionError("labels are not branch targets");
+			if (target.type === "summaryUsage")
+				throw new SessionError("summary usage receipts are not branch targets");
 			if (entryId === this.leafId) throw new SessionError("already at that position");
 		}
 		this.leafId = entryId;
@@ -778,12 +855,12 @@ export class SessionStore {
 		const nodeMap = new Map<string, TreeNode>();
 		const roots: TreeNode[] = [];
 		for (const entry of this.entries) {
-			if (entry.type === "label") continue; // folded into .label, not a node
+			if (entry.type === "label" || entry.type === "summaryUsage") continue; // not a node
 			const label = this.labelsById.get(entry.id);
 			nodeMap.set(entry.id, label === undefined ? { entry, children: [] } : { entry, children: [], label });
 		}
 		for (const entry of this.entries) {
-			if (entry.type === "label") continue;
+			if (entry.type === "label" || entry.type === "summaryUsage") continue;
 			const node = nodeMap.get(entry.id)!; // set in the pass above
 			if (entry.parentId === null || entry.parentId === entry.id) {
 				roots.push(node); // pi's self-parent rule: a self-referencing entry is a root
@@ -844,7 +921,9 @@ export class SessionStore {
 	 *  stay tiny; the append-only file means no invalidation is needed).
 	 *  Labels are side-attachments, never children (#tree). */
 	private childrenOf(id: string): SessionEntry[] {
-		return this.entries.filter((entry) => entry.type !== "label" && entry.parentId === id);
+		return this.entries.filter(
+			(entry) => entry.type !== "label" && entry.type !== "summaryUsage" && entry.parentId === id,
+		);
 	}
 
 	/** Append a branch summary at the current leaf (#10): the memory of the
@@ -853,15 +932,35 @@ export class SessionStore {
 		summary: string,
 		/** SA-05: summarizer usage + stamps — see BranchSummaryEntry. */
 		usage?: Usage,
-		stamps?: { model?: string; modelReference?: string; usageMissing?: true },
+		stamps?: SummaryUsageStamps,
 	): string {
+		const usagePricing = copySummaryPricing(usage, stamps?.usagePricing);
 		const entry: BranchSummaryEntry = {
 			type: "branchSummary",
 			id: this.nextId(),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),
 			summary,
-			...(usage !== undefined && { usage }),
+			...(usage !== undefined && { usage: { ...usage } }),
+			...(usagePricing === undefined ? {} : { usagePricing }),
+			...(stamps?.model !== undefined && { model: stamps.model }),
+			...(stamps?.modelReference !== undefined && { modelReference: stamps.modelReference }),
+			...(stamps?.usageMissing === true && { usageMissing: true }),
+		};
+		this.append(entry);
+		return entry.id;
+	}
+
+	/** Append an accounting-only receipt without moving the active position. */
+	appendSummaryUsage(usage: Usage, stamps?: SummaryUsageStamps): string {
+		const usagePricing = copySummaryPricing(usage, stamps?.usagePricing);
+		const entry: SummaryUsageEntry = {
+			type: "summaryUsage",
+			id: this.nextId(),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+			usage: { ...usage },
+			...(usagePricing === undefined ? {} : { usagePricing }),
 			...(stamps?.model !== undefined && { model: stamps.model }),
 			...(stamps?.modelReference !== undefined && { modelReference: stamps.modelReference }),
 			...(stamps?.usageMissing === true && { usageMissing: true }),
@@ -880,6 +979,9 @@ export class SessionStore {
 		const seen = new Set<string>();
 		let current: SessionEntry | undefined = this.byId.get(target);
 		while (current) {
+			if (current.type === "summaryUsage") {
+				throw new SessionError("summary usage receipts are not branch targets or parents");
+			}
 			if (seen.has(current.id)) {
 				// A cyclic parentId chain must fail loudly, not spin forever:
 				// a corrupted file used to hang every getBranch/buildContext.

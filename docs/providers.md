@@ -217,9 +217,10 @@ can reject unsupported requests; local acceptance is not proof of access.
 
 The picker says `Fast requested; higher usage; availability unverified`.
 Fast may consume more subscription allowance or incur additional cost. Catalog
-estimates remain base-model estimates, not actual subscription charges or a
-verified Fast multiplier. Listing and capability do not verify account
-entitlement or guarantee faster responses. An initial 2026-11-10 subscription
+reference estimates now include the per-call service-tier assumptions described
+below; they are not actual subscription charges or verified allowance multipliers.
+Listing and capability do not verify account entitlement or guarantee faster
+responses. An initial 2026-11-10 subscription
 probe with `service_tier:"fast"` returned **HTTP 400** without a retained diagnostic
 reason. A separately authorized follow-up completed 42 requests (2 warm-ups and
 20 randomized formal pairs), with 18,942 reported tokens, correct outputs and no
@@ -255,6 +256,49 @@ for the current exact provider/base model in active history, not confirmation of
 the current selection. It shows `omitted` and `unreported` explicitly. If that
 model's latest assistant has no valid observation, it does not substitute an
 older one. Legacy sessions remain valid; there is no per-turn warning.
+
+## Codex reference pricing
+
+For `openai-codex` only, Ink adjusts the current base-model catalog rates using
+observations captured at each producing call. The rules version is
+`pi-2cac4f1a9`, pinned to [Pi revision 2cac4f1a934cdc4a80b05a7d8ff2543cf5ee623c](https://github.com/earendil-works/pi/blob/2cac4f1a934cdc4a80b05a7d8ff2543cf5ee623c/packages/ai/src/api/openai-codex-responses.ts#L623-L660).
+This is a local reference estimate, not an invoice, subscription allowance
+measurement, or confirmation of actual processing. It changes neither requests
+nor model identity, selection, capability, authentication, retries or errors.
+
+| Captured terminal `reported` value | Tier used only for the estimate |
+|---|---|
+| `priority` or `fast` | Priority (`fast` is an alias) |
+| `flex` | Flex, even if priority was requested |
+| `default` or missing | Priority if that call captured `requested:"priority"`; otherwise base |
+| `standard`, `auto` or `scale` | Base, following Pi's reference rule, not verification of billing terms |
+| Other value | Base-only estimate with incomplete tier pricing |
+
+Priority multiplies all four monetary rate components (input, output, cache
+read and cache write) by **2.5 for the exact base ID `gpt-5.5`**, and by **2 for
+other IDs**. The otherwise-2 rule is a Pi-compatible assumption, not a verified
+rate for unknown or future models. Flex uses **0.5**, and base uses **1**.
+These are monetary adjustments only: raw token counters and cache-hit rates are
+never multiplied. Other providers are unchanged. The raw `reported` value stays
+unchanged, including `default`; requested-tier fallback is for estimation only,
+not a rewrite or evidence that priority processing occurred.
+
+For identified Codex usage with known rates, missing or invalid tier observations
+(including legacy records) leave positive usage at a base-only estimate with
+incomplete tier pricing. Malformed or inconsistent pricing metadata does not
+erase valid raw usage; it falls back rather than
+pricing only part of a report. Missing catalog rates remain unpriced; a zero
+catalog rate is a zero reference estimate, not proof of free subscription use.
+Estimates use current catalog rates, not preserved historical billing rates.
+
+Session cost displays (footer, `/status` and session statistics) use `~` for
+incomplete reference pricing, including unknown tiers or legacy base-only Codex
+estimates. `!` still means known-missing usage, not an unknown multiplier; existing
+unknown-rate and subscription indicators remain. No multiplier reconstructs
+unreported work. Normal/Fast mixtures, history navigation, reopening, children
+and summary retries retain each call's original attribution rather than using
+the current selection or the last response's tier. See [sessions.md](sessions.md)
+for accounting and rejected-summary receipts.
 
 ## Model catalog (pi.dev)
 

@@ -69,6 +69,8 @@ function passesFilter(
 	isCurrentLeaf: boolean,
 	label: string | undefined,
 ): boolean {
+	// Accounting receipts are not navigable, even in a caller-supplied tree.
+	if (entry.type === "summaryUsage") return false;
 	if (isCurrentLeaf) return true;
 	if (mode === "labeled-only") return label !== undefined;
 	// Tree metadata never shows in any mode but "all" (pi's settings-entry rule).
@@ -124,6 +126,8 @@ export function describeEntryForTree(entry: SessionEntry): string {
 			return entry.name.trim() === "" ? "title: (cleared)" : `title: ${entry.name}`;
 		case "label":
 			return `label: ${entry.label}`;
+		case "summaryUsage":
+			return ""; // File-level accounting, never rendered as a tree node.
 	}
 }
 
