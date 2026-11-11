@@ -1,11 +1,14 @@
 # Ink 0.6.0 release preparation
 
 Date: 2026-11-11
-Status: local candidate independently approved; publication pending.
+Status: published from `5a4056b`; see [Publication](#publication) for the verified outcome.
 Branch/worktree: `release/0.6.0`, `.worktrees/ink-release-0.6.0`.
 Base: `21675349cd1360170449ca6bb1194151622954e4` (clean local main).
 Previous published version: `ink-agent@0.5.1`, tag `v0.5.1`.
 Evidence root: `/tmp/ink-release-0.6.0.uIu0HL/`.
+
+The earlier pending statements below describe preparation/review stages. The
+[Publication](#publication) record supersedes them with the executed outcome.
 
 ## 1. Goal, release identity and authorization
 
@@ -15,7 +18,10 @@ requirements. Paid independent reviewer calls, remote pushes, CI/Pages triggers,
 version-tag pushes that publish to npm, and GitHub Release creation must be
 presented separately and explicitly approved before execution. The owner has
 confirmed the independent design and final implementation/artifact review
-rounds; both are closed. No external write has been approved or performed. Read-only remote inspection is allowed.
+rounds; both are closed. The owner subsequently approved the main push, matching
+tag push/npm publication, one full workflow rerun after confirmed non-publication,
+and formal GitHub Release creation. Executed outcomes are recorded under
+[Publication](#publication); this does not authorize future external operations.
 
 Propose `ink-agent@0.6.0`, sole executable `ink`, annotated tag `v0.6.0`.
 Use a minor version because the pending changes add Codex Fast selections and
@@ -218,7 +224,8 @@ baseline results, not verification of the amended 0.6.0 candidate.
   Fresh-context independent implementation/artifact reviewer `ad1b575d` returned
   APPROVE with no required changes. This record closes review before the local
   candidate commit/integration; those operations follow without hook bypass.
-- External pushes, CI/Pages, tag/npm publication and GitHub Release: pending.
+- Subsequent external approvals and verified CI/Pages, tag/npm and GitHub
+  Release outcomes are recorded under [Publication](#publication).
 
 ## Local candidate verification
 
@@ -316,3 +323,137 @@ results, not a claim that the initial run passed.
 Approval does not authorize remote pushes, CI/deployment triggers, tags, npm or
 GitHub publication. It does not establish live native-CLI error reachability or
 actual supervisor-death behavior beyond the documented disconnect probes.
+
+## Publication
+
+Published 2026-11-11. The owner separately approved main push/CI/Pages, the
+version-tag push and resulting npm publication, one full release-workflow rerun
+only after the first attempt's non-publication was confirmed, and creation of
+the formal Latest GitHub Release. Nothing was rerun after real publish succeeded.
+
+### Source, integration and supported CI
+
+- Candidate commit: `3190e69e1d6761bb182414bbfdbaa414d0fb3466`.
+  Release merge: `5a4056b2f58558553c293e34e4d3a4211cb4ac49`, integrated with
+  --no-ff; its tree equals the reviewed candidate. Main was pushed without tags.
+- Annotated tag object: `dde0127b514928b875adcf4d2d023057a441436e`.
+  Both local and remote v0.6.0 resolve to the release merge. The tag was not
+  moved/recreated and must not be changed to a later documentation commit.
+- Post-merge local checks passed: source/test typechecks, lint (321 files,
+  no warnings/fixes), build, identity/npm-version guards and whitespace. The
+  integrated full suite passed 175 files / 5098 tests in 39.12 s. Its 442-file
+  offline smoke matched every reviewed candidate file byte and mode.
+- [Linux CI `43017799816`](https://github.com/FishInSalt/ink/actions/runs/43017799816)
+  passed for the exact release commit on Node 22.19.0/npm 10.9.3 and Node
+  24.22.2/npm 11.19.1. Each passed 175 files / 5096 tests with two expected
+  Darwin-only skips (named-pasteboard JXA and actual Darwin helper load). Both
+  442-file packaging/install/help/version/npm-exec smokes passed. npm ci reported
+  zero vulnerabilities. These results supplement, not replace, the macOS matrix.
+- [Pages `43017799757`](https://github.com/FishInSalt/ink/actions/runs/43017799757)
+  built and deployed successfully for the exact release commit.
+
+### Release attempts and registry visibility
+
+[Release run `43020394926`](https://github.com/FishInSalt/ink/actions/runs/43020394926)
+was triggered by the approved tag push, not a workflow dispatch.
+
+Attempt 1 failed before publication: 174 test files passed / one failed;
+5095 tests passed / one failed / two Darwin-only skipped. The only failure was
+`test/repl-tui.test.ts:5580`, a login assertion after the helper's fixed 30 ms
+render wait. The file and credential-store implementation are unchanged since
+v0.5.1. The publish job was skipped; registry 0.6.0 returned HTTP 404.
+
+An isolated source-archive diagnostic injected a 150 ms delay before the real
+credential save. The original wait reproduced the saved-key assertion failure;
+observing completion with the existing bounded frame helper passed the same
+assertions. Both probes selected only that one test (238 others unselected).
+This is evidence of a pre-existing timing-sensitive test, not a runtime fix or
+a claim that the original failing run passed. A first diagnostic extraction used
+an unsupported Python tar filter argument; the corrected extractor validated
+regular-file/directory paths before extraction. No release code was changed.
+
+The owner then approved one complete rerun of the unchanged tag/workflow.
+Attempt 2's Node 24.22.2/npm 11.19.1 gate passed 175 files / 5096 tests with two
+Darwin-only skips. Both gate and publish-job 442-file artifact smokes passed.
+Real `npm publish --ignore-scripts --provenance --access public` succeeded at
+`2026-11-11T13:06:49Z`; the workflow nevertheless ended failed at the final
+180-second registry visibility check. It was not rerun again.
+
+Registry publication timestamp: `2026-11-11T13:12:01.136Z`, more than five minutes
+after publish returned. Direct polling subsequently verified version 0.6.0 and
+latest selection, both bound to the approved gitHead. Earlier HTTP 404/latest
+0.5.1 observations are retained. A diagnostic initially assumed the 404 body
+was an object, but it was a JSON string; corrected polling handled both shapes.
+
+### Actual registry artifact and provenance
+
+- npm latest selects `0.6.0`; metadata gitHead is the release merge.
+- Registry archive: `/tmp/ink-release-0.6.0.uIu0HL/registry-ink-agent-0.6.0.tgz`;
+  862942 bytes. SHA-256:
+  `9333af6443d064d3f388eb7c21fac3a5ff65c4a5249aee4ab67dd4a6dcd25d94`.
+  SHA-1: `db78a719e7a2c34f692543e2f259fb64119ab663`.
+- Registry integrity:
+  `sha512-nG6ITWIfq5Th/cHDnQK4vZakH3EuB+4u2OfMVbuCZw5IL6I6ipMkavvr7a3rvKC5P13VLlnebDZeVn1jd6vYjA==`.
+  All 442 packed file bodies and modes equal the reviewed 861269-byte local
+  candidate. Different compressed archive digests are not content differences.
+- Two registry signatures, the npm publish attestation and SLSA provenance
+  passed cryptographic verification using existing npm Sigstore libraries and
+  refreshed TUF-authenticated trust data in this task's private scratch cache.
+  Signed artifact digest, repository, workflow, issuer, v0.6.0 tag, source commit
+  and run/attempt 2 match. Certificate/transparency inclusion verification passed.
+  Provenance log index: `3810386530`; npm publish-attestation index: `3810488196`.
+  Five negative controls rejected altered signed payload, wrong workflow, wrong
+  OIDC issuer, wrong artifact digest and wrong source commit. No new independent
+  post-publication reviewer or separate source rebuild was invoked; source-build
+  equality was already independently established before publication.
+- The downloaded registry tarball was installed offline in a private prefix,
+  with isolated HOME/XDG/cache/config, no lifecycle scripts and a network blocker.
+  All 442 installed file bodies/modes match the archive; pi-tui is 1.5.1.
+  Exact Ink 0.6.0 and help passed on local Node 22.19.0, 24.22.1 and 25.5.0;
+  neutral-cwd local npm-exec passed. No blocked network attempts were recorded.
+  This verifies CLI installation, not a new 75-case installed-terminal run.
+- Initial public-key download encountered a transient TLS connection error;
+  bounded read-only GET retries retrieved the keys/packument. No publish retry,
+  credential fallback or verification weakening was used.
+
+### GitHub Release and evidence
+
+The non-draft, non-prerelease
+[GitHub Release v0.6.0](https://github.com/FishInSalt/ink/releases/tag/v0.6.0)
+was published at `2026-11-11T13:35:13Z`, id `441740663`, titled Ink 0.6.0.
+It is Latest. Its body equals only the approved dated CHANGELOG notes, allowing
+line-ending/trailing-newline normalization; no artifact was uploaded separately.
+
+Evidence under `/tmp/ink-release-0.6.0.uIu0HL/` includes integration.json,
+linux-ci.{json,log}, pages.json, release-failed.{json,log}, login-race-{before,after}.log,
+release-attempt2-watch.log and release-notes-0.6.0.md. The logs/ directory holds
+github-release-attempt2.{json,log}, registry-{metadata,latest,attestations,keys,
+packument,publication-time,artifact-identity,crypto-verification,install-verification}.json,
+registry-visibility-observations.json, registry-crypto.log,
+registry-install-verified.log and github-{release-page,latest-release}.json.
+Verification scripts, isolated registry installation and tuf-cache/ are retained
+under the same evidence root.
+
+### Remaining follow-up and documentation integration
+
+No npm/tag/GitHub Release publication remains pending. Do not rerun the release
+workflow, reuse/move v0.6.0, or republish 0.6.0. The original 30 ms login-test wait
+and 180-second registry visibility window remain follow-up test/workflow issues;
+no runtime failure has been established from them. No failing test was disabled,
+skipped or bypassed to obtain publication; existing platform skips were unchanged.
+Global installation, production state/configuration changes and live provider
+inference were not performed.
+
+This documentation-only follow-up implements the already-approved section 5.5
+on `docs/release-0.6.0-publication`, based on the release merge. It changes only
+this record and RELEASING.md; all published package bytes, dependency/version
+fields, workflow files, CHANGELOG and the release tag remain unchanged. The
+factual record is checked against retained API/cryptographic/install evidence,
+relative links/anchors and diff checks without another paid review call.
+Record validation passed 16 relative links / 7 anchors, repository lint across
+321 files without warnings/fixes, build and baseline whitespace checks. All 442
+published file bodies/modes remain identical, including 396 freshly rebuilt
+outputs. The full suite was not repeated for these two documentation-only files;
+the release's code/test results above remain the relevant evidence.
+Local commit and --no-ff integration follow those checks; its remote push still
+requires separate approval and may trigger CI/Pages, but cannot republish npm.
