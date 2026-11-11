@@ -19,6 +19,7 @@ import {
 	parseUsagePricing,
 	type UsagePricingSlice,
 } from "../service-tier-pricing.js";
+import { snapshotTaskRecord, taskRecordView } from "../task-record.js";
 
 /**
  * JSONL session storage — a message tree in a file.
@@ -240,6 +241,12 @@ export class SessionError extends Error {
  * observers must not change live persisted facts through retained objects.
  * Invalid attribution never erases raw usage or retains only requested priority. */
 function copyMessagePricing(message: AgentMessage): AgentMessage {
+	if (message.role === "toolResult") {
+		return {
+			...message,
+			results: message.results.map((result) => taskRecordView(result, snapshotTaskRecord(result.taskRecord))),
+		};
+	}
 	if (message.role !== "assistant") return message;
 	const { serviceTier: raw, ...rest } = message;
 	const serviceTier = parsePricingServiceTier(raw);

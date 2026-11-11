@@ -37,6 +37,14 @@ their original release identity.
   errors over successful HTTP retain typed status without `API error 200` text.
   Completion/request behavior is unchanged by the per-call reference-pricing
   update below.
+- **Task-result accounting snapshots.** Capture task identity, raw usage and
+  pricing observations before tool-result observers can mutate, replace or
+  delete them, including later edits through retained references. Independently
+  copy task metadata at session append/read and compaction-tail boundaries,
+  preserving existing tool content/status behavior. Missing or invalid records
+  stay unknown; invalid pricing never discards valid raw usage. Reference
+  estimates, not actual billing, are protected; requests and token arithmetic
+  are unchanged.
 - **Rejected summary accounting.** Preserve already-captured parent compaction
   and branch-summary usage in accounting-only `summaryUsage` receipts when the
   summary is rejected, including earlier reports before a retry failure. Keep

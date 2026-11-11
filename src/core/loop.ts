@@ -12,6 +12,7 @@ import {
 	type Usage,
 } from "./messages.js";
 import { pricingSlice } from "./service-tier-pricing.js";
+import { snapshotTaskRecord, type TaskRecord, taskRecordView } from "./task-record.js";
 import type { Tool } from "./tools/types.js";
 import type { AttemptUsage } from "./usage-ledger.js";
 import { recordMissingUsageReport, recordUsageReport } from "./usage-ledger.js";
@@ -342,7 +343,9 @@ function fillMissingToolResults(
 	const answered = new Set(results.map((r) => r.toolCallId));
 	for (const call of toolCalls) {
 		if (answered.has(call.id)) continue;
-		results.push({ toolCallId: call.id, toolName: call.name, content: reason, isError: true });
+		results.push(
+			persistableResult({ toolCallId: call.id, toolName: call.name, content: reason, isError: true }),
+		);
 	}
 }
 
@@ -803,13 +806,14 @@ async function executeChunk(
 			// (single writer: this worker). toolCallId is stamped here (the
 			// registry is name-only; the object identity is stable).
 			const result = await grace.race(plan.run(signal), chunk[index]?.name as string);
-			const stamped = { ...result, toolCallId: chunk[index]?.id as string };
+			captureTaskRecord(result);
+			result.toolCallId = chunk[index]?.id as string;
 			// #tool-settle: own execution time (queue wait excluded by
 			// construction) + real-time completion display; the authoritative
 			// tool_end still follows via the prefix flush in call order.
-			const measured: ToolResult = { ...stamped, durationMs: clock() - startedAt };
-			settled[index] = measured;
-			onEvent?.({ type: "tool_settled", result: measured });
+			result.durationMs = clock() - startedAt;
+			settled[index] = result;
+			onEvent?.({ type: "tool_settled", result });
 			flush();
 		}
 	};
@@ -832,16 +836,30 @@ async function executeChunk(
 	}
 }
 
-/** History-shaped result (prompt-audit P1): display is render-only and
- *  must not reach history — the session persists results verbatim and resume
- *  replay would resurrect a display string no renderer set. Events keep it.
- *  SA-03 taskRecord is the deliberate opposite: program metadata that MUST
- *  reach history — the spread below keeps it while removing display. */
+/** Loop-owned projections keep accounting captured before ANY result observer.
+ *  has() distinguishes a captured absent/invalid record from an uncaptured one:
+ *  later observer additions must never acquire authoritative accounting. */
+const taskRecordSnapshots = new WeakMap<ToolResult, TaskRecord | undefined>();
+function captureTaskRecord(result: ToolResult): ToolResult {
+	if (!taskRecordSnapshots.has(result)) {
+		taskRecordSnapshots.set(result, snapshotTaskRecord(result.taskRecord));
+	}
+	return result;
+}
+
+/** display/duration are event-only. Preserve the existing top-level content
+ *  snapshot time where a spread was already used; otherwise retain live
+ *  content/status via a metadata-only view, never a new independent envelope. */
 function persistableResult(result: ToolResult): ToolResult {
-	if (result.display === undefined && result.durationMs === undefined) return result;
-	// #tool-settle: `durationMs` shares `display`'s lifecycle — events only.
-	const { display: _display, durationMs: _durationMs, ...rest } = result;
-	return rest;
+	captureTaskRecord(result);
+	const taskRecord = taskRecordSnapshots.get(result);
+	if (result.display === undefined && result.durationMs === undefined) {
+		return taskRecordView(result, taskRecord);
+	}
+	const { display: _display, durationMs: _durationMs, taskRecord: _taskRecord, ...rest } = result;
+	const persisted: ToolResult = rest;
+	if (taskRecord !== undefined) persisted.taskRecord = taskRecord;
+	return persisted;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -948,7 +966,7 @@ async function runTool(
 		const result = await tool.execute(record, signal ?? new AbortController().signal, {
 			toolCallId: call.id,
 		});
-		return {
+		return captureTaskRecord({
 			toolCallId: call.id,
 			toolName: call.name,
 			// M13: tools that produce structured blocks (read's image path)
@@ -959,7 +977,7 @@ async function runTool(
 			// SA-03: explicit forwarding — the projection below drops unknown
 			// fields, so the task record must be copied by name.
 			taskRecord: result.taskRecord,
-		};
+		});
 	} catch (err) {
 		return {
 			toolCallId: call.id,
@@ -1000,5 +1018,7 @@ async function executeToolCall(
 	// await above stays outside, matching the chunk's phase-1 scope decision).
 	// Stamp the id: the grace result is synthesized name-only.
 	const result = await grace.race(prepared.run(signal), name);
-	return { ...result, toolCallId: id };
+	captureTaskRecord(result);
+	result.toolCallId = id;
+	return result;
 }

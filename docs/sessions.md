@@ -74,6 +74,17 @@ no estimate reconstructs unreported work or measures actual subscription
 allowance/billing. The rules and pinned source are in
 [Codex reference pricing](providers.md#codex-reference-pricing).
 
+Task-result accounting is captured before `tool_settled` or `tool_end`
+observers receive it. Changing, replacing or deleting an observer's task record
+cannot relabel the stored child identity, raw usage or pricing observations;
+retained references cannot change them later either. The session store also
+copies this metadata when appending messages and compaction tails, and when
+reading files. Valid raw usage survives malformed advisory pricing; absent,
+invalid or unsupported-version task records remain unknown rather than acquiring
+invented usage. Task metadata never enters model input, summaries or token
+estimates. This isolates accounting only, not tool content/status or arbitrary
+host code that directly edits history or store entries. No old files are rewritten.
+
 ## Model selection and Fast
 
 Sessions save the base provider/model plus optional `speed:"fast"` for a Codex
