@@ -186,3 +186,24 @@ Linux Node 22.19.0/24 CI has not been run or triggered. This batch does not
 repair production special-file reads, bump a version, push, publish or release.
 Post-merge integrated results are recorded separately in the local run report.
 
+## Release 0.6.0 supervisor-loss follow-up
+
+The release preparation adds worker-side emergency containment on unexpected
+supervisor IPC disconnection, plus an immediate connected-state check after
+arming the handler and before creating holders/native reads. Only the detached
+worker's own live PID selects its process group; no IPC message chooses a signal
+target. Emergency group SIGKILL uses no asynchronous filesystem work, with an
+immediate exit fallback if signaling fails. The fallback cannot establish
+that descendants stopped. No guarantee applies before worker JavaScript runs.
+
+Normal drained success and intentional no-I/O/orphan controls retain orderly
+disconnection. A failed worker with pending I/O keeps its owner-loss protection
+until the supervisor contains it. Three disconnect-boundary regressions cover
+an already-consumed startup disconnect, a holder waiting in open, and a paired
+native read before EOF. They require direct emergency SIGKILL close and no live
+group members before any supervisor containment signal; later fallback cleanup
+cannot satisfy the regression. They inject IPC disconnection, not an actual
+supervisor-process kill. Zombie observations do not claim PID 1 reaping. Normal
+success requirements, original deadlines and production read behavior are unchanged.
+See [release-0.6.0-preparation.md](release-0.6.0-preparation.md) for the approved
+design, negative controls and actual candidate verification results.

@@ -94,8 +94,19 @@ function withFastMode(provider: LLMProvider): LLMProvider {
 				yield* provider.stream(request);
 			} catch (error) {
 				if (speed === "fast" && error instanceof Error) {
-					error.message +=
-						" — Fast was requested; use /model to explicitly select the normal model before retrying.";
+					try {
+						const message = `${error.message} — Fast was requested; use /model to explicitly select the normal model before retrying.`;
+						try {
+							error.message = message;
+						} catch {
+							// Native DOMException.message is getter-only, but an own
+							// property can still add the hint without changing identity.
+							Object.defineProperty(error, "message", { value: message, writable: true, configurable: true });
+						}
+					} catch {
+						// Immutable errors or throwing accessors must retain the
+						// original failure, never an annotation-induced exception.
+					}
 				}
 				throw error;
 			}

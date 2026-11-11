@@ -14,6 +14,33 @@ import { assistant, scriptedProvider } from "./fakes.js";
 import type { FifoControl, FifoReport, FifoScenario } from "./fifo-fixture.js";
 
 const [root, scenario, control] = process.argv.slice(2) as [string, FifoScenario, FifoControl | ""];
+let orderlyDisconnect = false;
+function disconnectNormally(): void {
+	orderlyDisconnect = true;
+	if (process.connected) process.disconnect();
+}
+function containOwnerLoss(): void {
+	if (orderlyDisconnect) return;
+	// Our detached spawn makes this still-live PID the owned group leader.
+	// Never use an IPC-supplied target or async fs in an exhausted native pool.
+	try {
+		process.kill(-process.pid, "SIGKILL");
+	} finally {
+		// Bounded fallback only; signal failure cannot prove descendant cleanup.
+		process.exit(70);
+	}
+}
+if (control === "owner-startup-loss") {
+	// Consume the event BEFORE registration: only the connected-state check
+	// below can detect this deterministic startup/import-window fault.
+	await new Promise<void>((resolve) => {
+		process.once("disconnect", resolve);
+		process.disconnect();
+	});
+}
+process.once("disconnect", containOwnerLoss);
+if (!process.connected) containOwnerLoss();
+
 const report: FifoReport = {
 	type: "verdict",
 	ok: false,
@@ -81,7 +108,7 @@ async function run(): Promise<void> {
 		return;
 	}
 	if (control === "early-exit") {
-		process.disconnect();
+		disconnectNormally();
 		return;
 	}
 	const count = scenario === "abort" ? 5 : 1;
@@ -141,10 +168,15 @@ async function run(): Promise<void> {
 	await send({ type: "holders", pids: report.holders.map((holder) => holder.pid) });
 	// Faults also wait for external ownership verification before proceeding.
 	await until(() => proceed, "supervisor did not verify holder ownership");
+	if (control === "owner-before-open") {
+		await send({ type: "owner-loss-ready", report });
+		process.disconnect(); // Fault stimulus: do NOT mark this orderly.
+		await new Promise<void>(() => {});
+	}
 	if (control === "holder-early-exit") holders[0]!.stdin.end("exit\n");
 	if (control === "orphan") {
 		// No reader exists: this holder remains blocked in open after worker exit.
-		process.disconnect();
+		disconnectNormally();
 		process.exit(23);
 	}
 	if (control === "watchdog") await new Promise<void>(() => {});
@@ -214,6 +246,11 @@ async function run(): Promise<void> {
 			}),
 		);
 		await until(() => report.holders.every((h) => h.ready) && probeRan, "probe did not execute before EOF");
+		if (control === "owner-paired-read") {
+			await send({ type: "owner-loss-ready", report });
+			process.disconnect(); // Fault stimulus: do NOT mark this orderly.
+			await new Promise<void>(() => {});
+		}
 		report.witness = probeRan && !report.eofSent && report.executeSettled.length === 0;
 		closeGates("eof");
 	} else {
@@ -284,7 +321,8 @@ try {
 	await send(report).catch(() => {});
 	process.exitCode = 1;
 } finally {
-	// Failure may leave native I/O pending. Do not fake drainage: report it and
-	// let the supervisor SIGKILL/audit our entire owned process group.
-	if (process.connected) process.disconnect();
+	// Pending failure I/O must retain owner-loss protection until the live
+	// supervisor contains the group. Only drained success/no-I/O controls
+	// disconnect intentionally; unexpected owner loss remains self-contained.
+	if (report.ok || control === "malformed-ipc" || control === "early-exit") disconnectNormally();
 }

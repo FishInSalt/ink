@@ -24,7 +24,10 @@ export type FifoControl =
 	| "watchdog"
 	| "malformed-ipc"
 	| "early-exit"
-	| "spawn-error";
+	| "spawn-error"
+	| "owner-startup-loss"
+	| "owner-before-open"
+	| "owner-paired-read";
 export interface FifoReport {
 	type: "verdict";
 	ok: boolean;
@@ -59,7 +62,17 @@ export interface FifoOutcome {
 	stderr: string;
 	ownership: GroupMember[];
 	holderPids: number[];
+	ownerLoss?: {
+		phase: "startup" | "before-open" | "paired-read";
+		observed: boolean;
+		directClosedBeforeCleanup: boolean;
+		signalsBeforeObservation: number;
+		members: GroupMember[];
+		witness?: FifoReport;
+		error: string;
+	};
 	cleanup: {
+		containmentSignals: number;
 		conclusive: boolean;
 		directClosed: boolean;
 		code: number | null;
@@ -214,6 +227,14 @@ export async function runFifoFixture(
 	);
 	// Captured exclusively from our own detached spawn, never from worker IPC.
 	const pgid = child.pid;
+	const ownerPhase =
+		options.control === "owner-startup-loss"
+			? "startup"
+			: options.control === "owner-before-open"
+				? "before-open"
+				: options.control === "owner-paired-read"
+					? "paired-read"
+					: undefined;
 	const outcome: FifoOutcome = {
 		ok: false,
 		failure: "",
@@ -225,7 +246,20 @@ export async function runFifoFixture(
 		stderr: "",
 		ownership: [],
 		holderPids: [],
+		...(ownerPhase === undefined
+			? {}
+			: {
+					ownerLoss: {
+						phase: ownerPhase,
+						observed: false,
+						directClosedBeforeCleanup: false,
+						signalsBeforeObservation: 0,
+						members: [],
+						error: "",
+					},
+				}),
 		cleanup: {
+			containmentSignals: 0,
 			conclusive: false,
 			directClosed: false,
 			code: null,
@@ -244,9 +278,42 @@ export async function runFifoFixture(
 		outcome.failure ||= reason;
 		finish();
 	};
+	let observingOwner = false;
+	let ownerObservation: Promise<void> | undefined;
+	const observeOwnerLoss = () => {
+		const loss = outcome.ownerLoss;
+		if (!loss || observingOwner) return;
+		observingOwner = true;
+		ownerObservation = (async () => {
+			const deadline = Math.min(bodyDeadline, Date.now() + 2000);
+			let auditError = "";
+			while (Date.now() < deadline) {
+				try {
+					loss.members = pgid ? await auditGroup(pgid, deadline) : [];
+					if (outcome.cleanup.directClosed && loss.members.every((m) => m.stat.startsWith("Z"))) {
+						if (outcome.cleanup.signal !== "SIGKILL" || outcome.cleanup.code !== null)
+							loss.error = "owner-loss worker did not close by emergency SIGKILL";
+						else if (outcome.cleanup.containmentSignals !== 0)
+							loss.error = "supervisor containment masked worker owner-loss behavior";
+						else loss.observed = true;
+						break;
+					}
+				} catch (error) {
+					auditError = String(error);
+				}
+				await pause(Math.min(20, Math.max(0, deadline - Date.now())));
+			}
+			loss.directClosedBeforeCleanup = outcome.cleanup.directClosed;
+			loss.signalsBeforeObservation = outcome.cleanup.containmentSignals;
+			if (!loss.observed) loss.error ||= `owner-loss self-containment deadline expired: ${auditError}`;
+			fail(loss.error || "owner-loss control: supervisor IPC disconnected");
+		})().catch((error: unknown) => fail(`owner-loss observation: ${String(error)}`));
+	};
 	child.once("error", (error) => fail(`worker spawn/error: ${error.message}`));
 	child.once("close", (code, signal) => {
 		Object.assign(outcome.cleanup, { directClosed: true, code, signal });
+		// Owner-loss controls must finish their audit BEFORE any cleanup signal.
+		if (observingOwner) return;
 		if (!outcome.report) fail("worker exited without verdict");
 		else if (code !== 0 || signal !== null) fail(`worker exited abnormally: ${code}/${signal}`);
 		finish();
@@ -294,6 +361,29 @@ export async function runFifoFixture(
 			);
 			return;
 		}
+		if (
+			record(message) &&
+			message.type === "owner-loss-ready" &&
+			(ownerPhase === "paired-read" || ownerPhase === "before-open")
+		) {
+			const witness = message.report;
+			const paired = ownerPhase === "paired-read";
+			if (
+				!ownershipVerified ||
+				!isReport(witness) ||
+				outcome.ownerLoss!.witness ||
+				witness.eofSent ||
+				(paired ? !witness.executed.includes("k1") : witness.executed.length !== 0) ||
+				witness.executeSettled.length !== 0 ||
+				witness.holders.length !== holderPids?.length ||
+				!witness.holders.every(
+					(holder, i) => holder.pid === holderPids?.[i] && holder.ready === paired && !holder.closed,
+				)
+			)
+				return fail("invalid owner-loss readiness witness");
+			outcome.ownerLoss!.witness = witness;
+			return;
+		}
 		if (!isReport(message) || outcome.report) return fail("malformed worker IPC");
 		outcome.report = message;
 		if (!message.ok) return fail(message.error || "worker failure verdict");
@@ -317,6 +407,15 @@ export async function runFifoFixture(
 		)
 			fail("incomplete worker success evidence");
 		// Even a valid verdict must wait for the direct worker's normal close.
+	});
+	child.once("disconnect", () => {
+		if (!outcome.ownerLoss) return;
+		if (
+			ownerPhase === "startup" ||
+			((ownerPhase === "before-open" || ownerPhase === "paired-read") && outcome.ownerLoss.witness)
+		)
+			observeOwnerLoss();
+		else fail("owner-loss control disconnected before its witness");
 	});
 	const watchdog = setTimeout(
 		() => fail(`FIFO scenario watchdog expired (${watchdogMs}ms)`),
@@ -369,6 +468,7 @@ export async function runFifoFixture(
 				// PGID once unless absence/death has already been established.
 				if (pgid && !groupAbsent && (!members || members.some((m) => !m.stat.startsWith("Z")))) {
 					try {
+						outcome.cleanup.containmentSignals += 1;
 						process.kill(-pgid, "SIGKILL");
 					} catch (error) {
 						if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
@@ -425,6 +525,7 @@ export async function runFifoFixture(
 		}
 	});
 	await body;
+	await ownerObservation;
 	clearTimeout(watchdog);
 	await cleanup();
 	outcome.ok = outcome.failure === "" && outcome.blockedNetwork === "" && outcome.cleanup.conclusive;
