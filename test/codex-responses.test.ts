@@ -176,7 +176,19 @@ describe("codex-responses provider", () => {
 				...normalWire.headers,
 				"content-length": String(Buffer.byteLength(JSON.stringify(fastWire.body))),
 			});
-			expect(fast).toEqual(normal);
+			expect(normal.at(-1)).toMatchObject({
+				type: "message_end",
+				message: { serviceTier: { requested: "omitted", reported: "priority" } },
+			});
+			expect(fast).toEqual([
+				{
+					...normal[0],
+					message: {
+						...(normal[0]?.message as Record<string, unknown>),
+						serviceTier: { requested: "priority", reported: "priority" },
+					},
+				},
+			]);
 			expect(fast.at(-1)).toMatchObject({
 				type: "message_end",
 				message: { provenance: { version: 1, provider: "openai-codex", model } },

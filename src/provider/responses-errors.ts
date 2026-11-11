@@ -103,15 +103,14 @@ export function responseError(
 		.replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
 		.replace(/\p{Cc}/gu, " ")
 		.slice(0, 240);
-	return new CodexResponseError(
-		`${fields.label ?? "OpenAI Codex API error"}${fields.status === undefined ? "" : ` ${fields.status}`}${hint}: ${detail}`,
-		{
-			...fields,
-			reason: safeField(fields.reason),
-			requestId: safeField(fields.requestId),
-			code,
-			param,
-			retryable,
-		},
-	);
+	const httpFailure = fields.status !== undefined && (fields.status < 200 || fields.status >= 300);
+	const label = fields.label ?? (httpFailure ? "OpenAI Codex API error" : "Codex response error");
+	return new CodexResponseError(`${label}${httpFailure ? ` ${fields.status}` : ""}${hint}: ${detail}`, {
+		...fields,
+		reason: safeField(fields.reason),
+		requestId: safeField(fields.requestId),
+		code,
+		param,
+		retryable,
+	});
 }

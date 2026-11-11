@@ -6,6 +6,8 @@
  * provider's wire format happens exactly once, at the provider boundary.
  */
 
+import type { ServiceTierReport } from "./service-tier.js";
+
 export interface Usage {
 	inputTokens: number;
 	outputTokens: number;
@@ -92,6 +94,9 @@ export interface AssistantMessage {
 	stopReason: StopReason;
 	/** Native replay is valid only for this exact producing provider/model. */
 	provenance?: AssistantProvenance;
+	/** Codex request/terminal observations only; never replay input or proof of
+	 * processing tier/charges. Legacy messages omit this metadata. */
+	serviceTier?: ServiceTierReport;
 	/** Model that produced this message (stamped by the loop). Cost
 	 *  attribution reads it so a session that switched models prices each
 	 *  response at its own rates; entries from older imp versions lack it. */

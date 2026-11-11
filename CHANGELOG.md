@@ -14,10 +14,22 @@ their original release identity.
   models with positive capability evidence, using account tier hints before a
   pinned official catalog fallback. Send the base model with
   `service_tier: "priority"`, independently of thinking. Preserve speed across
-  sessions, children and summaries; reject explicit processing downgrades and
-  never silently select normal processing or API-key billing. Fast may consume
-  more allowance; subscription-tier access and acceleration remain unverified
-  after an inconclusive HTTP 400 live probe.
+  sessions, children and summaries; never silently select normal processing or
+  API-key billing. Fast may consume more allowance. A separately authorized
+  42-request experiment observed improved delivery/latency for its workload,
+  with all terminal tiers reporting `default`; it does not confirm internal
+  tier, entitlement, billing, or general acceleration.
+
+### Fixed
+
+- **Codex Fast completion.** Accept valid terminal responses regardless of their
+  reported service tier, including the existing `max_output_tokens` incomplete
+  path; keep actual stream/tool/replay failures and retry policies unchanged.
+  Persist bounded request/terminal `serviceTier` observations without rewriting
+  reports. `/status` shows only the last matching base-model response, never
+  substitutes an older observation or confirms the current selection. Stream
+  errors over successful HTTP retain typed status without `API error 200` text.
+  Pricing remains a base-model estimate; no Fast multiplier is introduced.
 
 ### Changed
 
