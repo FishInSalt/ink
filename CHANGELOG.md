@@ -22,6 +22,11 @@ their original release identity.
 
 ### Fixed
 
+- **FIFO concurrency test isolation.** Run real FIFO fixtures in owned process
+  groups, replace fixed-delay writer shutdown with readiness handshakes, and
+  drain actual reads and holders before success. Bound failure cleanup and
+  audit the whole group so blocked native I/O cannot contaminate later tests.
+  Production read, scheduling and cancellation behavior are unchanged.
 - **Task parent ownership during session switches.** Keep task records, child
   parent links and child-continuation lookups with the issuing run's captured
   session across `/new` or `/resume`, including automatic/overflow summaries.
