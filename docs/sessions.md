@@ -109,6 +109,14 @@ New child dispatch is the deliberate exception: it captures the **live**
 selection at dispatch, not the parent run's earlier snapshot. Child continuation
 uses the child's recorded speed, not the parent's current selection.
 
+Session ownership is separate from live child selection. If `/new` or `/resume`
+changes the displayed conversation during a run, including an automatic or
+overflow summary, that run's accepted checkpoint, subsequent messages and task
+records stay with its captured session. Child parent links and continuation
+lookups use that same parent, not the replacement session; the next run belongs
+to the replacement. A run captured without a parent store does not acquire child
+transcript persistence merely because a saved session later becomes active.
+
 ## The tree
 
 Every session's messages form a tree, not a line. Forking or jumping creates
