@@ -17,6 +17,24 @@
 
 ---
 
+## Current release preparation: Ink 0.6.2
+
+- **Scope:** package the reviewed two original fixes and two error-handling
+  follow-ups from main `2535855`; malformed-tail identity refusal is included
+  in the resume fix. No new behavior, dependencies, workflows or session-format
+  changes. See the [release preparation record](docs/design/release-0.6.2-preparation.md).
+- **State:** independent design review approved before the five identity-pin
+  updates. Local typechecks, lint (352 files), build, identity/npm-version and
+  docs-site checks passed. Full suites on macOS Node 22.19.0/24.22.1/25.5.0 each
+  passed 191 files / 6,278 tests with 0 skips. Offline smoke and source/installed
+  comparisons passed for 457 application files. Final independent source/notes/
+  artifact review APPROVE includes a fresh build and second offline installation.
+  `0.6.2` has not been published. The approved source push at `2535855` passed
+  GitHub CI and Pages, not the release candidate's CI.
+- **Boundaries:** preserve history and use a normal --no-ff integration. Exact
+  candidate push, publication-triggering tag push and GitHub Release creation
+  require separate confirmation. No global upgrade is included.
+
 ## Latest published release: Ink 0.6.1
 
 - **Scope:** maintenance patch from reviewed main `c0a0c0a`; no additional

@@ -8,6 +8,8 @@ their original release identity.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-12
+
 ### Fixed
 
 - **Interrupted main-session resume.** At `-r`, `-c` and `/resume`, preserve real
@@ -30,8 +32,9 @@ their original release identity.
   non-context rejections from triggering an unnecessary summary and retry.
   Keep generic-error and missing-incomplete-reason fallback for genuine
   overflows, and require stronger evidence than a bare `context length` mention.
-- **Release documentation.** Record the observed `0.6.1` publication instead of
-  describing it as pending; no new publication or global upgrade is included.
+- **Release documentation.** Correct the stale `0.6.1` publication status,
+  distinguishing historical evidence from read-only metadata observations.
+  Global installation remains a separate operator action.
 
 ## [0.6.1] - 2026-11-12
 

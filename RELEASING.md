@@ -11,6 +11,11 @@ supersedes the earlier preparation-time pending statements; it does not claim a
 new artifact/signature verification or global upgrade. Unreleased source changes
 are listed separately in CHANGELOG. The verified `0.6.0` publication history
 remains below and in its [publication record](docs/design/release-0.6.0-preparation.md#publication).
+The prepared, **not yet published** candidate is **`ink-agent@0.6.2`**, based on
+reviewed main `2535855`. Its dated CHANGELOG section records the candidate
+notes; [preparation and verification](docs/design/release-0.6.2-preparation.md)
+record the remaining review, CI and separately approved publication steps.
+The current published observation above remains `0.6.1` until verified otherwise.
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -287,8 +292,8 @@ and absence of old launcher, runtime roots, dotenv, credentials, source,
 tests, design docs, or unexpected artifacts. Top-level English and zh-CN
 user documentation is intentionally shipped. It installs locally in a private
 temporary prefix with temporary HOME/cache, no credentials, no install
-scripts, and no network. It executes help and exact `Ink 0.6.1` version
-(for this version), then checks npm-exec's single-bin inference against the
+scripts, and no network. It executes help and exact `Ink 0.6.2` version
+(for this candidate), then checks npm-exec's single-bin inference against the
 **local tarball from a neutral cwd**. It never invokes `npx ink` or modifies
 shared dependencies. The optional cache source is read-only; missing cached
 dependencies fail instead of fetching. Scratch paths are printed for
