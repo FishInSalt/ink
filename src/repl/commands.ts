@@ -41,8 +41,9 @@ import {
 	familyConfigured,
 } from "../provider/discover.js";
 import { LOGIN_TARGETS, type LoginTarget, loginTargetFor } from "../provider/login-targets.js";
+import { canRequestFastMode, formatModelSelection } from "../provider/model-ref.js";
+import { STATIC_MODEL_SEEDS } from "../provider/model-seeds.js";
 import { costFor } from "../provider/models.js";
-import { canRequestFastMode, formatModelSelection } from "../provider/resolve.js";
 import { resolveStartupModelFallback } from "../provider/startup-model.js";
 import {
 	supportedThinkingLevels,
@@ -289,29 +290,6 @@ const MODEL_CANDIDATES: readonly string[] = [
 function modelCandidates(current: string): string[] {
 	return MODEL_CANDIDATES.includes(current) ? [...MODEL_CANDIDATES] : [current, ...MODEL_CANDIDATES];
 }
-
-/** Static seeds shown when a CONFIGURED family's listing is unreachable. */
-const FAMILY_FALLBACKS: Record<string, readonly string[]> = {
-	// GLM is NOT advertised under anthropic anymore — pi parity: zai is the
-	// one official GLM path (bare glm-* ids still route there via ZAI_API_KEY)
-	anthropic: ["claude-sonnet-4-5"],
-	openai: ["openai/gpt-5.2"],
-	// pi.dev's live zai catalog (2026-09)
-	zai: [
-		"zai/glm-5.3",
-		"zai/glm-5.3-highspeed",
-		"zai/glm-5.3-flash",
-		"zai/glm-5.2",
-		"zai/glm-5.2-highspeed",
-		"zai/glm-5-turbo",
-		"zai/glm-4.7",
-	],
-	// pi.dev's live deepseek catalog (2026-09)
-	deepseek: ["deepseek/deepseek-v4-pro", "deepseek/deepseek-flash"],
-	// pi.dev's live moonshotai catalogs (2026-09-26) — both platforms
-	moonshotai: ["moonshotai/kimi-k3", "moonshotai/kimi-k2.6"],
-	"moonshotai-cn": ["moonshotai-cn/kimi-k3", "moonshotai-cn/kimi-k2.6"],
-};
 
 /** Row descriptions identify the family — a bare id cannot (P2-5 lesson). */
 function familyLabel(id: string): string {
@@ -678,7 +656,7 @@ export interface ModelListDeps {
 	discover: (
 		family: "anthropic" | "openai" | "openai-codex" | "zai" | "deepseek" | "moonshotai" | "moonshotai-cn",
 	) => Promise<string[] | null>;
-	/** M14: pi.dev overlay ids for the family, null when the catalog has
+	/** M14: pi.dev catalog ids for the family, null when the catalog has
 	 *  nothing — injectable for tests. */
 	catalogIds?: (
 		family: "anthropic" | "openai" | "openai-codex" | "zai" | "deepseek" | "moonshotai" | "moonshotai-cn",
@@ -760,40 +738,23 @@ export async function buildModelList(
 				(family === "deepseek" && process.env.DEEPSEEK_BASE_URL === undefined) ||
 				(family === "moonshotai" && process.env.MOONSHOT_BASE_URL === undefined) ||
 				(family === "moonshotai-cn" && process.env.MOONSHOT_CN_BASE_URL === undefined);
-			if (discovered === null) {
+			let listed = discovered;
+			if (listed === null) {
 				if (!firstParty) {
-					// redirected endpoint: no catalog, no seeds — the honest empty
-					// row set plus a note. The current model still leads (added
-					// below), so the picker stays usable.
 					fallbackNotes.push(`!redirect ${familyLabel(`${family}/`)}`);
 					continue;
 				}
-				const catalogIds = deps.catalogIds?.(family) ?? null;
-				if (catalogIds !== null) {
-					// Same shaping as the discovery path — offline catalog rows
-					// are indistinguishable from live ones (no "unreachable" note:
-					// the catalog is the truth source, not a degraded copy).
-					const listed =
-						family === "anthropic"
-							? catalogIds.filter((id) => !id.toLowerCase().startsWith("glm-"))
-							: catalogIds;
-					ids.push(...listed.map((id) => (family === "anthropic" ? id : `${family}/${id}`)));
-				} else {
+				listed = deps.catalogIds?.(family) ?? null;
+				if (listed === null) {
 					fallbackNotes.push(familyLabel(`${family}/`));
-					ids.push(...(FAMILY_FALLBACKS[family] ?? []));
+					listed = [...STATIC_MODEL_SEEDS[family]];
 				}
-			} else {
-				// #glm-retire: GLM is never ADVERTISED under anthropic — a
-				// compat endpoint (ANTHROPIC_BASE_URL → z.ai) serves glm ids
-				// that duplicate the zai family's rows. zai is the one
-				// official GLM path; explicit anthropic/glm-* still works by
-				// typing it. Claude/other ids pass through untouched.
-				const listed =
-					family === "anthropic"
-						? discovered.filter((id) => !id.toLowerCase().startsWith("glm-"))
-						: discovered;
-				ids.push(...listed.map((id) => (family === "anthropic" ? id : `${family}/${id}`)));
 			}
+			// GLM is advertised only under zai, regardless of which source
+			// supplied the list. Explicit anthropic/glm-* selections still work.
+			const shaped =
+				family === "anthropic" ? listed.filter((id) => !id.toLowerCase().startsWith("glm-")) : listed;
+			ids.push(...shaped.map((id) => (family === "anthropic" ? id : `${family}/${id}`)));
 		}
 	}
 	ids = [...new Set(ids)];

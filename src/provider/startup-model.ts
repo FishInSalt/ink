@@ -2,7 +2,7 @@ import { loadApiKey } from "./auth-store.js";
 import { freshCachedCodexModelIds } from "./discover.js";
 import { LOGIN_TARGETS } from "./login-targets.js";
 import { configuredFamilies } from "./model-availability.js";
-import type { ProviderName } from "./resolve.js";
+import type { ProviderName } from "./model-ref.js";
 
 /**
  * #startup-model-resolution (design docs/design/startup-model-resolution-design.md):

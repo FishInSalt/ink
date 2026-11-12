@@ -175,6 +175,16 @@ Thinking: k2.6 toggles off/on; k2.7-code and k3 always think (k3 takes
 - `/model [id]` applies from the next turn; Ctrl+L opens the picker.
   Switching model or thinking level prints one dim status line; consecutive
   switches merge.
+- The picker first asks each configured endpoint for its models. If a default
+  API-key endpoint is unavailable (including an authentication failure), it
+  uses that family's cached public catalog, then the bundled static choices
+  when no catalog is available. Static Moonshot choices include `kimi-k2.6`,
+  `kimi-k2.7-code`, `kimi-k2.7-code-highspeed` and `kimi-k3` on both platforms.
+  Offline choices do not verify credentials or access. An endpoint redirected
+  with a `*_BASE_URL` variable gets no public-catalog or static fallback:
+  Ink reports it unreachable rather than inventing models for that service.
+  Your current selection remains pickable even when unlisted. ChatGPT-plan
+  availability uses only its account listing, as described below.
 - Thinking levels: `/think [level]` or Shift+Tab cycles; `--thinking` /
   `INK_THINKING` set the startup level; the choice persists in settings as
   the next session's default. Levels follow each model's catalog entry —

@@ -4,7 +4,7 @@ import {
 	type ProviderName,
 	parseModelRef,
 	parseModelSelection,
-} from "../provider/resolve.js";
+} from "../provider/model-ref.js";
 import type { ModelSpeed } from "../provider/types.js";
 
 /**

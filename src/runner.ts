@@ -31,7 +31,7 @@ import {
 	type UsageTotalsTracker,
 	usageTotalsTracker,
 } from "./core/usage-totals.js";
-import { modelMaxTokensFor } from "./provider/catalog.js";
+import { modelMaxTokensFor } from "./provider/model-limits.js";
 import { costFor } from "./provider/models.js";
 
 /** navigateTree's success shape (batch B: named so forkSessionAt can extend
@@ -76,15 +76,14 @@ import { compactionSettingsFor } from "./provider/compaction-settings.js";
 import { withLogging } from "./provider/logging.js";
 import { LOGIN_TARGETS } from "./provider/login-targets.js";
 import { modelAvailability } from "./provider/model-availability.js";
-import { contextWindowFor } from "./provider/models.js";
 import {
-	createProviderFor,
 	formatModelSelection,
 	type ProviderName,
 	parseModelSelection,
 	qualifiedReference,
-	resolveModel,
-} from "./provider/resolve.js";
+} from "./provider/model-ref.js";
+import { contextWindowFor } from "./provider/models.js";
+import { createProviderFor, resolveModel } from "./provider/resolve.js";
 import { type ModelSource, resolveStartupModelFallback } from "./provider/startup-model.js";
 import {
 	clampThinkingLevel,

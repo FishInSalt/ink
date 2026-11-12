@@ -22,8 +22,8 @@ import type { LLMProvider } from "./types.js";
 
 export const DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com";
 
-/** pi.dev live catalog (2026-09-25) — the offline floor / discovery seeds. */
-export const DEEPSEEK_SEED_MODELS = ["deepseek-flash", "deepseek-v4-pro"] as const;
+// Compatibility export; offline picker policy owns the shared seed set.
+export { DEEPSEEK_SEED_MODELS } from "./model-seeds.js";
 
 export function createDeepSeekProvider(): LLMProvider {
 	// DEEPSEEK_BASE_URL overrides (ZAI_BASE_URL precedent; #gateway-truth

@@ -14,13 +14,13 @@ import {
 	catalogEntryFor,
 	catalogModelIds,
 	loadCatalogCache,
-	modelMaxTokensFor,
 	refreshCatalog,
 	resetCatalogForTest,
 	setCatalogClockForTest,
 	setCatalogFetcherForTest,
 } from "../src/provider/catalog.js";
 import { registerDiscoveredContextWindows, resetDiscoveredWindowsForTest } from "../src/provider/discover.js";
+import { modelMaxTokensFor } from "../src/provider/model-limits.js";
 import { contextWindowFor, costFor } from "../src/provider/models.js";
 import { effortFor, supportedThinkingLevels, thinkingMetaFor } from "../src/provider/thinking.js";
 import { modelSupportsVision } from "../src/provider/vision.js";
@@ -145,6 +145,30 @@ describe("M14 catalog refresh", () => {
 		resetCatalogForTest();
 		expect(loadCatalogCache()).toBe(true);
 		expect(catalogEntryFor("zai", "glm-5.3")?.contextWindow).toBe(1_000_000);
+	});
+
+	it("ignores old Last-Modified disk state while preserving models, ETag and TTL", async () => {
+		writeFileSync(
+			process.env.INK_CATALOG_PATH!,
+			JSON.stringify({
+				version: 1,
+				providers: {
+					zai: { models: zaiCatalog, checkedAt: clockMs, etag: '"legacy"', lastModified: 123 },
+				},
+			}),
+		);
+		expect(loadCatalogCache()).toBe(true);
+		const { fetcher, logs } = fixtureFetcher({ [piZaiUrl]: jsonResponse(304, {}) });
+		setCatalogFetcherForTest(fetcher);
+		expect((await refreshCatalog({ families: ["zai"] })).skippedFresh).toEqual(["zai"]);
+		expect(logs).toHaveLength(0);
+		clockMs += CATALOG_FRESH_WINDOW_MS + 1;
+		await refreshCatalog({ families: ["zai"] });
+		expect(logs[0]?.headers["if-none-match"]).toBe('"legacy"');
+		expect(catalogModelIds("zai")).toEqual(Object.keys(zaiCatalog));
+		const persisted = JSON.parse(readFileSync(process.env.INK_CATALOG_PATH!, "utf8"));
+		expect(persisted.providers.zai.checkedAt).toBe(clockMs);
+		expect(persisted.providers.zai).not.toHaveProperty("lastModified");
 	});
 
 	it("parses array and {models:[...]} shapes too (pi parseCatalog parity)", async () => {
@@ -702,6 +726,44 @@ describe("M14 consult wiring", () => {
 		expect(supportedThinkingLevels(thinkingMetaFor("zai", "glm-5.3-flash"))).toEqual(["off"]);
 		// unknown id → frozen static rules still answer
 		expect(thinkingMetaFor("zai", "glm-5.2")?.style).toBe("glm-openai");
+	});
+
+	it.each([{ reasoning: true }, { reasoning: false }, {}])(
+		"an exact catalog hit without maxTokens does not regain a static cap ($reasoning)",
+		(entry) => {
+			const id = "claude-opus-4-6";
+			expect(modelMaxTokensFor(`anthropic/${id}`)).toBe(128_000);
+			writeFileSync(
+				process.env.INK_CATALOG_PATH!,
+				JSON.stringify({
+					version: 2,
+					providers: {
+						anthropic: { checkedAt: 1, models: { [id]: { id, ...entry } } },
+					},
+				}),
+			);
+			loadCatalogCache();
+			expect(modelMaxTokensFor(`anthropic/${id}`)).toBeUndefined();
+			expect(thinkingMetaFor("anthropic", id)?.maxOutputTokens).toBeUndefined();
+			if (entry.reasoning === false) expect(thinkingMetaFor("anthropic", id)).toBeNull();
+			expect(modelMaxTokensFor("anthropic/claude-opus-4-8")).toBe(128_000);
+		},
+	);
+
+	it("a non-reasoning catalog entry may still supply an explicit output cap", () => {
+		const id = "claude-opus-4-6";
+		writeFileSync(
+			process.env.INK_CATALOG_PATH!,
+			JSON.stringify({
+				version: 2,
+				providers: {
+					anthropic: { checkedAt: 1, models: { [id]: { id, reasoning: false, maxTokens: 1234 } } },
+				},
+			}),
+		);
+		loadCatalogCache();
+		expect(thinkingMetaFor("anthropic", id)).toBeNull();
+		expect(modelMaxTokensFor(`anthropic/${id}`)).toBe(1234);
 	});
 
 	it("direct subscription metadata never inherits unscoped gateway discovery windows", () => {

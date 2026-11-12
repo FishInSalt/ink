@@ -317,7 +317,7 @@ describe("deepseek provider (#deepseek-provider)", () => {
 		expect(thinkingMetaFor("deepseek", "ds-silent")?.supportsEffort).toBe(true);
 	});
 
-	it("5. discovery: unreachable default endpoint → seeds; redirected DEEPSEEK_BASE_URL → null (#gateway-truth)", async () => {
+	it("5. discovery: unreachable default and redirected endpoints → null", async () => {
 		resetDiscoveryCacheForTest();
 		const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(new Error("offline fixture"));
 		vi.stubGlobal("fetch", fetchMock);
@@ -325,7 +325,7 @@ describe("deepseek provider (#deepseek-provider)", () => {
 		delete process.env.DEEPSEEK_BASE_URL;
 		// Simulate an unreachable default endpoint without attempting real network access.
 		const ids = await discoverModels("deepseek");
-		expect(ids).toEqual([...DEEPSEEK_SEED_MODELS]);
+		expect(ids).toBeNull(); // catalog/static fallback belongs to the picker
 		expect(fetchMock).toHaveBeenNthCalledWith(
 			1,
 			`${DEEPSEEK_DEFAULT_BASE_URL}/models`,
@@ -401,7 +401,7 @@ describe("deepseek provider (#deepseek-provider)", () => {
 			configured: (f) => f === "deepseek",
 			discover: async () => null,
 		});
-		expect(failed.map((r) => r.label)).toEqual(["deepseek/deepseek-v4-pro", "deepseek/deepseek-flash"]);
+		expect(failed.map((r) => r.label)).toEqual(["deepseek/deepseek-flash", "deepseek/deepseek-v4-pro"]);
 	});
 
 	it("DEEPSEEK_DEFAULT_BASE_URL and seeds mirror pi.dev's live catalog", () => {

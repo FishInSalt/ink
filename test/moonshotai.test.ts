@@ -488,7 +488,7 @@ describe("moonshotai provider (#moonshotai-provider)", () => {
 		expect(captured.at(-1)?.thinking).toBeUndefined();
 	});
 
-	it("5. discovery: unreachable/401 default → seeds; redirect + unreachable → null; success parses the OpenAI shape", async () => {
+	it("5. discovery: unreachable/401 default and redirect → null; success parses the OpenAI shape", async () => {
 		resetDiscoveryCacheForTest();
 		const fetchMock = vi
 			.fn<typeof fetch>()
@@ -499,16 +499,16 @@ describe("moonshotai provider (#moonshotai-provider)", () => {
 		setEnv("MOONSHOT_API_KEY", "sk-test");
 		delete process.env.MOONSHOT_BASE_URL;
 		delete process.env.MOONSHOT_CN_BASE_URL;
-		// Simulated offline .ai endpoint — seeds are the floor without any real network access.
-		expect(await discoverModels("moonshotai")).toEqual([...MOONSHOT_SEED_MODELS]);
+		// Discovery never hides failure behind seeds, including on the default endpoint.
+		expect(await discoverModels("moonshotai")).toBeNull();
 		expect(fetchMock).toHaveBeenNthCalledWith(
 			1,
 			`${MOONSHOT_DEFAULT_BASE_URL}/models`,
 			expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer sk-test" }) }),
 		);
 		// P2-7: the shared env var marks BOTH configured; a key that belongs
-		// to the other platform 401s into the seeds — never an error
-		expect(await discoverModels("moonshotai-cn")).toEqual([...MOONSHOT_SEED_MODELS]);
+		// to the other platform returns null on 401 — never a fabricated listing
+		expect(await discoverModels("moonshotai-cn")).toBeNull();
 		expect(fetchMock).toHaveBeenNthCalledWith(
 			2,
 			`${MOONSHOT_CN_DEFAULT_BASE_URL}/models`,
@@ -600,7 +600,12 @@ describe("moonshotai provider (#moonshotai-provider)", () => {
 			configured: (f) => f === "moonshotai-cn",
 			discover: async () => null,
 		});
-		expect(failed.map((r) => r.label)).toEqual(["moonshotai-cn/kimi-k3", "moonshotai-cn/kimi-k2.6"]);
+		expect(failed.map((r) => r.label)).toEqual([
+			"moonshotai-cn/kimi-k2.6",
+			"moonshotai-cn/kimi-k2.7-code",
+			"moonshotai-cn/kimi-k2.7-code-highspeed",
+			"moonshotai-cn/kimi-k3",
+		]);
 		expect(failed[1]?.description).toBe("Moonshot AI CN");
 	});
 
