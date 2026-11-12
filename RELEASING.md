@@ -211,12 +211,22 @@ Do not rerun the workflow or reuse its tag/version; no npm publication is pendin
 Global installation was not performed and remains a separate operator action.
 
 `ink-agent@0.6.1` is published from merge commit `5457731`, the peeled target of
-annotated tag `v0.6.1`. On 2026-11-12 the npm latest metadata reported that exact
-version/source, and the GitHub latest-release API reported the formal
-[GitHub Release v0.6.1](https://github.com/FishInSalt/ink/releases/tag/v0.6.1),
-published at `2026-11-12T07:27:59Z`. These are read-only metadata observations,
-not a fresh cryptographic artifact/provenance check or a claim about the global
-installation. See the [publication status](docs/design/release-0.6.1-preparation.md#publication).
+annotated tag `v0.6.1`; its tree equals candidate `c03a169`. Supported-Linux CI
+passed Node 22.19.0/24.22.2, each with 187 files / 5,761 passed / 2 platform
+skips. [Release run `43160272629`](https://github.com/FishInSalt/ink/actions/runs/43160272629)
+passed on attempt 1, including real publish and the first release use of the
+ten-minute visibility window. Retained reports record two registry signatures,
+both attestations, seven rejected negative controls and an isolated offline
+installation with 454 application files and 12 pinned production dependencies.
+The selective record-integration audit checked file bodies/modes, identities
+and retained evidence digests, not fresh cryptographic verification or installer
+execution. The formal
+[GitHub Release v0.6.1](https://github.com/FishInSalt/ink/releases/tag/v0.6.1)
+was published at `2026-11-12T07:27:59Z`; its 4,020-byte body matches the approved
+CHANGELOG notes. Its npm/GitHub Latest observations are historical, not the
+current selection. Full evidence, the temporary-verifier fixes and the limits
+on confirming old review approvals are in the
+[publication record](docs/design/release-0.6.1-preparation.md#publication).
 Do not republish this version, rerun publication or move/reuse its tag. No
 publication or global installation was performed by this documentation update.
 

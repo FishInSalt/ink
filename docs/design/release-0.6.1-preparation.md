@@ -1,10 +1,12 @@
 # Ink 0.6.1 release preparation
 
 Date: 2026-11-12
-Status: published; read-only publication metadata confirmed on 2026-11-12.
-The original preparation evidence below remains a historical snapshot; see
-[Publication](#publication) for the observation that supersedes pending claims.
-This follow-up performs no global upgrade or new publication.
+Status: published; historical publication evidence selectively integrated on
+2026-11-12. The original preparation sections, including their pending and
+installed-state statements, remain historical snapshots; see
+[Publication](#publication) for later evidence and its verification limits.
+The current published release is 0.6.2, not 0.6.1. This follow-up performs no
+global upgrade or new publication.
 Branch/worktree: `release/0.6.1`, `.worktrees/ink-release-0.6.1`.
 Base: `c0a0c0adaaea234d572778e10183443c9c225bac` (clean local main).
 Previous release: `ink-agent@0.6.0`, tag `v0.6.0`, source `5a4056b`.
@@ -260,21 +262,139 @@ installation was used. Worktree dependencies were reused read-only.
 
 ## Publication
 
-Read-only follow-up on 2026-11-12, during the bounded review-fix batch:
+### Earlier metadata observation
 
-- `https://registry.npmjs.org/ink-agent/latest` reports version `0.6.1` and
+During the bounded review-fix batch on 2026-11-12, read-only observations found:
+
+- `https://registry.npmjs.org/ink-agent/latest` reported version `0.6.1` and
   `gitHead` `5457731e30539046d4a9c93283c2b4a34bb3d8bb`.
-- Local annotated tag `v0.6.1` peels to the same release merge. Current source
-  changes after that commit are Unreleased, not part of the registry artifact.
-- `https://api.github.com/repos/FishInSalt/ink/releases/latest` reports
+- Local annotated tag `v0.6.1` peeled to the same release merge. Later source
+  changes are not part of the `0.6.1` registry artifact.
+- `https://api.github.com/repos/FishInSalt/ink/releases/latest` reported
   `tag_name: v0.6.1`, `draft: false`, `prerelease: false`, published at
   `2026-11-12T07:27:59Z`. Its public page is
   [Ink 0.6.1](https://github.com/FishInSalt/ink/releases/tag/v0.6.1).
 
-These observations supersede the earlier preparation-time `pending`, `404`,
+Those metadata observations superseded preparation-time `pending`, `404`,
 `not performed` and latest-0.6.0 statements for publication availability only.
-They are not a new cryptographic artifact/provenance verification, hosted-CI
-result or global-installation check. The preparation tests and installation
-observations retain their original dates and scope. This documentation update
-performed no push, tag operation, publication, real-state migration or global
-upgrade, and authorizes none. Do not republish `0.6.1` or move/reuse `v0.6.1`.
+They were not cryptographic verification or a global-installation check.
+The `latest` values describe that observation, not today's selection; the
+[current publication record](release-0.6.2-preparation.md#publication) is 0.6.2.
+
+### Historical source, CI and publication
+
+The following version-specific history was selectively retained from
+`fd2a8a373e752f53d3eaf2c5f9b911862476efe1`, rather than merging its obsolete
+current-version, installation and review-status claims wholesale. Evidence
+paths in this section are relative to `/tmp/ink-release-0.6.1.VVf5Da/`.
+
+- Candidate `c03a169fcc1926ee0070153f56b52598aec5ae0b` and release merge
+  `5457731e30539046d4a9c93283c2b4a34bb3d8bb` have the same tree,
+  `3c370309b588d019b438f105ef52d0d89c8623dc`. Integration used `--no-ff`.
+  Annotated tag object `48e05bcf0f76507d29e541350b5df9fa84014adb` (`v0.6.1`)
+  peels to that merge, not a later documentation commit.
+- [CI `43159647864`](https://github.com/FishInSalt/ink/actions/runs/43159647864)
+  passed for that source. Its Node 22.19.0 and 24.22.2 Linux jobs each passed
+  **187 test files / 5,761 tests**, with **2** unchanged Darwin-only skips.
+  [Pages `43159647894`](https://github.com/FishInSalt/ink/actions/runs/43159647894)
+  also succeeded. Sources: `ci-main-result-retry.json`, `ci-main-full.log` and
+  `pages-main-result.json`.
+- [Release `43160272629`, attempt 1](https://github.com/FishInSalt/ink/actions/runs/43160272629/attempts/1)
+  passed its gate, real npm publish and registry-visibility check. The log
+  records `+ ink-agent@0.6.1` at `2026-11-12T05:19:29Z` and matching exact-version
+  metadata/source at `2026-11-12T05:23:06Z`. This was the first release use of
+  the new ten-minute visibility window, not a workflow rerun or publish retry.
+  Sources: `release-result.json`, `release-full.log` and the publication-source
+  version of `scripts/check-registry-visibility.mjs`. Visibility success is
+  not itself signature or provenance verification.
+
+### Historical artifact and isolated-installation results
+
+The original verification reports record the following results. This selective
+integration checks retained evidence for consistency; it does not rerun or
+newly certify their cryptographic checks.
+
+- Registry tarball: **866,810 bytes**, SHA-256
+  `ea0b8eb565fee60f9cc53ada0ccc43bcdf2ae29eab9bd1024d5c1d2630eb7a95`.
+  Candidate tarball: **864,816 bytes**, SHA-256
+  `f68d0fa0ae3e3c9b61c9a4defc42e8eb48aeeb62db12399b085a7ab177ed4f31`.
+  Their **454 application file bodies and modes** match; differing compressed
+  archive digests are not application-content differences.
+- The schema-2 verification report records two registry signatures, both
+  publish/provenance attestations and seven rejected negative controls. It
+  records the artifact, repository, `release.yml`, GitHub OIDC issuer,
+  `refs/tags/v0.6.1`, release source and run/attempt identity checks. Recorded
+  transparency-log indexes are `3825553002` (provenance) and `3825606814`
+  (publish attestation).
+- Report: `postpublish-prepared/registry-verification-DjEE8u/registry-crypto-verification.json`;
+  SHA-256 `ee1955f6577d57aa14a33ac579d8aece49a3bd1647e564529c9cef8edc065fbf`.
+  The verifier's success log and installer's `sourceReportSha256` retain the
+  same value. Matching these retained values is a consistency check, not an
+  independent authentication of their original trusted handoff.
+- The temporary verifier's fix records describe two issues: self-consistent
+  report/TUF-cache replacement without an independently retained report digest,
+  and missing signed entry timestamps (SETs) for Rekor v1 `integratedTime`.
+  The recorded safeguards require the external success-report digest, complete
+  input/script/cache inventories and valid SETs. The seven controls include
+  `missing-rekor-v1-set` and `tampered-rekor-integrated-time`; they are not seven
+  separate signature-corruption tests. These were scratch verification-tool
+  issues, not tagged product defects or changes to the release artifact.
+- Installation report:
+  `postpublish-prepared/registry-install-SFuP0K/registry-install-verification.json`.
+  It records offline cryptographic reverification before installation, all
+  **454 installed application files/modes** matching the registry candidate,
+  exactly **12 lockfile-pinned production dependencies**, installed help/version
+  on macOS Node 22.19.0/24.22.1/25.5.0 and host-runtime local npm-exec. The report
+  records no unexpected Node API network attempts, no lifecycle scripts and no
+  global installation. This was not a new registry-artifact PTY or real-provider
+  acceptance run; the earlier candidate PTY evidence remains separate.
+
+### Historical GitHub Release
+
+The non-draft, non-prerelease GitHub Release `v0.6.1`, ID **442614558**, was
+published at `2026-11-12T07:27:59Z`. The saved tag-specific and latest-release
+responses selected it at the time; it is not the current Latest release.
+Its **4,020-byte** body matches `release-notes.md` and the dated 0.6.1 CHANGELOG
+notes. There were no separately uploaded release assets. Sources:
+`github-release-0.6.1.json`, `github-latest-release.json` and `release-notes.md`.
+
+### Selective integration checks and limits
+
+The 2026-11-12 integration audit checked source/tag/tree identity; all 454
+candidate, registry and retained installed application file bodies/modes; the
+verification report digest, **6 input digests / 4 script digests** and retained
+TUF-cache inventory; the 12 dependency identities against manifests/locks;
+saved CI/release results; and the 4,020-byte Release notes. These checks support
+the consistency of the retained history, not a fresh execution of the old
+product tests, PTY, installer or cryptographic verifier.
+
+The source record also claimed that earlier independent verification-tool and
+documentation reviews closed before execution/commit. Primary review outputs
+establishing those approvals and their timing were not independently confirmed
+in this audit. Session IDs and successful execution reports do not establish
+that review sequence. The old fix plans' pending statements are retained
+snapshots, not proof that a later review did or did not occur. This limitation
+is distinct from the new design/content reviews of this selective integration.
+
+Additional retained evidence:
+
+- `candidate-artifact.json`, `candidate-artifacts/ink-agent-0.6.1.tgz`,
+  `candidate-production-set.json` and `integrated-verification.json`;
+- `registry-verifier-live-attempt-001.log` and
+  `registry-install-live-attempt-001.log`, with the report inputs and registry
+  tarball beneath their `postpublish-prepared/registry-*` directories;
+- `postpublish-prepared/FIX-PLAN.md`, `postpublish-prepared/FIX-IMPLEMENTATION.md`,
+  `postpublish-prepared/before-fix-06c991da/` and offline regression evidence.
+
+These `/tmp` paths are temporary; no durable archive is claimed. A Git branch
+or its deletion does not preserve the raw reports, inputs, logs or artifacts.
+Do not indiscriminately archive HOME, credentials or entire caches.
+
+The current installed package metadata was read as **0.6.2** during this audit,
+not the source branch's obsolete 0.6.0. That observation establishes neither
+upgrade authorization nor complete installed acceptance, and it does not imply
+that a live process has upgraded. This documentation-only integration performs
+no push, tag operation, publication, real-state migration or global upgrade,
+and authorizes none. Do not republish `0.6.1`, rerun its publication or move/reuse
+`v0.6.1`. All original preparation tests and installation observations retain
+their historical dates and scope.
