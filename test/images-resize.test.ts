@@ -104,7 +104,7 @@ function makeBmp(width: number, height: number): Buffer {
 }
 
 // Module-scope fixture root (created outside test context — plain mkdtemp;
-// lifecycle via the afterAll below, backstopped by the §A2 sweep).
+// afterAll owns cleanup; interrupted cleanup retains the private run root).
 import { tmpdir as _tmpdir } from "node:os";
 
 const DIR = await mkdtemp(path.join(_tmpdir(), "ink-img2-"));
