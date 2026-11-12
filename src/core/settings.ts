@@ -186,16 +186,29 @@ function deepMergeSettings(base: InkSettings, override: InkSettings): InkSetting
 	return out as InkSettings;
 }
 
-/** The merged view both scopes feed: global ← project. */
-export function effectiveSettings(options: {
+export interface SettingsOptions {
 	cwd: string;
 	projectAllowed: boolean;
 	globalPath?: string;
 	projectPath?: string;
-}): InkSettings {
-	const globalSettings = loadSettings(options.globalPath);
-	const projectSettings = loadProjectSettings(options.cwd, options.projectAllowed, options.projectPath);
-	return deepMergeSettings(globalSettings, projectSettings);
+}
+
+export interface SettingsSnapshot {
+	global: InkSettings;
+	project: InkSettings;
+	effective: InkSettings;
+}
+
+/** One read per allowed scope; values and their sources share these inputs. */
+export function loadSettingsSnapshot(options: SettingsOptions): SettingsSnapshot {
+	const global = loadSettings(options.globalPath);
+	const project = loadProjectSettings(options.cwd, options.projectAllowed, options.projectPath);
+	return { global, project, effective: deepMergeSettings(global, project) };
+}
+
+/** The merged view both scopes feed: global ← project. */
+export function effectiveSettings(options: SettingsOptions): InkSettings {
+	return loadSettingsSnapshot(options).effective;
 }
 
 /** Read one file RAW (unknown keys preserved) for read-modify-write. */

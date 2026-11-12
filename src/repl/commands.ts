@@ -9,9 +9,9 @@ import * as sessionsPrune from "../core/session/prune.js";
 import type { SessionStore } from "../core/session/store.js";
 import {
 	effectiveSettings,
-	loadProjectSettings,
-	loadSettings,
+	loadSettingsSnapshot,
 	projectSettingsPath,
+	type SettingsSnapshot,
 	saveProjectSettings,
 	saveSettings,
 } from "../core/settings.js";
@@ -341,8 +341,16 @@ interface SettingEntry {
 	values?: string[];
 }
 
-/** Per-key source (review P2-3): env > project > global > default. */
-function settingSource(ctx: CommandContext, key: string): "env" | "project" | "global" | "default" {
+function settingsSnapshotFor(ctx: CommandContext): SettingsSnapshot {
+	return loadSettingsSnapshot({
+		cwd: ctx.runner.runnerCwd,
+		projectAllowed: ctx.runner.projectSettingsAllowed,
+		globalPath: ctx.runner.globalSettingsPath(),
+	});
+}
+
+/** Per-key source from the same read as its value: env > project > global. */
+function settingSource(snapshot: SettingsSnapshot, key: string): SettingEntry["source"] {
 	const pick = (o: object) => {
 		if (key.startsWith("images.")) return (o as { images?: { autoResize?: boolean } }).images?.autoResize;
 		if (key.startsWith("mcp.")) return (o as { mcp?: { enabled?: boolean } }).mcp?.enabled;
@@ -352,10 +360,8 @@ function settingSource(ctx: CommandContext, key: string): "env" | "project" | "g
 	};
 	if (key === "defaultModel" && process.env.INK_MODEL !== undefined) return "env";
 	if (key === "autoCompact" && process.env.INK_AUTOCOMPACT === "0") return "env";
-	if (pick(loadProjectSettings(ctx.runner.runnerCwd, ctx.runner.projectSettingsAllowed)) !== undefined) {
-		return "project";
-	}
-	if (pick(loadSettings(ctx.runner.globalSettingsPath())) !== undefined) return "global";
+	if (pick(snapshot.project) !== undefined) return "project";
+	if (pick(snapshot.global) !== undefined) return "global";
 	return "default";
 }
 
@@ -363,14 +369,11 @@ function settingsEntries(ctx: CommandContext): SettingEntry[] {
 	// LIVE read, not the runner's construction-time snapshot (review P1-1):
 	// the command's own writes must show immediately — a snapshot here made
 	// /settings contradict its own previous write in the same session.
-	const effective = effectiveSettings({
-		cwd: ctx.runner.runnerCwd,
-		projectAllowed: ctx.runner.projectSettingsAllowed,
-		globalPath: ctx.runner.globalSettingsPath(),
-	});
+	const snapshot = settingsSnapshotFor(ctx);
+	const { effective } = snapshot;
 	const env = (name: string) => (process.env[name] === undefined ? undefined : process.env[name]);
 	const bool = (v: boolean | undefined, dflt: boolean) => (v === undefined ? dflt : v).toString();
-	const src = (key: string) => settingSource(ctx, key);
+	const src = (key: string) => settingSource(snapshot, key);
 	return [
 		{
 			key: "defaultModel",
@@ -851,7 +854,7 @@ function projectDefaultModelPresent(cwd: string): boolean {
 function maybeNoteDefaultModelHint(ctx: CommandContext): void {
 	const state = ctx.hintState;
 	if (state === undefined || state.defaultModelHintShown) return;
-	if (settingSource(ctx, "defaultModel") !== "default") return;
+	if (settingSource(settingsSnapshotFor(ctx), "defaultModel") !== "default") return;
 	// With project settings gated off a project defaultModel is invisible —
 	// suppress rather than claim the wrong thing (round-2 B-F5; impl-review
 	// F2: only when the file actually carries one).
