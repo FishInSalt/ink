@@ -66,9 +66,27 @@ function* untilAborted(events: Iterable<LLMEvent>, signal?: AbortSignal): Genera
 	}
 }
 
+/** Conservative structured evidence, not a guarantee of Fast entitlement.
+ * Unknown/hostile errors stay unchanged; status, message and param alone do
+ * not establish a service-tier rejection. */
+function isServiceTierRejection(error: unknown): error is CodexResponseError {
+	try {
+		if (!(error instanceof CodexResponseError)) return false;
+		const code = error.code;
+		return (
+			code === "unsupported_service_tier" ||
+			code === "invalid_service_tier" ||
+			code === "tier_unavailable" ||
+			(code === "unsupported_parameter" && error.param === "service_tier")
+		);
+	} catch {
+		return false;
+	}
+}
+
 /** Validate the raw boundary before the underlying generator can read auth.
- * Keep typed diagnostics intact, adding recovery guidance without retrying or
- * mutating the selected model, speed, or credential route. */
+ * Keep typed diagnostics intact, adding guidance only for explicit tier
+ * rejections without retrying or changing model, speed, or credential route. */
 function withFastMode(provider: LLMProvider): LLMProvider {
 	return {
 		name: provider.name,
@@ -93,14 +111,14 @@ function withFastMode(provider: LLMProvider): LLMProvider {
 			try {
 				yield* provider.stream(request);
 			} catch (error) {
-				if (speed === "fast" && error instanceof Error) {
+				if (speed === "fast" && isServiceTierRejection(error)) {
 					try {
-						const message = `${error.message} — Fast was requested; use /model to explicitly select the normal model before retrying.`;
+						const message = `${error.message} — To retry without Fast, explicitly select the normal model with /model.`;
 						try {
 							error.message = message;
 						} catch {
-							// Native DOMException.message is getter-only, but an own
-							// property can still add the hint without changing identity.
+							// A configurable getter-only message can still receive
+							// the hint without replacing the original error.
 							Object.defineProperty(error, "message", { value: message, writable: true, configurable: true });
 						}
 					} catch {

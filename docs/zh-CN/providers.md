@@ -209,7 +209,14 @@ Fast 等效取值。普通请求省略该字段。`·fast` 是选择和显示语
 上下文、视觉、定价元数据和回放身份都仍使用基础模型。思考档位独立配置
 （`/think`、`--thinking`）；选择 Fast 不会降低思考档位。
 
-出错时保留选择并提示恢复方式：若要按普通模式重试，须明确选择普通模型。
+出错时保留选择和原始带类型诊断。只有 Fast 模式下明确的服务档位拒绝才会附加
+`To retry without Fast, explicitly select the normal model with /model.`，
+即若要不使用 Fast 重试，须通过 `/model` 明确选择普通模型。识别范围仅包括带类型
+错误中的 `unsupported_service_tier`、`invalid_service_tier`、`tier_unavailable`
+错误码，或同时带有 `param:"service_tier"` 的 `unsupported_parameter`。
+这是保守的结构化诊断，不保证账户权限，也不保证上游始终采用这些错误码。
+仅有 HTTP 状态、参数名或消息文本不足以匹配。不相关的鉴权、额度、网络、超时或
+中断、上下文、缺失工具输出、回放及协议错误不附加 Fast 提示；普通模式诊断不变。
 如果错误对象无法补充提示，仍保留原始异常，不用添加提示时的新异常替换它。
 重试仍请求 Fast；不会静默按普通模式重试、替换模型、切换凭据或计费方式，
 也不回退到旧后端。有效终止响应即使报告 `default`、`standard`、`flex`、未知
