@@ -33,6 +33,7 @@
 import { randomUUID } from "node:crypto";
 import {
 	linkSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -386,9 +387,10 @@ function scanForBlocker(
 
 /**
  * Acquire the single-writer lease (see the module comment for the
- * protocol). Refusals: `busy` (another active/uncertain holder, or a legacy
- * artifact judged live/uncertain), `owned-elsewhere` (another host/machine
- * id), `io-error` (machine id, filesystem).
+ * protocol). Refusals: `busy` (another active/uncertain holder, or a
+ * non-directory lease artifact requiring manual inspection),
+ * `owned-elsewhere` (another host/machine id), `io-error` (machine id,
+ * filesystem).
  */
 export function acquireChildLease(
 	childFilePath: string,
@@ -443,20 +445,18 @@ export function acquireChildLease(
 
 	try {
 		for (let round = 0; round < maxAttempts; round++) {
-			// Legacy single-FILE migration (design §7.1): classify from ONE
-			// read; live/uncertain refuses with NO directory created;
-			// dead+aged is unlinked (that generation only).
-			const legacy = migrateLegacyLeaseFile({
-				leaseDir,
-				host,
-				machineId,
-				pid,
-				nonce,
-				now,
-				isAlive,
-				staleGraceMs,
-			});
-			if (!legacy.ok) return failWith(legacy.code, legacy.message);
+			// Never read or migrate a non-directory artifact, including a
+			// symlink or FIFO. Age and owner metadata cannot authorize removal.
+			try {
+				if (!lstatSync(leaseDir).isDirectory()) {
+					return failWith(
+						"busy",
+						`child lease path ${leaseDir} is not a directory — inspect the artifact manually before retrying; it has not been read or removed`,
+					);
+				}
+			} catch (err) {
+				if (errnoCode(err) !== "ENOENT") throw err;
+			}
 
 			mkdirSync(leaseDir, { recursive: true });
 			let ownPath: string;
@@ -590,69 +590,4 @@ export function acquireChildLease(
 	} catch (err) {
 		return failWith("io-error", `lease acquisition failed for ${childFilePath}: ${String(err)}`);
 	}
-}
-
-/**
- * Legacy single-FILE artifact migration (design §7.1): `mkdir` cannot
- * replace a file, so the artifact must be classified and, only when THIS
- * read proves it dead+aged or debris+aged, unlinked before the directory is
- * created. Live or uncertain → `busy` with no directory created.
- */
-function migrateLegacyLeaseFile(config: {
-	leaseDir: string;
-	host: string;
-	machineId: string;
-	pid: number;
-	nonce: string;
-	now: () => number;
-	isAlive: (pid: number) => boolean;
-	staleGraceMs: number;
-}): { ok: true } | { ok: false; code: "busy" | "owned-elsewhere"; message: string } {
-	let bytes: Buffer;
-	try {
-		bytes = readFileSync(config.leaseDir); // ONE read decides everything
-	} catch (err) {
-		if (errnoCode(err) === "ENOENT" || errnoCode(err) === "EISDIR") return { ok: true };
-		throw err;
-	}
-	let ageMs: number;
-	try {
-		ageMs = config.now() - statSync(config.leaseDir).mtimeMs;
-	} catch (err) {
-		if (errnoCode(err) === "ENOENT") return { ok: true };
-		throw err;
-	}
-	const existing = parsePayload(bytes);
-	if (existing === undefined) {
-		if (ageMs <= config.staleGraceMs) {
-			return {
-				ok: false,
-				code: "busy",
-				message: `legacy lease artifact at ${config.leaseDir} is unreadable and still fresh — refusing rather than guessing`,
-			};
-		}
-		unlinkSync(config.leaseDir);
-		return { ok: true };
-	}
-	if (existing.host !== config.host || existing.machineId !== config.machineId) {
-		return {
-			ok: false,
-			code: "owned-elsewhere",
-			message: `legacy lease at ${config.leaseDir} belongs to host "${existing.host}" (machine ${existing.machineId}) — shared-storage sessions across machines are not supported`,
-		};
-	}
-	const ownLeftover = existing.pid === config.pid && existing.nonce === config.nonce;
-	if (ownLeftover) {
-		unlinkSync(config.leaseDir); // this process's own failed-release leftover
-		return { ok: true };
-	}
-	if (config.isAlive(existing.pid) || ageMs <= config.staleGraceMs) {
-		return {
-			ok: false,
-			code: "busy",
-			message: `a legacy lease for this child is active or unresolved (pid ${existing.pid}, host ${existing.host}, started ${existing.startedAt})`,
-		};
-	}
-	unlinkSync(config.leaseDir); // dead + aged generation only
-	return { ok: true };
 }
