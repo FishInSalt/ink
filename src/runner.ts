@@ -14,7 +14,12 @@ import {
 	summarizeBranchSegment,
 } from "./core/compaction.js";
 import { loadContextFiles } from "./core/context-files.js";
-import { interruptedToolResults, scanToolPairs, type ToolPairScan } from "./core/continuation.js";
+import {
+	interruptedToolResults,
+	scanToolPairs,
+	type ToolPairScan,
+	withWritableSession,
+} from "./core/continuation.js";
 import { createLoopHealth, healthEnabled, type LoopHealthMonitor } from "./core/health.js";
 import { createRunLogger, type RunLogger } from "./core/logger.js";
 import type { AgentEvent, RunAgentLoopResult } from "./core/loop.js";
@@ -1020,6 +1025,7 @@ class RunnerImpl implements Runner {
 		const store = this.sessionStore;
 		if (store === null) throw new SessionNotFoundError("no session to navigate (sessions disabled)");
 		store.assertWritable();
+		const summaryProvider = withWritableSession(this.provider, store);
 		if (opts?.signal?.aborted) return { aborted: true };
 		const target = store.getEntry(targetId);
 		if (target === undefined || target.type === "label" || target.type === "summaryUsage") {
@@ -1028,9 +1034,8 @@ class RunnerImpl implements Runner {
 		// noop only for a NON-user leaf target. A USER message that IS the
 		// current leaf (an unanswered turn — aborted/errored before any
 		// assistant entry landed) still navigates: newLeaf = its parent,
-		// editorText = its text (batch B §4 P1 — /fork's primary case;
-		// unreachable from /tree, whose surfaces short-circuit leaf picks
-		// with "already at that point", matching pi).
+		// editorText = its text. Both /tree and /fork allow this re-edit,
+		// including the first failed continuation after an interrupted batch.
 		const leafTargetIsUser =
 			target.type === "message" && target.message.role === "user" && targetId === store.getLeafId();
 		if (targetId === store.getLeafId() && !leafTargetIsUser) return { noop: true };
@@ -1091,7 +1096,7 @@ class RunnerImpl implements Runner {
 				try {
 					const branch = await summarizeBranchSegment({
 						messages,
-						provider: this.provider,
+						provider: summaryProvider,
 						model: summaryModel,
 						speed: summarySpeed,
 						modelMaxTokens: modelMaxTokensFor(summaryReference), // #derived-budget
@@ -1482,7 +1487,7 @@ class RunnerImpl implements Runner {
 		return {
 			model: this.model,
 			speed: this.speed,
-			provider: this.provider,
+			provider: withWritableSession(this.provider, this.sessionStore),
 			settings: this.settings,
 			session: this.sessionStore,
 			sessionId: this.sessionStore?.header.id ?? this.ephemeralSessionId,
@@ -1504,9 +1509,14 @@ class RunnerImpl implements Runner {
 		this.estimateFloor = context.history.estimateFloor;
 	}
 
-	async runTurn(options: RunTurnOptions): Promise<RunAgentLoopResult> {
-		if (options.signal?.aborted) return { stopReason: "aborted", turns: 0, usage: emptyUsage() };
-		this.prepareContinuation();
+	runTurn(options: RunTurnOptions): Promise<RunAgentLoopResult> {
+		if (options.signal?.aborted)
+			return Promise.resolve({ stopReason: "aborted", turns: 0, usage: emptyUsage() });
+		try {
+			this.prepareContinuation();
+		} catch (error) {
+			return Promise.reject(error);
+		}
 		// Capture before run_start: model/provider/settings/session/history
 		// remain one binding through compaction and overflow recovery.
 		const context = this.captureRunContext();
@@ -1602,6 +1612,12 @@ class RunnerImpl implements Runner {
 		try {
 			return await this.runTurnInner(context, options, health);
 		} catch (err) {
+			// An uncertain append is not an invitation to summarize/retry.
+			try {
+				context.session?.assertWritable();
+			} catch {
+				throw err;
+			}
 			if (!isContextOverflowError(err)) throw err;
 			const cause = err instanceof Error ? err.message : String(err);
 			this.logger.log("run_error", { source: "overflow-recovery", message: cause });
@@ -1610,6 +1626,11 @@ class RunnerImpl implements Runner {
 			try {
 				compacted = await this.compactAndSplice(context);
 			} catch (compactErr) {
+				try {
+					context.session?.assertWritable();
+				} catch {
+					throw compactErr;
+				}
 				const compactCause = compactErr instanceof Error ? compactErr.message : String(compactErr);
 				this.logger.log("run_error", { source: "compaction", message: compactCause });
 				throw new Error(
@@ -1745,6 +1766,11 @@ class RunnerImpl implements Runner {
 							try {
 								await this.compactAndSplice(context);
 							} catch (err) {
+								try {
+									session.assertWritable();
+								} catch {
+									throw err;
+								}
 								const cause = err instanceof Error ? err.message : String(err);
 								this.logger.log("run_error", { source: "compaction", message: cause });
 								throw new Error(overflowGuidance(est.tokens, settings, cause));

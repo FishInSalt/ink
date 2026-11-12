@@ -1,4 +1,19 @@
+import type { LLMProvider } from "../provider/types.js";
 import type { AgentMessage, ToolResultMessage } from "./messages.js";
+import type { SessionStore } from "./session/store.js";
+
+/** Constant-time guard at actual stream entry, including summary retries.
+ * It never scans history and never consults a replacement live session. */
+export function withWritableSession(provider: LLMProvider, session?: SessionStore | null): LLMProvider {
+	if (!session) return provider;
+	return {
+		name: provider.name,
+		stream(request) {
+			session.assertWritable();
+			return provider.stream(request);
+		},
+	};
+}
 
 export interface PendingToolCall {
 	id: string;
