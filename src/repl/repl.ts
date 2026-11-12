@@ -1274,6 +1274,7 @@ class ReplMachine {
 				this.activityTools.set(event.toolCallId, {
 					id: event.toolCallId,
 					name: event.name,
+					label: "",
 					startedAtMs: Date.now(),
 					...(queued !== undefined ? { queued } : {}),
 				});

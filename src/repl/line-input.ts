@@ -182,8 +182,8 @@ export interface ActivityToolLine {
 	id: string;
 	name: string;
 	/** @deprecated Non-task activity no longer projects argument labels.
-	 *  Accepted for compatibility with callers supplying older snapshots. */
-	label?: string;
+	 *  Kept as an empty string for callers reading older snapshot shapes. */
+	label: string;
 	startedAtMs: number;
 	/** #sliding-window: a concurrency-safe call pre-issued at tool_start but
 	 *  not yet admitted to the window. Queued rows render no timer; the REPL

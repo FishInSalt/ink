@@ -3929,7 +3929,9 @@ describe("runRepl with shell:tui", () => {
 			expect(result).toHaveBeenCalledTimes(1);
 			expect(replacement).not.toHaveBeenCalled();
 			const row = seen.flatMap((snapshot) => snapshot.tools).find((entry) => entry.id === "prepared");
-			expect(row).toEqual({ id: "prepared", name: tool.name, startedAtMs: expect.any(Number) });
+			expect(row).toEqual({ id: "prepared", name: tool.name, label: "", startedAtMs: expect.any(Number) });
+			const compatibleLabel: string = row!.label;
+			expect(compatibleLabel.trim()).toBe("");
 			expect(env.transcript.toolFolds.map((fold) => fold.block.kind)).toEqual(["input", "output"]);
 			const input = env.transcript.toolFolds[0]!.block;
 			expect(input.semantic?.summary).toBe("prepared summary");
