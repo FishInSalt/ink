@@ -22,6 +22,7 @@ import { type AgentMessage, contentText, type ImageBlock, type Usage } from "./c
 import type { UsagePricingSlice } from "./core/service-tier-pricing.js";
 import type { SessionInfo } from "./core/session/manager.js";
 import { createSession, listSessions, resolveSession, SessionNotFoundError } from "./core/session/manager.js";
+import { recoverMainSession } from "./core/session/resume-tail.js";
 import type { MessageEntry, SessionEntry, SessionStore } from "./core/session/store.js";
 import { effectiveSettings, type InkSettings, saveSettings, settingsFilePath } from "./core/settings.js";
 import { createAttemptUsage } from "./core/usage-ledger.js";
@@ -722,7 +723,7 @@ class RunnerImpl implements Runner {
 					baseDir: options.sessionBaseDir,
 				});
 				if (resumed) {
-					const loaded = resumed.buildContext();
+					const loaded = recoverMainSession(resumed);
 					this.restoreModelFromSession(resumed, true);
 					this.sessionStore = resumed;
 					this.history.push(...loaded.messages);
@@ -744,6 +745,7 @@ class RunnerImpl implements Runner {
 					options.renderer.note(
 						`▪ resumed ${resumed.header.id.slice(0, 8)} · ${modelSegment} · ${stats.messageCount} msgs · ~${formatTokens(est.tokens)} tokens${loaded.compacted ? " (compacted)" : ""}`,
 					);
+					this.noteResumeRepair(loaded.repairedTools);
 				} else {
 					options.renderer.note("▪ no previous session, starting fresh");
 				}
@@ -1145,7 +1147,7 @@ class RunnerImpl implements Runner {
 		if (store === null) {
 			throw new SessionNotFoundError(`no session matching "${id}" — run /sessions to list them`);
 		}
-		const loaded = store.buildContext();
+		const loaded = recoverMainSession(store, this.sessionStore);
 		this.restoreModelFromSession(store, false);
 		this.sessionStore = store;
 		this.history.length = 0;
@@ -1153,7 +1155,15 @@ class RunnerImpl implements Runner {
 		this.estimateFloor = loaded.compactionBoundary;
 		this.restoreThinkingFromSession(store); // pi restores the branch's level on resume
 		this.systemText = this.assembleSystem();
+		this.noteResumeRepair(loaded.repairedTools);
 		return { id8: store.header.id.slice(0, 8), messages: this.history.length };
+	}
+
+	private noteResumeRepair(count: number): void {
+		if (count > 0)
+			this.options.renderer.note(
+				`▪ recovered ${count} interrupted tool call(s); outcomes unknown, no tools replayed — inspect state before retrying`,
+			);
 	}
 
 	/** #thinking-levels: restore the branch's last recorded level (pi's

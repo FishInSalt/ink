@@ -42,6 +42,29 @@ requests login; it never silently switches the session to API-key billing.
 Large `edit` insertions and deletions retain a short success receipt in model
 history, while the detailed diff is display-only.
 
+When actually resuming with `-r`, `-c`, or `/resume`, Ink checks only the final
+assistant tool batch and any immediately following tool-result messages. It
+preserves recorded results and appends explicit error results for missing ones:
+the outcome is unknown, the tool may have fully or partially executed, and Ink
+did not replay it. Inspect affected state before deciding whether to retry.
+Repairs happen during resume, before accepting new input, even if you then only
+view the conversation. A successfully repaired session is not repaired again.
+
+This is not full-history validation: earlier batches and other branches are not
+scanned for tool pairing. A later user/assistant message after an unanswered
+batch is outside the repair rule; select a complete history position or start
+`/new` rather than expect deeper inconsistencies to be rewritten. Ordinary
+submissions, model iterations, compaction, history navigation and runtime errors
+do not trigger this main-session recovery helper. Existing child continuation
+and normal tool error/cancellation handling are unchanged.
+
+Resume also uses the existing torn-final-record repair before appending. If
+recovery fails, retry by reopening the session; an interactive failure leaves
+the previously selected conversation active. To avoid changing the file behind
+that active store, a write-requiring `/resume` of the same active file refuses
+before repair: use `/new` then `/resume <id>`, or restart with `ink -r <id>`.
+A valid self-resume that needs no repair remains allowed.
+
 ## Usage and reference cost
 
 The interactive status bar's `↑` (ordinary input), `↓` (output), `R` (cache
