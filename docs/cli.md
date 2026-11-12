@@ -60,6 +60,16 @@ echo "fix the typo" | ink   # piped: one turn, exits at EOF (empty pipe: help + 
 Print/piped runs default to `--max-turns 100`; interactive TTY sessions are
 uncapped (a finite value applies when passed explicitly).
 
+Print startup validates `@file` attachments first, resolves project trust, selects
+model defaults, then checks credentials before loading any extensions/skills or
+creating the Runner, session, log or MCP connections. A trust/credential failure
+at this stage exits 1 with empty stdout; errors and pending trust notes go to
+stderr. `--trust`/`--no-trust` can therefore save their decision even if the model
+then lacks a credential. With gated resources, a corrupt trust store is reported
+before a credential error; explicit trust flags can rebuild it. The existing
+no-resource short circuit still skips trust-store reads/writes, including flags.
+`--help` and `--version` do not read project settings or trust records.
+
 Ink's built-in CLI/TUI messages, including error recovery hints, are in
 English. Model responses, tool output, upstream error details, and content
 supplied by users or extensions are not translated.

@@ -1,6 +1,6 @@
 # Resolve startup model defaults after session trust
 
-Status: APPROVED; implementation in progress.
+Status: COMPLETE; independent design and implementation reviews closed.
 Independent adversarial design review 8e983a26: APPROVE, no required fixes;
 closed before implementation.
 Base: main@7ce141f
@@ -126,3 +126,46 @@ Run typecheck, lint, build, full tests and offline artifact smoke; independent
 implementation review is required. Use dedicated worktrees/branch and --no-ff
 integration. Disable npm update notifier, offline workspace-local npm cache;
 source artifact cache read-only, no global installs/publication/user-state edits.
+
+## Acceptance
+
+- Runtime changes are limited to src/cli.ts. requestedModel only captures env
+  or the builtin; applyConfiguredModelDefaults uses the current trust bit and
+  one settings snapshot. Interactive and print run defaults/D2 after trust.
+  Print restores renderer.note in finally before defaults/preflight, drains
+  queued notes to stderr on failure or the original method on success, and
+  starts loaders only after that successful phase.
+- Base red evidence: before source changes, the three first --trust/session/yes
+  AST cases selected openai/global instead of openai/project (3 failed, 60
+  skipped at that initial test revision). Independent offline CLI probes on
+  base produced 24 behavioral failures and 14 passes; none depended on a
+  missing new helper. Final new coverage totals 115 cases (76 order tests,
+  38 offline CLI probes and one additional pure-parser test).
+- Independent design review 8e983a26 APPROVE before implementation. Code review
+  cbae040b found no runtime blocker but required completion of public docs;
+  after the six English/Chinese pages were updated, APPROVE. Regression and
+  safety review 337e50d4 APPROVE. No review blocking findings remain.
+- Final default-concurrency integration checks: typecheck PASS, lint PASS
+  (347 files; docs and legacy-name gates PASS), build PASS, npm test PASS
+  (187 files, 5,763 tests). Focused CLI regression run: 4 files, 156 passed.
+  Local logs: .vitest-cache/startup-trust-final-full.log and
+  .vitest-cache/startup-trust-focused.log (not committed).
+- Intermittent validation failures are not suppressed: an earlier default full
+  run reported FIFO malformed-IPC cleanup kill EPERM (5,762 passed, 1 failed).
+  Read-only process inspection found neither listed child still present. The
+  unchanged FIFO/login files then passed 43/43; a subsequent unchanged default
+  full run passed all tests. The implementation worktree separately observed
+  login-dialog input-history timing failures under default concurrency, passing
+  in isolation and with four workers. No unrelated tests, timeouts, assertions
+  or default parallelism settings were changed to obtain the final result.
+- Offline package smoke PASS: 454 allowed files, modes, isolated install,
+  help/version and local npm-exec inference. Existing npm source cache was
+  read-only; artifact/cache writes stayed within worktree runtime. No global
+  install, external model call, trust-store migration or publication.
+- CLI fixtures check real loopback HTTP model bodies and physical side effects.
+  AST tests replace terminal/stream execution, not core model/trust/preflight
+  logic. This is not a real-terminal manual acceptance claim, nor proof of
+  arbitrary detached-process containment by CLI fixture timeouts.
+- English/Chinese providers/settings/CLI pages, CHANGELOG and PROJECT_PLAN are
+  updated. The /model untrusted-settings hint probe remains deliberately out of
+  scope, as do Runner recovery-policy changes and catalog refresh timing.

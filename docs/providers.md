@@ -164,14 +164,22 @@ Thinking: k2.6 toggles off/on; k2.7-code and k3 always think (k3 takes
   connect one`) instead of pretending. Unselected builtin placeholders are not
   persisted; deliberate subscription selections are preserved in sessions even
   without a credential, so resume cannot silently change the billing path.
-- With exactly one provider configured, unselected new sessions start on that
-  family's recommended model with a one-line note; for ChatGPT this is the first
-  model in its fresh account-scoped listing, not a hardcoded recommendation.
-  Empty, stale or unavailable account listings leave selection unresolved;
-  `/model` changes it;
-  `/settings defaultModel <id>` pins the startup default. Precedence:
-  `-m` > `INK_MODEL` > settings `defaultModel` > session-saved >
-  single-provider recommendation > builtin default.
+- New sessions choose `-m` > `INK_MODEL` > permitted project `defaultModel` >
+  global `defaultModel` > builtin. Defaults are resolved after this startup's
+  trust decision: first `--trust`, interactive approval and session-only
+  approval can all select the project default immediately. A denied project
+  does not supply a model. `/settings defaultModel <id>` saves a startup default.
+- Only an unconfigured, unusable builtin selection may resolve to the sole
+  unambiguous credential source's recommended model. A usable builtin is kept;
+  an explicitly configured but unusable model is not silently replaced on a
+  fresh start. For ChatGPT the recommendation is the first model in its fresh
+  account listing; empty, stale or unavailable listings remain unresolved.
+- When restoring a session, only startup `-m` overrides its saved model and
+  Fast/normal choice; saved selections otherwise outrank environment/settings
+  defaults. A model-less session starts with the defaults above, then follows
+  existing restore recovery. That recovery may choose a unique API-key provider
+  when a non-subscription model has no credential; deliberate subscription
+  selections never switch to API-key billing. These restore rules are unchanged.
 - `/model [id]` applies from the next turn; Ctrl+L opens the picker.
   Switching model or thinking level prints one dim status line; consecutive
   switches merge.
