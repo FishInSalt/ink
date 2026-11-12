@@ -26,6 +26,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { projectMcpConfigPaths } from "../core/resource-paths.js";
 
 export interface McpStdioServerConfig {
 	kind: "stdio";
@@ -63,8 +64,7 @@ export function mcpConfigPaths(options: { home?: string; cwd: string }): string[
 		join(home, ".config", "mcp", "mcp.json"),
 		join(home, ".agents", "mcp.json"),
 		join(home, ".agents", "mcp", "mcp.json"),
-		join(options.cwd, ".mcp.json"),
-		join(options.cwd, "mcp.json"),
+		...projectMcpConfigPaths(options.cwd),
 	];
 }
 
@@ -253,7 +253,7 @@ export function discoverMcpConfig(options: {
 	// The project-tier files are executable resources under the M8 trust gate:
 	// a refused directory must not read them (one teaching note, and only when
 	// a skipped file actually exists — refused dirs without mcp config stay quiet).
-	const projectPaths = new Set([join(options.cwd, ".mcp.json"), join(options.cwd, "mcp.json")]);
+	const projectPaths = new Set(projectMcpConfigPaths(options.cwd));
 	const gated = (file: string): boolean => !options.projectAllowed && projectPaths.has(file);
 	if (paths.some((file) => gated(file) && existsSync(file))) {
 		notes.push("mcp: project config skipped — directory not trusted (--trust to enable)");
