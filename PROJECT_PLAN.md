@@ -17,7 +17,31 @@
 
 ---
 
-## Latest maintenance: project trust consistency
+## Latest maintenance: startup model after session trust
+
+- **Scope:** [approved design and acceptance](docs/design/startup-model-trust-order-design.md),
+  based on main `7ce141f`. Parser captures only CLI/env/builtin; current trust
+  precedes configured default selection and D2. Print attachment priority and
+  no-code/session/log/MCP-before-preflight boundaries remain. Trust decisions
+  can persist before credential failure, with pending notes on stderr and empty
+  stdout. Runner D3, saved/Fast selection and subscription billing guards stay.
+- **Evidence:** base regressions failed on real behavior: first-trust/session
+  AST cases selected global instead of project; offline CLI probes found 24
+  failures/14 passes before the fix. Final related coverage: 156 tests passed.
+- **Review:** independent design APPROVE before code; implementation and
+  regression/safety reviews APPROVE after English/Chinese public documentation
+  distinguished fresh vs saved/model-less restore precedence and print effects.
+- **Validation:** typecheck, lint (347 files), build, default `npm test`
+  (187 files, 5,763 passed; 115 new tests), and offline artifact smoke
+  (454 allowed files, isolated install, help/version/local npm-exec) passed.
+  One earlier default-concurrency run failed unchanged FIFO cleanup with EPERM;
+  no listed child remained on inspection, the original FIFO/login tests passed
+  43/43 in isolation, and the subsequent default full run passed unchanged.
+  The implementation worker also observed intermittent login history timing;
+  no unrelated assertions, timeouts, parallelism config or production FIFO code
+  were changed. No real-terminal or external-model acceptance is claimed.
+
+## Previous maintenance: project trust consistency
 
 - **Scope:** [approved design and acceptance](docs/design/project-trust-consistency-design.md),
   based on main `ace8fa7`. Share path facts for project resources, canonical

@@ -34,6 +34,15 @@ their original release identity.
 
 ### Fixed
 
+- **Startup model after trust.** Resolve project/global model defaults after the
+  current session trust decision, so first `--trust`, interactive approval and
+  session-only approval apply the project's default immediately. Parsing and
+  help/version no longer read project settings or trust records. Preserve
+  explicit/env selections, saved/model-less restore rules and Fast identity.
+  Print now resolves trust before credential preflight, but still loads no
+  extensions or Runner/session/log/MCP on preflight failure and keeps stdout
+  empty; pending trust notes go to stderr. Explicit trust flags may therefore
+  record or repair trust before a later credential failure.
 - **Model-list fallback ownership.** On default API-key endpoint discovery
   failure, consistently try the cached public catalog before shared static
   choices. Preserve all four bundled Moonshot choices on both platforms,

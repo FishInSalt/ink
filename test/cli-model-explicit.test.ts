@@ -8,7 +8,14 @@ import { describe, expect, it } from "vitest";
 // Extract declarations via TypeScript's AST rather than copying parser logic.
 const source = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
 const file = ts.createSourceFile("cli.ts", source, ts.ScriptTarget.Latest, true);
-const names = new Set(["BUILTIN_MODEL", "requestedModel", "envThinking", "parseArgs", "runnerOptions"]);
+const names = new Set([
+	"BUILTIN_MODEL",
+	"requestedModel",
+	"applyConfiguredModelDefaults",
+	"envThinking",
+	"parseArgs",
+	"runnerOptions",
+]);
 const declarations = file.statements.filter((statement) => {
 	if (ts.isFunctionDeclaration(statement)) return names.has(statement.name?.text ?? "");
 	if (ts.isVariableStatement(statement)) {
@@ -44,10 +51,15 @@ function parse(
 	model: string;
 	modelSource: string;
 	modelExplicit: boolean;
+	initial: { model: string; modelSource: string; modelExplicit: boolean };
 	forwarded: { model: string; modelExplicit: boolean };
 } {
 	return vm.runInNewContext(
-		`${outputText}\nconst parsed = parseArgs(argv);\n({
+		`${outputText}\nconst parsed = parseArgs(argv);
+		const initial = { model: parsed.model, modelSource: parsed.modelSource, modelExplicit: parsed.modelExplicit };
+		applyConfiguredModelDefaults(parsed, parsed.trustDecision !== "no-trust");
+		({
+			initial,
 			model: parsed.model,
 			modelSource: parsed.modelSource,
 			modelExplicit: parsed.modelExplicit,
@@ -63,8 +75,10 @@ function parse(
 					throw new Error(`CLI exit ${code}`);
 				},
 			},
-			loadSettings: () => ({ defaultModel: defaults.global }),
-			projectDefaultModelIfTrusted: () => defaults.project,
+			loadSettingsSnapshot: ({ projectAllowed }: { projectAllowed: boolean }) => ({
+				global: { defaultModel: defaults.global },
+				project: { defaultModel: projectAllowed ? defaults.project : undefined },
+			}),
 			HELP: "help",
 		},
 	);
@@ -83,7 +97,25 @@ function expectSelection(
 	expect(result.forwarded.modelExplicit).toBe(explicit);
 }
 
-describe("CLI model provenance", () => {
+describe("CLI model provenance through pure parse and post-trust defaults", () => {
+	it("parser leaves configured defaults for the post-trust step", () => {
+		const defaults = { global: "global-model", project: "project-model" };
+		expect(parse([], defaults).initial).toEqual({
+			model: "claude-sonnet-4-5",
+			modelSource: "builtin",
+			modelExplicit: false,
+		});
+		expect(parse([], { ...defaults, env: "env-model" }).initial).toEqual({
+			model: "env-model",
+			modelSource: "env",
+			modelExplicit: false,
+		});
+		expect(parse(["-m", "cli-model"], defaults).initial).toEqual({
+			model: "cli-model",
+			modelSource: "cli",
+			modelExplicit: true,
+		});
+	});
 	it("builtin default is not explicit", () => {
 		expectSelection([], {}, "claude-sonnet-4-5", false);
 	});

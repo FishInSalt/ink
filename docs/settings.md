@@ -63,6 +63,14 @@ including the exact `·fast` suffix for the ChatGPT subscription provider:
 }
 ```
 
+Project defaults are selected after the current startup's trust decision, so
+first-time `--trust`, interactive yes and session-only approval apply immediately.
+Session-only approval does not write a trust record. For new sessions, `-m` and
+`INK_MODEL` beat project defaults, which beat global defaults. On actual restore,
+only startup `-m` overrides a saved model; environment/settings defaults do not.
+Model-less histories and unavailable non-subscription models retain the existing
+restore recovery rules described in [providers.md](providers.md).
+
 Or use `/settings defaultModel openai-codex/gpt-6.1-sol·fast`. A plain reference
 without the suffix selects normal processing; Fast is not a separate settings
 key or global toggle. Thinking remains independent, and startup/resume
