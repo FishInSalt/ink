@@ -1,12 +1,12 @@
 # Interrupted main-session recovery and classified Fast diagnostics
 
-Status: approved for implementation after two independent adversarial reviews.
+Status: implemented; independent design and implementation reviews closed.
 Review sessions: `c600562d-4757-41bf-97f3-f6a0d152a7a1` and
 `d4edd471-feae-4bb2-bbd3-f4b1f2b612ed`. Both initially blocked on uncertain
 writes and the real `/tree` user-leaf path; the first also required navigation
 failure consistency. The revised write-invalid/reopen policy, position ordering,
 transaction failure synchronization and command-level recovery tests closed all
-findings. Independent implementation review is still required.
+design findings. Implementation review and final verification are recorded below.
 Baseline: `5457731` (Ink 0.6.1). Scope: two reported defects, no release,
 installation, credential changes, live inference, or edits to user sessions.
 
@@ -219,6 +219,43 @@ widening pairing scans:
   execute cleanup/exit/finish. Apply to REPL double Ctrl+C and print SIGINT.
   An invalid store remains unwritable; never bypass the refusal. Test real
   pending-tool plus invalid-store double-Ctrl+C and the print signal path.
+
+## Completion and verification
+
+Implementation reviewers were fresh-context sessions
+`086d42b5-8808-4487-8ca0-aa4f9008c929` and
+`47f32155-7d12-4068-9321-fbc8d65133c4`. They found the integration gaps above
+and later identified retry-handler masking of filesystem errors whose paths
+contain `context_length`. Four native ENOENT regressions cover main retry
+assistant persistence, child initial/retry assistant persistence, and a second
+child checkpoint inside overflow retry. The main-retry and child-checkpoint
+regressions were observed failing before correction. Commit `b48e555` fixes the remaining
+handlers. Reviewer `47f32155` explicitly approved that commit after 210 focused
+tests and typecheck; all reported implementation blockers are closed. The
+other reviewer's final attempt was interrupted by the external Codex stream,
+not completed or counted as a final approval.
+
+Final commands on `b48e555`:
+
+- `npm run typecheck`, `npm run lint`, `npm run build`: passed. Lint checked
+  352 files; docs checked 11 topics in each of 2 languages.
+- `CI_REQUIRE_SEARCH_TOOLS=1 npm test -- --maxWorkers=6`: **6,005 tests passed
+  across 191 files**, Node 25.5.0. Full output:
+  `/tmp/ink-resume-verified-full-tests.log`.
+- Node **22.19.0** and **24.22.1**: both TypeScript configurations passed;
+  **619 tests across 8 files passed on each runtime**. Files: main-continuation,
+  session-write-inference, session-append-safety, main-resume-cli,
+  codex-fast-transport, child-resume, repl-commands, task-run-owner.
+  Logs: `/tmp/ink-resume-node22.19.0-tests.log` and
+  `/tmp/ink-resume-node24.22.1-tests.log`.
+- `git diff --check`: passed.
+
+The final full run exited 0 but its scratch teardown reported `ENOTEMPTY` and
+retained its private `ink-test-run-RONXK9` directory under the OS temporary root.
+The retained contents are test renderer/clipboard/tool-output fixtures; no
+cleanup or user-state edits were attempted. The 619-test runtime runs completed
+without this warning. No live inference or real session modification was used
+for verification. The source fixes do not update the global Ink installation.
 
 ## Non-goals
 
