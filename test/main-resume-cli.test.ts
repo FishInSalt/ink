@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, onTestFinished } from "vitest";
 import type { ToolResult } from "../src/core/messages.js";
 import { createSession, listSessions } from "../src/core/session/manager.js";
@@ -102,8 +104,9 @@ async function cliWorld(replies: string[] = []) {
 		fixture,
 		requests,
 		sessionBaseDir: path.join(fixture.home, ".ink", "sessions"),
-		async run(args: string[], input = "") {
-			const child = spawn(process.execPath, [fixture.bin, "--no-context-files", ...args], {
+		async run(args: string[], input = "", nodeArgs: string[] = []) {
+			// Loader arguments belong on argv: keep NODE_OPTIONS' network guard intact.
+			const child = spawn(process.execPath, [...nodeArgs, fixture.bin, "--no-context-files", ...args], {
 				cwd: fixture.cwd,
 				env,
 				stdio: "pipe",
@@ -298,6 +301,144 @@ describe("built CLI interrupted main-session continuation", () => {
 			expect(existsSync(path.join(world.fixture.cwd, "old-tools-ran"))).toBe(false);
 		},
 	);
+
+	it("double SIGINT reports invalid-store emergency persistence failure, cleans up and exits 130", async () => {
+		const world = await cliWorld([responseSse({ id: "force-exit-1", name: "force_exit_probe" })]);
+		// The test owns this detached group so it can reap it even if the CLI
+		// sweep regresses. Only the CLI's force-exit sweep should kill it on success.
+		const cleanupProbe = spawn(
+			process.execPath,
+			["-e", 'setInterval(() => {}, 1 << 30); process.stdout.write("ready\\n");'],
+			{ cwd: world.fixture.cwd, env: world.fixture.env(), detached: true, stdio: "pipe" },
+		);
+		const cleanupOutput = collectCliOutput(cleanupProbe, "");
+		onTestFinished(async () => {
+			cleanupProbe.kill("SIGKILL");
+			await cleanupOutput;
+		});
+		await Promise.race([
+			once(cleanupProbe.stdout, "data"),
+			cleanupOutput.then((output) => {
+				throw new Error(`Cleanup probe exited before readiness: ${JSON.stringify(output)}`);
+			}),
+		]);
+		expect(cleanupProbe.pid).toBeGreaterThan(0);
+
+		const marker = path.join(world.fixture.cwd, "force-exit-tool.log");
+		const evidencePath = path.join(world.fixture.cwd, "append-fault.json");
+		const preload = path.join(world.fixture.cwd, "append-fault.mjs");
+		const extension = path.join(world.fixture.cwd, "force-exit-probe.mjs");
+		const builtUrl = (file: string) => pathToFileURL(path.join(world.fixture.install, "dist", file)).href;
+		writeFileSync(
+			preload,
+			[
+				'import assert from "node:assert/strict";',
+				'import fs from "node:fs";',
+				'import { syncBuiltinESMExports } from "node:module";',
+				`import { SessionStore } from ${JSON.stringify(builtUrl("core/session/store.js"))};`,
+				"let store;",
+				"const appendMessage = SessionStore.prototype.appendMessage;",
+				"SessionStore.prototype.appendMessage = function(message) {",
+				"  const id = appendMessage.call(this, message);",
+				"  store = this;",
+				"  return id;",
+				"};",
+				"export function invalidateStore() {",
+				"  assert.equal(store?.isPersisted, true);",
+				'  const before = fs.readFileSync(store.filePath, "utf8");',
+				"  const append = fs.appendFileSync;",
+				"  let partial;",
+				"  fs.appendFileSync = (file, data, options) => {",
+				"    if (file !== store.filePath) return append(file, data, options);",
+				"    partial = data.slice(0, Math.floor(data.length / 2));",
+				"    append(file, partial, options);",
+				'    throw new Error("fixture partial append failure");',
+				"  };",
+				"  syncBuiltinESMExports();",
+				"  try {",
+				'    assert.throws(() => store.appendSessionName("unaccepted fixture name"), /fixture partial append failure/);',
+				"  } finally {",
+				"    fs.appendFileSync = append;",
+				"    syncBuiltinESMExports();",
+				"  }",
+				"  assert.throws(() => store.assertWritable(), /reopen with \\/resume/);",
+				`  fs.writeFileSync(${JSON.stringify(evidencePath)}, JSON.stringify({ filePath: store.filePath, before, partial }));`,
+				"}",
+			].join("\n"),
+		);
+		writeFileSync(
+			extension,
+			[
+				'import { appendFileSync } from "node:fs";',
+				`import { trackDetachedChildPid } from ${JSON.stringify(builtUrl("core/process-tree.js"))};`,
+				`import { invalidateStore } from ${JSON.stringify(pathToFileURL(preload).href)};`,
+				"export default function(api) {",
+				"  api.registerTool({",
+				'    name: "force_exit_probe", description: "Stay pending through both interrupts",',
+				'    parameters: { type: "object", additionalProperties: false },',
+				"    async execute(_args, signal) {",
+				`      appendFileSync(${JSON.stringify(marker)}, "started\\n");`,
+				"      invalidateStore();",
+				`      trackDetachedChildPid(${cleanupProbe.pid});`,
+				"      setInterval(() => {}, 1 << 30);",
+				'      signal.addEventListener("abort", () => {',
+				`        appendFileSync(${JSON.stringify(marker)}, "aborted\\n");`,
+				'        setImmediate(() => process.kill(process.pid, "SIGINT"));',
+				"      }, { once: true });",
+				'      setImmediate(() => process.kill(process.pid, "SIGINT"));',
+				"      await new Promise(() => {});",
+				"    }",
+				"  });",
+				"}",
+			].join("\n"),
+		);
+		// Separate event-loop callbacks prevent signal coalescing. The second
+		// signal is armed only by the real tool abort, never by an arbitrary delay.
+		const output = await world.run(["-e", extension, "-p", "run the pending force-exit probe"], "", [
+			"--import",
+			pathToFileURL(preload).href,
+		]);
+		expect(output.code, output.stderr).toBe(130);
+		expect(output.signal).toBeNull();
+		expect(output.stdout).toContain("interrupt — press Ctrl+C again to force quit");
+		// Print mode's renderer writes diagnostics to stdout, not stderr.
+		expect(output.stdout).toContain(
+			"ink: emergency tool results were not persisted: session write previously failed: reopen with /resume",
+		);
+		expect(output.stderr).toBe("");
+		expect(readFileSync(marker, "utf8")).toBe("started\naborted\n");
+		expect(await cleanupOutput).toEqual({ stdout: "ready\n", stderr: "", code: null });
+		expect(cleanupProbe.signalCode).toBe("SIGKILL");
+		expect(world.requests).toHaveLength(1);
+		expect(world.requests[0]?.key).toBe("resume-cli-fixture-key");
+
+		const evidence = JSON.parse(readFileSync(evidencePath, "utf8")) as {
+			filePath: string;
+			before: string;
+			partial: string;
+		};
+		expect(evidence.before.endsWith("\n")).toBe(true);
+		expect(evidence.partial.length).toBeGreaterThan(0);
+		expect(() => JSON.parse(evidence.partial)).toThrow();
+		const failedBytes = evidence.before + evidence.partial;
+		expect(readFileSync(evidence.filePath, "utf8")).toBe(failedBytes);
+		const reopened = SessionStore.open(evidence.filePath);
+		expect(reopened.tornFinalLine).toBe(true);
+		expect(() => reopened.assertWritable()).not.toThrow();
+		expect(reopened.buildContext().messages).toMatchObject([
+			user("run the pending force-exit probe"),
+			assistant(
+				[{ type: "toolCall", id: "force-exit-1", name: "force_exit_probe", arguments: {} }],
+				"tool_use",
+			),
+		]);
+		expect(resultMessages(reopened)).toEqual([]);
+		expect(reopened.getSessionName()).toBeUndefined();
+		// Opening must leave the original call and partial bytes untouched;
+		// emergency persistence cannot bypass writeInvalid to fabricate closure.
+		expect(readFileSync(evidence.filePath, "utf8")).toBe(failedBytes);
+		expect(world.requests).toHaveLength(1);
+	});
 
 	it("recovers an actual SIGKILL after tool execution starts, without executing that tool again", async () => {
 		const world = await cliWorld([responseSse({ id: "crash-1", name: "crash_probe" })]);
