@@ -398,12 +398,12 @@ const fixtures = [
 it.each(fixtures)(
 	"physical REPL frames: $name",
 	async ({ name, args, labels }) => {
-		// §A3: snapshots live under tmpdir() with a ~24h TTL (§A2 sweep) so
-		// post-run human inspection has a bounded window, not a permanent leak.
+		// Snapshots intentionally retain the private run root for human review.
+		// Global teardown only tries rmdir; there is no TTL or automatic sweep.
 		const baseDir = await mkdtemp(path.join(tmpdir(), `ink-builtin-visual-${name}-`));
 		if (!visualNoticeShown) {
 			visualNoticeShown = true;
-			console.log("snapshots auto-removed after ~24h — copy out anything you want to keep");
+			console.log("snapshots retained for manual inspection; no automatic removal");
 		}
 		console.log(`VISUAL_ARTIFACT ${name} ${baseDir}`);
 		await writeFile(path.join(baseDir, "file.txt"), "needle first\nsecond line\n");

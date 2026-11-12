@@ -33,8 +33,8 @@ export function createCliFixture(options: { model?: string | null; dotenv?: stri
 	if (!existsSync(launcher) || !existsSync(path.join(repoRoot, "dist/cli.js"))) {
 		throw new Error("CLI fixture requires bin/ink.js and a fresh build: run npm run build first");
 	}
-	// Fixture root created outside test context (callers own lifecycle via
-	// the returned cleanup()); plain mkdtemp — the §A2 sweep backstops leaks.
+	// Fixture root created outside test context; callers own cleanup(). A
+	// skipped cleanup retains the private run root for manual inspection.
 	const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ink-cli-fixture-")));
 	const install = path.join(root, "install");
 	const cwd = path.join(root, "cwd");
