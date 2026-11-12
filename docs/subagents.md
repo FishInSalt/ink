@@ -69,6 +69,16 @@ a child.
   hang guard in print/headless runs. A call's `timeoutMs` or an agent
   file's `timeout:` (seconds) always wins.
 
+Child continuation uses a single-writer lease directory at
+`<child>.jsonl.lease/`. If a non-directory occupies that path — including a
+single-file lease left by a pre-release build, a FIFO or a symlink — Ink refuses
+the continuation without reading, deleting or automatically migrating the
+artifact, regardless of its age or recorded owner. Inspect it manually and
+confirm that no process or other machine is using the child before deciding
+whether to move or remove it and retry. Do not remove a current lease directory
+or its candidate files to bypass an active or unresolved attempt; the normal
+cross-process exclusion and stale-candidate recovery rules still apply.
+
 ## Usage accounting
 
 Child task records carry captured raw usage and optional per-call pricing
