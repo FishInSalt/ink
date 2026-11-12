@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { INK_RESOURCE_PATHS } from "./resource-paths.js";
 
 /**
  * #system-md: SYSTEM.md / APPEND_SYSTEM.md discovery (docs/design/system-md-design.md).
@@ -73,8 +74,8 @@ export function loadSystemPromptFiles(
 		supersededByGlobal: [],
 		unreadableProject: [],
 	};
-	const resolvePair = (name: string): { text: string; path: string } | undefined => {
-		const projectPath = path.join(cwd, ".ink", name);
+	const resolvePair = (relativePath: string): { text: string; path: string } | undefined => {
+		const projectPath = path.join(cwd, relativePath);
 		let projectIgnored = false;
 		if (projectAllowed) {
 			const tier = readTier(projectPath);
@@ -86,16 +87,16 @@ export function loadSystemPromptFiles(
 			result.ignoredUntrusted.push(projectPath); // gate before peek
 			projectIgnored = true;
 		}
-		const globalTier = readTier(path.join(home, ".ink", name));
+		const globalTier = readTier(path.join(home, relativePath));
 		if (globalTier !== "absent" && globalTier !== "unreadable" && globalTier !== "slot-taken") {
 			if (projectIgnored) result.supersededByGlobal.push(projectPath);
 			return globalTier;
 		}
 		return undefined;
 	};
-	const override = resolvePair("SYSTEM.md");
+	const override = resolvePair(INK_RESOURCE_PATHS.system);
 	if (override) result.override = override;
-	const append = resolvePair("APPEND_SYSTEM.md");
+	const append = resolvePair(INK_RESOURCE_PATHS.appendSystem);
 	if (append) result.append = append;
 	return result;
 }

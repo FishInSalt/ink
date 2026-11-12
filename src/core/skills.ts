@@ -26,6 +26,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { RegisteredExtensionCommand } from "../extensions/types.js";
 import type { CommandOutcome } from "../repl/commands.js";
+import { AGENTS_SKILLS_PATH, INK_RESOURCE_PATHS } from "./resource-paths.js";
 
 /** Max name length per the Agent Skills spec. */
 const MAX_NAME_LENGTH = 64;
@@ -269,12 +270,12 @@ function findGitRepoRoot(startDir: string): string | null {
  * the user's own installation and never a project resource (pi parity).
  */
 export function ancestorAgentsSkillDirs(cwd: string, home: string): string[] {
-	const userGlobal = resolve(home, ".agents", "skills");
+	const userGlobal = resolve(home, AGENTS_SKILLS_PATH);
 	const gitRoot = findGitRepoRoot(cwd);
 	const dirs: string[] = [];
 	let dir = resolve(cwd);
 	for (;;) {
-		const candidate = join(dir, ".agents", "skills");
+		const candidate = join(dir, AGENTS_SKILLS_PATH);
 		// Canonicalized compare (review A2): resolve() alone misses symlinked
 		// homes (/var vs /private/var aliasing), misclassifying the user-global
 		// dir as a project resource — over-gating (fail-closed), never a bypass,
@@ -384,13 +385,16 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
 	if (!noSkills) {
 		if (projectTrusted) {
-			add(scanSkillsDir(join(cwd, ".ink", "skills"), "ink", "project", join(cwd, ".ink", "skills")));
+			const projectDir = join(cwd, INK_RESOURCE_PATHS.skills);
+			add(scanSkillsDir(projectDir, "ink", "project", projectDir));
 			for (const dir of ancestorAgentsSkillDirs(cwd, home)) {
 				add(scanSkillsDir(dir, "agents", "project", dir));
 			}
 		}
-		add(scanSkillsDir(join(home, ".ink", "skills"), "ink", "user", join(home, ".ink", "skills")));
-		add(scanSkillsDir(join(home, ".agents", "skills"), "agents", "user", join(home, ".agents", "skills")));
+		const userInkDir = join(home, INK_RESOURCE_PATHS.skills);
+		add(scanSkillsDir(userInkDir, "ink", "user", userInkDir));
+		const userAgentsDir = join(home, AGENTS_SKILLS_PATH);
+		add(scanSkillsDir(userAgentsDir, "agents", "user", userAgentsDir));
 	}
 
 	return { skills, diagnostics };

@@ -3,6 +3,7 @@ import { type Dirent, existsSync, readdirSync, readFileSync, realpathSync, statS
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { INK_RESOURCE_PATHS } from "../core/resource-paths.js";
 import { firstLine, VERSION } from "../format.js";
 import { compareCodePoints, ExtensionRegistry } from "./registry.js";
 import type {
@@ -184,10 +185,10 @@ function discoverCandidates(options: LoadExtensionsOptions): ExtensionCandidate[
 		// M8 trust gate: only the project tier is gated — the global dir is
 		// the user's own installation and explicit -e paths were chosen.
 		if (options.projectDirAllowed !== false) {
-			const projectDir = path.join(options.cwd, ".ink", "extensions");
+			const projectDir = path.join(options.cwd, INK_RESOURCE_PATHS.extensions);
 			if (isDirectory(projectDir)) addDir(projectDir, "project");
 		}
-		const globalDir = path.join(options.home ?? os.homedir(), ".ink", "extensions");
+		const globalDir = path.join(options.home ?? os.homedir(), INK_RESOURCE_PATHS.extensions);
 		if (isDirectory(globalDir)) addDir(globalDir, "global");
 	}
 	return candidates;

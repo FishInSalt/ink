@@ -31,6 +31,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RegisteredExtensionCommand } from "../extensions/types.js";
 import type { CommandOutcome } from "../repl/commands.js";
+import { INK_RESOURCE_PATHS } from "./resource-paths.js";
 
 export interface MdCommandLoadOptions {
 	cwd: string;
@@ -104,10 +105,10 @@ export function renderMdPrompt(body: string, args: string): string {
 
 export async function loadMdCommands(options: MdCommandLoadOptions): Promise<MdCommandLoadResult> {
 	const tiers: Array<{ dir: string; source: string }> = [
-		{ dir: join(options.home, ".ink", "commands"), source: "md:global" },
+		{ dir: join(options.home, INK_RESOURCE_PATHS.commands), source: "md:global" },
 	];
 	if (options.projectAllowed)
-		tiers.push({ dir: join(options.cwd, ".ink", "commands"), source: "md:project" });
+		tiers.push({ dir: join(options.cwd, INK_RESOURCE_PATHS.commands), source: "md:project" });
 	// Insertion order: global first, then project — later same-name entries
 	// REPLACE earlier ones, which is exactly the override rule.
 	const byName = new Map<string, RegisteredExtensionCommand>();

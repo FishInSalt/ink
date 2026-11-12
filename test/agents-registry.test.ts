@@ -164,9 +164,9 @@ describe("M8 trust gate: projectAllowed=false (the skipped tier)", () => {
 	});
 
 	it("cwd === home: the shared directory is the user's global tier — never gated (M8 review)", () => {
-		const { cwd, home, homeDir } = tempProject();
+		const { home, homeDir } = tempProject();
 		agentFile(homeDir, "mine", SCOUT.replace(/name: scout/, "name: mine"));
-		const registry = loadAgentDefinitions(cwd, home, false); // same dir for both tiers
+		const registry = loadAgentDefinitions(home, home, false); // same dir for both tiers
 		expect(registry.agents.map((a) => a.name)).toEqual(["mine"]); // still loaded
 		expect(registry.projectGated).toBe(false);
 	});

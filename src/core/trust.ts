@@ -29,6 +29,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import * as readline from "node:readline";
+import { INK_RESOURCE_PATHS, PROJECT_MCP_CONFIG_NAMES } from "./resource-paths.js";
 import { ancestorAgentsSkillDirs } from "./skills.js";
 
 /** `true`/`false` records; absent key = undecided. `null` is not stored. */
@@ -219,17 +220,22 @@ export function trustRequiringResources(cwd: string, home: string): string[] {
 	// ".ink/skills" (M12) — same reasoning: skills ARE model-directed content.
 	// ".ink/settings.json" (M15) — project settings redirect the model and
 	// toggle behavior; a cloned repo must not grow them un-gated.
-	for (const rel of [".ink/extensions", ".ink/agents", ".ink/commands", ".ink/skills"]) {
+	for (const rel of [
+		INK_RESOURCE_PATHS.extensions,
+		INK_RESOURCE_PATHS.agents,
+		INK_RESOURCE_PATHS.commands,
+		INK_RESOURCE_PATHS.skills,
+	]) {
 		const target = join(cwd, rel);
 		if (existsSync(target) && statSync(target).isDirectory()) found.push(rel);
 	}
-	if (existsSync(join(cwd, ".ink", "settings.json"))) found.push(".ink/settings.json");
+	if (existsSync(join(cwd, INK_RESOURCE_PATHS.settings))) found.push(INK_RESOURCE_PATHS.settings);
 	// #system-md: repo-shipped prompt redirects gate like settings (same M15
 	// file-level precedent). isFile — a directory shadowing the name must not
 	// trigger the ask (design review P3-1).
-	for (const name of ["SYSTEM.md", "APPEND_SYSTEM.md"]) {
-		const target = join(cwd, ".ink", name);
-		if (existsSync(target) && statSync(target).isFile()) found.push(`.ink/${name}`);
+	for (const rel of [INK_RESOURCE_PATHS.system, INK_RESOURCE_PATHS.appendSystem]) {
+		const target = join(cwd, rel);
+		if (existsSync(target) && statSync(target).isFile()) found.push(rel);
 	}
 	// #mcp-trust (m19 F1): project-tier mcp config is an EXECUTABLE resource —
 	// a cloned repo's .mcp.json spawns servers before any consent. Counting it
@@ -237,7 +243,7 @@ export function trustRequiringResources(cwd: string, home: string): string[] {
 	// resource is .mcp.json would short-circuit resolveProjectTrust's
 	// "no resources → zero friction" branch. isFile, so a directory shadowing
 	// the name cannot trigger the ask (SYSTEM.md precedent).
-	for (const name of [".mcp.json", "mcp.json"]) {
+	for (const name of PROJECT_MCP_CONFIG_NAMES) {
 		const target = join(cwd, name);
 		if (existsSync(target) && statSync(target).isFile()) found.push(name);
 	}
