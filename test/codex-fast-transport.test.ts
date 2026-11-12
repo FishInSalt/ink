@@ -6,6 +6,7 @@ import type { AgentMessage } from "../src/core/messages.js";
 import { createSession } from "../src/core/session/manager.js";
 import { getCodexAccessToken } from "../src/provider/codex-auth.js";
 import { CodexResponseError, createCodexResponsesProvider } from "../src/provider/codex-responses.js";
+import { StreamInterruptedError } from "../src/provider/shared.js";
 import type { LLMEvent, LLMRequest } from "../src/provider/types.js";
 import { mkTempDir } from "./helpers/mktemp.js";
 
@@ -370,6 +371,126 @@ describe("Fast recovery hints preserve original errors", () => {
 		});
 		expect(fetch).toHaveBeenCalledTimes(1);
 	});
+});
+
+describe("Codex normal/Fast stream interruption privacy", () => {
+	const privateDetail = `${TOKEN} sk-fake-stream-token Bearer fake-stream-bearer https://private.invalid/path?token=fake-url-secret\r\n\t\0\x1b[31m`;
+	const interruptions = [
+		...["UND_ERR_SOCKET", "ECONNRESET", "EPIPE"].flatMap((code) =>
+			[false, true].map((nested) => ({
+				name: `${nested ? "nested" : "direct"} ${code}`,
+				detail: `${code}: connection closed`,
+				make: () => {
+					const socket = Object.assign(new Error(privateDetail), { code });
+					return nested
+						? new TypeError(`outer ${privateDetail}`, {
+								cause: new Error(`middle ${privateDetail}`, { cause: socket }),
+							})
+						: socket;
+				},
+			})),
+		),
+		...["terminated", "fetch failed"].flatMap((wrapper) => [
+			{
+				name: `bare ${wrapper}`,
+				detail: "connection closed",
+				make: () => new TypeError(wrapper),
+			},
+			...[undefined, `UNKNOWN_${privateDetail}`].map((code) => ({
+				name: `${wrapper} with ${code === undefined ? "no" : "unknown"} code`,
+				detail: "connection closed",
+				make: () =>
+					new TypeError(wrapper, {
+						cause: Object.assign(new Error(privateDetail), { code }),
+					}),
+			})),
+		]),
+	];
+
+	// Yield a real text delta before the body fails: this must never retry or
+	// emit message_end, regardless of the normal/Fast request selection.
+	function interruptedResponse(original: Error): Response {
+		let started = false;
+		return new Response(
+			new ReadableStream<Uint8Array>({
+				pull(controller) {
+					if (started) {
+						controller.error(original);
+						return;
+					}
+					started = true;
+					const frames = [
+						frame("response.output_item.added", {
+							output_index: 0,
+							item: { type: "message", id: "msg_cut", role: "assistant", content: [] },
+						}),
+						frame("response.output_text.delta", {
+							output_index: 0,
+							item_id: "msg_cut",
+							delta: "partial answer",
+						}),
+					];
+					controller.enqueue(
+						new TextEncoder().encode(frames.map((value) => `data: ${JSON.stringify(value)}\n\n`).join("")),
+					);
+				},
+			}),
+		);
+	}
+
+	for (const speed of [undefined, "fast"] as const) {
+		it.each(interruptions)(
+			`publishes fixed $name diagnostics without a Fast hint or retry (speed=${speed})`,
+			async ({ make, detail }) => {
+				const original = make();
+				const { provider, auth, fetch } = harness([() => interruptedResponse(original)]);
+				const events: LLMEvent[] = [];
+				const caught = await collect(provider.stream(request({ speed })), events).catch(
+					(error: unknown) => error,
+				);
+				expect(caught).toBeInstanceOf(StreamInterruptedError);
+				const error = caught as StreamInterruptedError;
+				expect(error).toMatchObject({ name: "StreamInterruptedError", provider: "Codex" });
+				expect(error.cause).toBe(original);
+				expect(error.message).toBe(`Codex stream interrupted — ${detail}; send "continue" to resume`);
+				expect(error.message.length).toBeLessThanOrEqual(160);
+				expect(error.message).not.toContain(FAST_HINT);
+				expect(error.message).not.toMatch(
+					/fake-subscription-access|sk-fake|Bearer|fake-stream|https?:|fake-url|UNKNOWN/,
+				);
+				for (const control of ["\r", "\n", "\t", "\0", "\x1b"]) expect(error.message).not.toContain(control);
+				expect(events).toEqual([{ type: "text_delta", text: "partial answer" }]);
+				expect(auth).toHaveBeenCalledTimes(1);
+				expect(fetch).toHaveBeenCalledTimes(1);
+				expect(body(fetch.mock.calls[0]?.[1]).service_tier).toBe(speed === "fast" ? "priority" : undefined);
+			},
+		);
+
+		it.each([
+			() => new Error(privateDetail),
+			() => Object.assign(new Error(privateDetail), { code: `UNKNOWN_${privateDetail}` }),
+			() => new TypeError(`terminated ${privateDetail}`),
+		])(`leaves unrelated body errors unchanged (speed=${speed}, case=%#)`, async (make) => {
+			const original = make();
+			const { provider, fetch } = harness([() => interruptedResponse(original)]);
+			await expect(collect(provider.stream(request({ speed })))).rejects.toBe(original);
+			expect(original.message).toBe(make().message);
+			expect(fetch).toHaveBeenCalledTimes(1);
+		});
+
+		it(`ends an interrupted body silently after abort (speed=${speed})`, async () => {
+			const controller = new AbortController();
+			const original = Object.assign(new Error(privateDetail), { code: "ECONNRESET" });
+			const { provider, fetch } = harness([() => interruptedResponse(original)]);
+			const events: LLMEvent[] = [];
+			for await (const event of provider.stream(request({ speed, signal: controller.signal }))) {
+				events.push(event);
+				controller.abort();
+			}
+			expect(events).toEqual([{ type: "text_delta", text: "partial answer" }]);
+			expect(fetch).toHaveBeenCalledTimes(1);
+		});
+	}
 });
 
 describe("Fast wire identity and replay", () => {

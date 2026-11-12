@@ -17,7 +17,7 @@
 
 ---
 
-## Latest release preparation: Ink 0.6.1
+## Latest published release: Ink 0.6.1
 
 - **Scope:** maintenance patch from reviewed main `c0a0c0a`; no additional
   feature, dependency, workflow or session-format changes. Preparation follows
@@ -28,8 +28,11 @@
   macOS Node 22.19.0/24.22.1/25.5.0 (187 files, 5,763 passed each) passed.
   Installed full-CLI PTY acceptance passed 3 scenarios/161 assertions. Final
   independent implementation/artifact review (77a8ae59) and PTY evidence review
-  (62be434b) both APPROVE with no required fixes; npm publication, GitHub Release
-  and global upgrade have not been performed.
+  (62be434b) both APPROVE with no required fixes. These are the historical
+  preparation results. Read-only follow-up on 2026-11-12 confirmed npm latest
+  `0.6.1` / source `5457731` and the formal GitHub Latest `v0.6.1`; see
+  [publication status](docs/design/release-0.6.1-preparation.md#publication).
+  No new cryptographic verification or global upgrade is claimed here.
 - **Boundaries:** each external action requires separate confirmation. The
   installed application cannot be replaced while a relevant Ink session is
   running; global upgrade requires an independently reviewed, quiescent

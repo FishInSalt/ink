@@ -17,6 +17,15 @@ export function missingTailCalls(messages: readonly AgentMessage[]): PendingCall
 	const calls = new Map<string, PendingCall>();
 	for (const block of assistant.blocks) {
 		if (block.type !== "toolCall") continue;
+		// The store validates record envelopes, not these matching identities.
+		if (
+			typeof block.id !== "string" ||
+			block.id.length === 0 ||
+			typeof block.name !== "string" ||
+			block.name.length === 0
+		) {
+			throw new SessionError("Cannot repair final tool batch: invalid call identity");
+		}
 		if (calls.has(block.id))
 			throw new SessionError(`Cannot repair final tool batch: duplicate call ${block.id}`);
 		calls.set(block.id, { id: block.id, name: block.name });
@@ -25,6 +34,14 @@ export function missingTailCalls(messages: readonly AgentMessage[]): PendingCall
 	const answered = new Set<string>();
 	for (let i = firstResult; i < messages.length; i++) {
 		for (const result of (messages[i] as ToolResultMessage).results) {
+			if (
+				typeof result.toolCallId !== "string" ||
+				result.toolCallId.length === 0 ||
+				typeof result.toolName !== "string" ||
+				result.toolName.length === 0
+			) {
+				throw new SessionError("Cannot repair final tool batch: invalid result identity");
+			}
 			const call = calls.get(result.toolCallId);
 			if (!call || call.name !== result.toolName || answered.has(result.toolCallId)) {
 				throw new SessionError(`Cannot repair final tool batch: ambiguous result ${result.toolCallId}`);

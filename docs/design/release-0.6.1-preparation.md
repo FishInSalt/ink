@@ -1,7 +1,10 @@
 # Ink 0.6.1 release preparation
 
 Date: 2026-11-12
-Status: design and final independent reviews approved; local candidate verified; publication pending.
+Status: published; read-only publication metadata confirmed on 2026-11-12.
+The original preparation evidence below remains a historical snapshot; see
+[Publication](#publication) for the observation that supersedes pending claims.
+This follow-up performs no global upgrade or new publication.
 Branch/worktree: `release/0.6.1`, `.worktrees/ink-release-0.6.1`.
 Base: `c0a0c0adaaea234d572778e10183443c9c225bac` (clean local main).
 Previous release: `ink-agent@0.6.0`, tag `v0.6.0`, source `5a4056b`.
@@ -254,3 +257,24 @@ installation was used. Worktree dependencies were reused read-only.
   automated tests cover additional temporary trust/cancellation/abort paths.
   Nonempty test roots were retained as required. No external push/tag/release,
   real npm publication, production-state migration or global upgrade occurred.
+
+## Publication
+
+Read-only follow-up on 2026-11-12, during the bounded review-fix batch:
+
+- `https://registry.npmjs.org/ink-agent/latest` reports version `0.6.1` and
+  `gitHead` `5457731e30539046d4a9c93283c2b4a34bb3d8bb`.
+- Local annotated tag `v0.6.1` peels to the same release merge. Current source
+  changes after that commit are Unreleased, not part of the registry artifact.
+- `https://api.github.com/repos/FishInSalt/ink/releases/latest` reports
+  `tag_name: v0.6.1`, `draft: false`, `prerelease: false`, published at
+  `2026-11-12T07:27:59Z`. Its public page is
+  [Ink 0.6.1](https://github.com/FishInSalt/ink/releases/tag/v0.6.1).
+
+These observations supersede the earlier preparation-time `pending`, `404`,
+`not performed` and latest-0.6.0 statements for publication availability only.
+They are not a new cryptographic artifact/provenance verification, hosted-CI
+result or global-installation check. The preparation tests and installation
+observations retain their original dates and scope. This documentation update
+performed no push, tag operation, publication, real-state migration or global
+upgrade, and authorizes none. Do not republish `0.6.1` or move/reuse `v0.6.1`.
