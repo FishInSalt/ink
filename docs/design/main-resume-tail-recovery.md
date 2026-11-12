@@ -1,9 +1,10 @@
 # Main-session resume: repair only the interrupted final tool batch
 
-Status: approved for implementation. Independent adversarial review
-`dd7d7b4f-2a90-43e9-87ce-c4ee24095fcc` closed after adding the same-active-file
-repair precondition; no other scope expansion was requested. Implementation
-review remains required.
+Status: implemented; independent design and implementation reviews closed.
+Design review `dd7d7b4f-2a90-43e9-87ce-c4ee24095fcc` closed after adding the
+same-active-file repair precondition. Implementation reviewer
+`bcc42230-dbbc-46d2-a834-8496ba281213` approved code revision `4eccd52` after
+the two local contract corrections recorded below.
 
 ## Scope and rollback
 
@@ -123,3 +124,36 @@ still traverse the selected branch; this change adds only suffix analysis.
 - Update English/Chinese sessions docs and the stale replay comment. Run
   typecheck, lint, build, targeted tests and full offline suite. Independent
   implementation review is required before --no-ff merge to main.
+
+## Completion record
+
+- `c5884ab` reverted `ef1eba0` without rewriting history; `f235b01` reapplied
+  Fast-only `8f71557`. The five Fast files have identical stable patch ID
+  `26c224a7916cdee3a694e4aa28d41971edbda2b4`.
+- The main-specific helper is 75 lines and has only two runner call sites:
+  startup saved-session restore and interactive `/resume`. No old recovery
+  flag, generic pairing checker, navigation repair or request guard remains.
+  Child recovery, session store/manager, loop, subagent, CLI and REPL machine
+  source are identical to `5457731`.
+- Code review initially caught two contract gaps: a no-tool assistant must
+  return unchanged even with trailing old results, and the TUI must show the
+  recovery notice AFTER clearing/replay. The fixes add no persistent state:
+  interactive resume returns an optional repair count to its command renderer.
+  TranscriptSink/real-dispatch/replay tests cover successful clearing and failure
+  preservation. Reviewer independently ran 408 focused tests before approval.
+- `npm run typecheck`, `npm run lint`, `npm run build`: passed. Lint checked
+  350 files; published-doc checks covered 11 topics in each of 2 languages.
+- `CI_REQUIRE_SEARCH_TOOLS=1 npm test -- --maxWorkers=6`: **5,933 tests passed
+  across 189 files**, Node 25.5.0. Log: `/tmp/ink-resume-tail-final-tests.log`.
+- Node **22.19.0** and **24.22.1**: both TypeScript configurations passed;
+  **567 tests across 6 files passed on each runtime**. Logs:
+  `/tmp/ink-resume-tail-node22.19.0-tests.log` and
+  `/tmp/ink-resume-tail-node24.22.1-tests.log`.
+- `git diff --check`: passed. No real user sessions or global installation were
+  modified; all runtime tests used isolated fixtures and the network blocker.
+
+The final full suite returned exit 0 but scratch teardown reported `ENOTEMPTY`
+and retained private temporary directory `ink-test-run-klGRwJ`; no manual
+cleanup was performed. The supported-runtime focused runs had no such warning.
+The retired implementation's exclusive tests were removed by the revert;
+29 focused main-tail tests and 16 built CLI tests now cover the narrow scope.
