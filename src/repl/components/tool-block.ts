@@ -39,9 +39,10 @@ interface RowSpan {
 	start: number;
 	end: number;
 }
-/** Offsets refer to the safe source, never to the shortened rendered spelling. */
-function* physicalRows(text: string, width: number) {
-	const w = Math.max(1, width);
+/** Offsets refer to the safe source, never to the shortened rendered spelling.
+ *  An inline header may leave less room on the first row than continuations. */
+function* physicalRows(text: string, width: number, firstWidth = width) {
+	let w = Math.max(1, firstWidth);
 	let offset = 0;
 	for (const line of text.split("\n")) {
 		let row = "";
@@ -53,6 +54,7 @@ function* physicalRows(text: string, width: number) {
 			const size = visibleWidth(segment);
 			if (columns + size > w && columns > 0) {
 				yield { text: row, start, end: offset, lossless, retained };
+				w = Math.max(1, width);
 				row = "";
 				columns = 0;
 				start = offset;
@@ -69,6 +71,7 @@ function* physicalRows(text: string, width: number) {
 			offset += segment.length;
 		}
 		yield { text: row, start, end: offset, lossless, retained };
+		w = Math.max(1, width);
 		offset++;
 	}
 }
@@ -453,13 +456,7 @@ export class ToolBlockFold implements Component {
 		let summaryOffset = 0;
 		const summaryVisible: { start: number; end: number }[] = [];
 		let numbering = createDiffNumbering(null);
-		const emit = (
-			line: string,
-			diff = false,
-			prefix = indent,
-			spans: StyleSpan[] = [],
-			firstSuffix = "",
-		): void => {
+		const emit = (line: string, diff = false, prefix = indent): void => {
 			let style = "";
 			if (diff) {
 				let kind: "header" | "add" | "remove" | "context";
@@ -480,39 +477,17 @@ export class ToolBlockFold implements Component {
 				}
 			}
 			if (visibleWidth(prefix) >= w) prefix = "";
-			// #tui-tool-elapsed (I3/N-B): the suffix's width is reserved from the
-			// FIRST row's wrap budget and from its consumed scan feeding
-			// summaryVisible, so occurrence accounting stays in sync; continuation
-			// rows keep the full budget. `firstSuffix` is pre-styled by the caller
-			// (Amendment 1: green ✓ + dim time) — never wrap it in DIM.
-			const suffixW = firstSuffix === "" ? 0 : visibleWidth(firstSuffix);
 			let first = true;
-			let remaining = sanitizeDisplay(line);
-			do {
+			const safe = sanitizeDisplay(line);
+			for (const row of physicalRows(safe, w - visibleWidth(prefix))) {
 				const current = first ? prefix : call ? indent : " ".repeat(visibleWidth(prefix));
-				const budget = w - visibleWidth(current) - (first ? suffixW : 0);
-				const row = wrappedRows(remaining, budget).next().value ?? "";
-				if (count < limit)
-					rows.push(
-						`${styledPrefix(current, style, first ? spans : [])}${row}${first && suffixW > 0 ? firstSuffix : ""}${RESET}`,
-					);
+				if (count < limit) rows.push(`${styledPrefix(current, style)}${row.text}${RESET}`);
 				count++;
-				// Oversize defensive clipping may not retain the original glyph spelling.
-				let consumed = 0;
-				let columns = 0;
-				for (const { segment } of segmenter.segment(remaining)) {
-					if (segment === "\n") break;
-					const size = Math.min(budget, visibleWidth(segment));
-					if (columns + size > budget) break;
-					columns += size;
-					consumed += segment.length;
-				}
-				if (count <= limit && block.commandExcerpt && row === remaining.slice(0, consumed))
-					summaryVisible.push({ start: summaryOffset, end: summaryOffset + consumed });
-				summaryOffset += consumed;
-				remaining = remaining.slice(Math.max(1, consumed));
+				if (count <= limit && block.commandExcerpt && row.lossless)
+					summaryVisible.push({ start: summaryOffset + row.start, end: summaryOffset + row.end });
 				first = false;
-			} while (remaining.length);
+			}
+			summaryOffset += safe.length;
 			// Literal LF separates summary occurrences, including empty lines.
 			if (count < limit) summaryVisible.push({ start: summaryOffset, end: summaryOffset + 1 });
 			summaryOffset++;
@@ -636,33 +611,24 @@ export class ToolBlockFold implements Component {
 					reserved: number,
 				): InfoChunk[] => {
 					const out: InfoChunk[] = [];
-					let remaining = sanitizeDisplay(line);
 					let first = true;
-					do {
+					for (const row of physicalRows(
+						sanitizeDisplay(line),
+						w - visibleWidth(indent) - reserved,
+						w - visibleWidth(firstPrefix) - reserved,
+					)) {
 						const current = first ? firstPrefix : indent;
-						const budget = Math.max(1, w - visibleWidth(current) - reserved);
-						const text = wrappedRows(remaining, budget).next().value ?? "";
-						let consumed = 0;
-						let columns = 0;
-						for (const { segment } of segmenter.segment(remaining)) {
-							if (segment === "\n") break;
-							const size = Math.min(budget, visibleWidth(segment));
-							if (columns + size > budget) break;
-							columns += size;
-							consumed += segment.length;
-						}
 						out.push({
-							text,
+							text: row.text,
 							prefix: current,
 							spans: first ? firstSpans : [],
-							budget,
-							consumed,
-							match: text === remaining.slice(0, consumed),
+							budget: Math.max(1, w - visibleWidth(current) - reserved),
+							consumed: row.end - row.start,
+							match: row.lossless,
 							line: -1,
 						});
-						remaining = remaining.slice(Math.max(1, consumed));
 						first = false;
-					} while (remaining.length);
+					}
 					return out;
 				};
 				const infoPlan: InfoChunk[] = [];
