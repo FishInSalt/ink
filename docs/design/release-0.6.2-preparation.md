@@ -1,8 +1,15 @@
 # Ink 0.6.2 release preparation
 
 Date: 2026-11-12
-Status: independent design and final implementation/artifact reviews approved;
-local candidate verified; publication pending.
+Status: published and verified; documentation record independently reviewed;
+remote documentation push pending separate confirmation.
+
+> **Publication supersedes preparation-time pending statements.** The
+> [Publication](#publication) section records completed source/tag pushes,
+> exact-source CI, npm publication, registry verification and the formal Latest
+> GitHub Release. Sections 1–6 preserve dated preparation and follow-up evidence,
+> not a current claim that publication remains pending. No global installation
+> was updated; this documentation record authorizes no new external operation.
 Design review `86c9497f-a014-4191-88a0-9d0ff386c4e2` returned APPROVE before
 metadata changes.
 Branch/worktree: `release/0.6.2`, `.worktrees/ink-release-0.6.2`.
@@ -274,3 +281,138 @@ changed, and the original frozen artifact remains the candidate application.
 New commit/merge and its separately confirmed push still require new Linux CI;
 the failed run is retained rather than rerun. No tag or npm/GitHub Release has
 been created by this follow-up.
+
+## Publication
+
+Published and verified on 2026-11-12. All evidence paths below are relative to
+`/tmp/ink-release-0.6.2.T6vS1Y/` (canonical macOS alias `/private/tmp/...`).
+This section records completed, separately approved operations, not authority
+to repeat publication, push documentation or replace a global installation.
+
+### Final source, CI, tag and Pages
+
+- Final reviewed source: `1a808ce7f82e44810739773534f59d6a2854b706`, merged with
+  --no-ff after test-only readiness correction `2a5e16a`. Its reviewed tree was
+  `a3aaca6d6690664e91cc9b72ab8bee8995f25341`; the merge did not alter that tree.
+- Initial candidate `d48c4e8` failed CI `43213094148` only on Node 22.19.0's
+  existing fixed-wait login-recall test. The failed run was retained, not rerun.
+  Section 6 records the independent design/implementation reviews and real-lock
+  regression, without changing production code, timeouts, skips or concurrency.
+- [CI `43218280738`](https://github.com/FishInSalt/ink/actions/runs/43218280738)
+  passed on the exact final source. Ubuntu Node **22.19.0** and **24.22.2** each
+  passed all gates and packaging: **191 files / 6,277 passed / 2 skipped**.
+  The unchanged Darwin-only integration checks are platform skips, distinct from
+  local macOS full suites of **6,279 passed / 0 skipped** after the follow-up.
+- Pages `43213094074` succeeded for `d48c4e8`, not the final source. The three
+  final changed paths were the test, PROJECT_PLAN and this internal design file;
+  existing Pages path filters correctly excluded them. All site inputs remained
+  identical, so no manual dispatch or new final-SHA Pages deployment was needed.
+- Annotated tag `v0.6.2`, object
+  `e8b8de7071e69b9d0d9637f1655f1a69e9fc6e19`, peels to the final source.
+  The approved tag push created that exact ref; it was never moved or reused.
+
+### Workflow and registry publication
+
+[Release `43219715046`, attempt 1](https://github.com/FishInSalt/ink/actions/runs/43219715046/attempts/1)
+completed gate and publish successfully on the tag-push event and final source.
+Node **24.22.2** / npm **11.19.1** passed the release gate's 191 files / 6,277
+passed / 2 skipped and both 457-file artifact smokes. The dry-run/skipped-publication
+paths were skipped, not mistaken for publication. Real npm publish returned
+`+ ink-agent@0.6.2` at `2026-11-12T12:41:51Z`; exact metadata/source verification
+succeeded at `2026-11-12T12:45:28Z`. A 360-second local watch command timed out
+while the workflow was still verifying visibility; later API/log reads confirmed
+success. The workflow and publication were not rerun.
+
+Registry exact/latest metadata select `ink-agent@0.6.2`, final gitHead and
+`https://registry.npmjs.org/ink-agent/-/ink-agent-0.6.2.tgz`. Actual registry
+archive: **873,302 bytes**, SHA-256
+`fbb60b83d81c3580d6b373e23de9dea54610974bfd2eb210d5f49abbabc297c0`;
+integrity:
+`sha512-yVTZbhqfKY8G7Hro4EaYKj0f9GUio6V529kyv4cxNf70KhkDuHBW2jZxjVJrTtLzdjRUADvK0zrpuBWAX6Cj9Q==`.
+Its strict-parsed **457 file bodies/modes** match the frozen 871,300-byte candidate
+and final source/build. Different compressed archive digests are not content
+changes. Candidate SHA-256 remains
+`f7fdc4ea4e4b9931d8777e7237ac475c0efe940c23d4ef22e821f21dd1f01a36`.
+
+### Cryptographic verification and isolated acceptance
+
+Previously reviewed scratch tools were copied to new owned scratch and adapted
+only in 23 added/removed identity/path/hash/receipt lines. Independent reviewer
+`3b9d1f40-95f2-4bc5-a594-ada239973f84` approved the adaptation design and final
+implementation/frozen inputs before real execution. Old tools/evidence and the
+candidate smoke remained read-only. One preparation assertion initially rejected
+the known unselected root marked 18.1.0 record; its failed evidence was retained
+and the correction allowed only that exact exception, not arbitrary omissions.
+
+The real verifier validated **2 registry signatures** for both exact and latest
+metadata and exactly **one publish plus one provenance attestation**, including
+DSSE, Fulcio certificate/SCT, authenticated TUF trust data, transparency inclusion
+proof/checkpoint and every Rekor v1 signed entry timestamp. It bound artifact
+SHA-512, repository, release.yml, OIDC issuer, tag, final commit and actual
+run/attempt. Provenance transparency-log index: **3832544527**; publish index:
+**3832586130**. All seven named controls rejected altered payload, wrong workflow,
+wrong issuer, wrong artifact digest, wrong source, missing SET and altered
+integrated time. The artifact/source controls are semantic binding checks, not
+seven distinct signature-corruption tests.
+
+Verifier success report:
+`postpublish-prepared/registry-verification-C69MIx/registry-crypto-verification.json`.
+Its SHA-256, observed from the final successful verifier output, is
+`c98e988d80c47e7163ef30d8c2d6b59bc73f149ebc517a08ce790c38ff5d55cb`.
+That external value was separately supplied to the installer, which first
+validated all input/script/cache inventories and reverified signatures offline.
+
+Installer report:
+`postpublish-prepared/registry-install-DHQvoT/registry-install-verification.json`,
+SHA-256 `d9a26cc21789d8b328da093032c7f3e29e971ef38841a035b6b4b88d035492da`.
+It verified all 457 installed app files/modes, exactly **12** production package
+identities and lockfile URL/integrity tuples, using SRI-checked cached tarballs
+and one-version manifests. The selected marked was 18.0.11, not the source-root
+18.1.0. This is dependency identity/integrity validation, not a byte-by-byte audit
+of every dependency file. Installed version/help passed on macOS Node 22.19.0,
+24.22.1 and 25.5.0; neutral-cwd local npm-exec passed on the Node 25.5.0 host.
+The Node API blocker self-test passed, unexpected install network attempts were
+**0**, and no lifecycle scripts, real credentials or global writes were used.
+This is not an OS network sandbox, a new full CLI PTY/real-provider acceptance
+run, or official runtime-signature verification.
+
+The same independent reviewer approved the actual results after an additional
+offline replay of saved TUF responses and real signatures. It checked all 17
+installer command receipts, app/dependency/cache identities and unchanged old
+smoke/global npm inventories. Independent replay evidence:
+`/tmp/ink-062-evidence-review.Zh7mNN/result.json`.
+
+### GitHub Release and retained evidence
+
+The formal [GitHub Release v0.6.2](https://github.com/FishInSalt/ink/releases/tag/v0.6.2),
+id **442971445**, title **Ink 0.6.2**, was created after separate owner approval
+at `2026-11-12T13:16:10Z`. It is non-draft, non-prerelease and Latest. Its
+**1,739-byte** UTF-8 body exactly equals the approved dated CHANGELOG notes and
+`release-notes.md`, SHA-256
+`640c3894fd16c5ac47d7517bd2bf2a4b0b57c0706e10e196cfab95db4bf03d23`.
+No generated notes or uploaded assets were added; no tag or npm operation was
+repeated during release-page creation.
+
+Key original evidence is retained in `login-followup-ci-result.json`,
+`login-followup-ci-full.log`, `pages-main-result.json`, `release-result-final.json`,
+`release-full.log`, `registry-verification-attempt-001.log`,
+`registry-install-attempt-001.log`, both reports and their inputs above,
+`github-release-0.6.2.json`, `github-latest-release.json`,
+`github-release-verification.json`, and `release-notes.md`.
+The early cache-miss, hosted-CI failure, probe errors and nonempty test roots
+remain preserved as described above. No npm/tag/GitHub publication remains
+pending; global upgrade was not performed or authorized.
+
+This three-document-only follow-up uses branch `docs/release-0.6.2-publication`,
+base `1a808ce`. Independent reviewer
+`fcfb1d9c-9d6c-4977-8a12-39ab7881f3f1` approved the design before edits and
+returned final factual-review APPROVE with no required changes after checking
+original run logs, registry files, signature/install receipts and release JSON.
+`npm run lint` checked 352 files, script syntax and bilingual docs successfully;
+all 26 relative links / 9 anchors in the three documents and `git diff --check`
+passed. Sections 1–6 remain byte-identical. The product suite was not rerun for
+this documentation-only batch; the source/hosted/artifact checks above remain
+its product evidence. Integration uses one normal commit and --no-ff merge with
+reviewed tree equality. The tagged product, source/metadata/dependency pins,
+CHANGELOG and workflows remain unchanged. Its remote documentation push requires
+separate confirmation and does not republish npm or update any global installation.
