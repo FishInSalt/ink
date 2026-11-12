@@ -367,6 +367,8 @@ export class SessionStore {
 	readonly header: SessionHeader;
 	private persisted = false;
 	private initializationFailed = false;
+	/** An existing-file write may have landed bytes absent from our index. */
+	private writeInvalid = false;
 	private savedModel?: SessionModel;
 	private pendingModel?: SessionModel;
 	private explicitModelSelection = false;
@@ -409,6 +411,20 @@ export class SessionStore {
 		return this.persisted;
 	}
 
+	/** Constant-time continuation/write guard; only reopening can reconcile uncertain bytes. */
+	assertWritable(): void {
+		if (this.initializationFailed) {
+			throw new SessionError(
+				`session initialization previously failed: ${this.filePath} — start a new session`,
+			);
+		}
+		if (this.writeInvalid) {
+			throw new SessionError(
+				`session write previously failed: reopen with /resume ${this.header.id} or restart before continuing`,
+			);
+		}
+	}
+
 	get hasModelSelection(): boolean {
 		return this.explicitModelSelection;
 	}
@@ -419,10 +435,12 @@ export class SessionStore {
 	}
 
 	seedModel(model: SessionModel): void {
+		this.assertWritable();
 		if (this.getModel() === undefined) this.pendingModel = parseModel(model, "seedModel");
 	}
 
 	setModel(model: SessionModel): void {
+		this.assertWritable();
 		const next = parseModel(model, "setModel");
 		const current = this.getModel();
 		if (
@@ -564,13 +582,15 @@ export class SessionStore {
 
 	/** Shared exclusive lazy writer; callers commit memory only after success. */
 	private writeRecords(line: string, headerModel?: SessionModel): void {
-		if (this.initializationFailed) {
-			throw new SessionError(
-				`session initialization previously failed: ${this.filePath} — start a new session`,
-			);
-		}
+		this.assertWritable();
 		if (this.persisted) {
-			appendFileSync(this.filePath, line, { encoding: "utf8" });
+			if (this.tornFinalLine) this.repairTornFinalLine();
+			try {
+				appendFileSync(this.filePath, line, { encoding: "utf8" });
+			} catch (error) {
+				this.writeInvalid = true;
+				throw error;
+			}
 		} else {
 			const header = headerModel === undefined ? this.header : { ...this.header, model: headerModel };
 			const initial = `${JSON.stringify(header)}\n${line}`;
@@ -639,6 +659,7 @@ export class SessionStore {
 	 *  chain to an id whose bytes no longer exist). Idempotent; undefined when
 	 *  the store never observed the condition. */
 	repairTornFinalLine(): { action: "truncated" | "terminated"; bytes: number } | undefined {
+		this.assertWritable();
 		if (!this.persisted || !this.tornFinalLine) return undefined;
 		const raw = readFileSync(this.filePath); // BYTES: truncateSync takes byte lengths
 		// Segment by 0x0a in BYTE space — multi-byte content (CJK, emoji,
@@ -669,7 +690,12 @@ export class SessionStore {
 				continue;
 			}
 			if (acceptsAsSessionLine(segment.text)) continue;
-			truncateSync(this.filePath, segment.start);
+			try {
+				truncateSync(this.filePath, segment.start);
+			} catch (error) {
+				this.writeInvalid = true;
+				throw error;
+			}
 			this.tornFinalLine = false;
 			return { action: "truncated", bytes: raw.length - segment.start };
 		}
@@ -678,7 +704,12 @@ export class SessionStore {
 			// missing. TRUNCATING would delete a recorded entry AND desync the
 			// in-memory leaf (a later append would chain to an id whose bytes
 			// no longer exist); terminate instead.
-			appendFileSync(this.filePath, "\n", { encoding: "utf8" });
+			try {
+				appendFileSync(this.filePath, "\n", { encoding: "utf8" });
+			} catch (error) {
+				this.writeInvalid = true;
+				throw error;
+			}
 			this.tornFinalLine = false;
 			return { action: "terminated", bytes: 1 };
 		}
@@ -773,6 +804,7 @@ export class SessionStore {
 	 *  and the chosen message itself is re-typed on the new branch.
 	 *  Returns message counts for the teaching note. */
 	forkBefore(entryId: string): { retained: number; abandoned: number } {
+		this.assertWritable();
 		const target = this.byId.get(entryId);
 		if (target === undefined || target.type !== "message" || target.message.role !== "user") {
 			throw new SessionError(`fork target ${entryId} is not a user message`);
@@ -785,8 +817,8 @@ export class SessionStore {
 			throw new SessionError(`fork target ${entryId} is not on the current branch`);
 		}
 		const before = this.getBranch().filter((entry) => entry.type === "message").length;
+		this.persistPosition(target.parentId); // a failed move must leave the live branch unchanged
 		this.leafId = target.parentId; // null targets the very first message → empty branch
-		this.persistPosition(); // review P1-2: the move must survive a restart
 		const retained = this.getBranch().filter((entry) => entry.type === "message").length;
 		return { retained, abandoned: before - retained };
 	}
@@ -841,6 +873,7 @@ export class SessionStore {
 	 *  targets are legal — their existing children just become siblings of
 	 *  the new branch. Persisted via the position marker (reopen rule). */
 	branchTo(entryId: string | null): void {
+		this.assertWritable();
 		if (entryId !== null) {
 			const target = this.byId.get(entryId);
 			if (target === undefined) throw new SessionError(`branch target ${entryId} not found`);
@@ -849,8 +882,8 @@ export class SessionStore {
 				throw new SessionError("summary usage receipts are not branch targets");
 			if (entryId === this.leafId) throw new SessionError("already at that position");
 		}
+		this.persistPosition(entryId); // persist the proposed position before committing memory
 		this.leafId = entryId;
-		this.persistPosition(); // review P1-2: the move must survive a restart
 	}
 
 	/** The full session tree (#tree): content entries (labels folded into
@@ -910,18 +943,12 @@ export class SessionStore {
 		return this.labelsById.get(id);
 	}
 
-	/** Append the file-level position marker (#10 review P1-2). Best-effort:
-	 *  an unwritable file keeps the move in memory for this session. */
-	private persistPosition(): void {
+	/** Persist a proposed file-level position before callers commit their leaf. */
+	private persistPosition(leafId: string | null): void {
+		this.assertWritable();
 		// Moving a pristine session to null is a no-op, not a first record.
 		if (!this.persisted) return;
-		try {
-			appendFileSync(this.filePath, `${JSON.stringify({ type: "position", leafId: this.leafId })}\n`, {
-				encoding: "utf8",
-			});
-		} catch {
-			// position is an optimization for restarts, not a correctness gate
-		}
+		this.writeRecords(`${JSON.stringify({ type: "position", leafId })}\n`);
 	}
 
 	/** Children index for tip detection (rebuilt per call — branch counts
@@ -1013,8 +1040,9 @@ export class SessionStore {
 	}
 
 	/**
-	 * Build the LLM context from the current branch, honoring the latest
-	 * compaction on the path: everything before it collapses into one summary
+	 * Build the LLM context from the given leaf (default: current branch) without
+	 * moving the position, honoring the latest compaction on the path:
+	 * everything before it collapses into one summary
 	 * message; its retainedTail plus all entries after it stay verbatim.
 	 *
 	 * compactionBoundary (#compaction-ux F1): the index of the first message
@@ -1023,8 +1051,12 @@ export class SessionStore {
 	 * CURRENT context shape; earlier assistant usage reports describe a
 	 * pre-compaction context and must not anchor the token estimate.
 	 */
-	buildContext(): { messages: AgentMessage[]; compacted: boolean; compactionBoundary: number } {
-		const branch = this.getBranch();
+	buildContext(leafId?: string | null): {
+		messages: AgentMessage[];
+		compacted: boolean;
+		compactionBoundary: number;
+	} {
+		const branch = this.getBranch(leafId);
 		let lastCompactionIndex = -1;
 		for (let i = 0; i < branch.length; i++) {
 			if (branch[i]?.type === "compaction") lastCompactionIndex = i;
