@@ -14,15 +14,26 @@ import {
 	summarizeBranchSegment,
 } from "./core/compaction.js";
 import { loadContextFiles } from "./core/context-files.js";
+import {
+	interruptedToolResults,
+	scanToolPairs,
+	type ToolPairScan,
+	withWritableSession,
+} from "./core/continuation.js";
 import { createLoopHealth, healthEnabled, type LoopHealthMonitor } from "./core/health.js";
 import { createRunLogger, type RunLogger } from "./core/logger.js";
 import type { AgentEvent, RunAgentLoopResult } from "./core/loop.js";
 import { runAgentLoop, synthesizeMissingToolResults } from "./core/loop.js";
-import { type AgentMessage, contentText, type ImageBlock, type Usage } from "./core/messages.js";
+import { type AgentMessage, contentText, emptyUsage, type ImageBlock, type Usage } from "./core/messages.js";
 import type { UsagePricingSlice } from "./core/service-tier-pricing.js";
 import type { SessionInfo } from "./core/session/manager.js";
 import { createSession, listSessions, resolveSession, SessionNotFoundError } from "./core/session/manager.js";
-import type { MessageEntry, SessionEntry, SessionStore } from "./core/session/store.js";
+import {
+	type MessageEntry,
+	type SessionEntry,
+	SessionError,
+	type SessionStore,
+} from "./core/session/store.js";
 import { effectiveSettings, type InkSettings, saveSettings, settingsFilePath } from "./core/settings.js";
 import { createAttemptUsage } from "./core/usage-ledger.js";
 import {
@@ -506,6 +517,9 @@ class RunnerImpl implements Runner {
 	/** #thinking-levels: the live level (pi's AgentState.thinkingLevel). */
 	private level: ThinkingLevel = "off";
 	private sessionStore: SessionStore | null = null;
+	/** Reconstructed or abnormally terminated history needs one boundary scan.
+	 * Normal runs/iterations/compaction do not repeatedly scan known history. */
+	private continuationNeedsCheck = false;
 	/** Instance-local async scopes, never a shared current-run owner slot. */
 	private readonly taskOwnerScopes = new AsyncLocalStorage<TaskOwnerScope>();
 	/** In-memory conversation identity when sessions are disabled; /new replaces it. */
@@ -727,6 +741,7 @@ class RunnerImpl implements Runner {
 					this.sessionStore = resumed;
 					this.history.push(...loaded.messages);
 					this.estimateFloor = loaded.compactionBoundary; // already built — no rebuild
+					this.continuationNeedsCheck = true;
 					this.restoreThinkingFromSession(resumed); // --resume/-c restore the branch's level too
 					const stats = resumed.stats();
 					const est = estimateContextTokens(
@@ -941,6 +956,7 @@ class RunnerImpl implements Runner {
 			this.options.renderer.note("▪ new conversation (sessions disabled)");
 		}
 		this.history.length = 0;
+		this.continuationNeedsCheck = false;
 		this.syncEstimateFloor(); // fresh session — no compaction boundary (review P0-2)
 		this.systemText = this.assembleSystem();
 	}
@@ -1008,6 +1024,9 @@ class RunnerImpl implements Runner {
 	): Promise<NavigateTreeResult> {
 		const store = this.sessionStore;
 		if (store === null) throw new SessionNotFoundError("no session to navigate (sessions disabled)");
+		store.assertWritable();
+		const summaryProvider = withWritableSession(this.provider, store);
+		if (opts?.signal?.aborted) return { aborted: true };
 		const target = store.getEntry(targetId);
 		if (target === undefined || target.type === "label" || target.type === "summaryUsage") {
 			throw new SessionNotFoundError(`tree target ${targetId} not found`);
@@ -1015,9 +1034,8 @@ class RunnerImpl implements Runner {
 		// noop only for a NON-user leaf target. A USER message that IS the
 		// current leaf (an unanswered turn — aborted/errored before any
 		// assistant entry landed) still navigates: newLeaf = its parent,
-		// editorText = its text (batch B §4 P1 — /fork's primary case;
-		// unreachable from /tree, whose surfaces short-circuit leaf picks
-		// with "already at that point", matching pi).
+		// editorText = its text. Both /tree and /fork allow this re-edit,
+		// including the first failed continuation after an interrupted batch.
 		const leafTargetIsUser =
 			target.type === "message" && target.message.role === "user" && targetId === store.getLeafId();
 		if (targetId === store.getLeafId() && !leafTargetIsUser) return { noop: true };
@@ -1028,6 +1046,12 @@ class RunnerImpl implements Runner {
 		const isUserMessage = target.type === "message" && target.message.role === "user";
 		const newLeaf = isUserMessage ? target.parentId : targetId;
 		const editorText = isUserMessage ? userText(target.message) : undefined;
+		// A summary is a user message in the destination context. Preflight
+		// before inference so it cannot conceal an unresolved tool batch.
+		const destinationScan =
+			opts?.summarize === true && this.branchSummaryEnabled
+				? this.checkContinuation(store.buildContext(newLeaf).messages)
+				: undefined;
 		// Design §7 P3: re-edit restores TEXT only — flag dropped images.
 		const hadImages =
 			isUserMessage &&
@@ -1072,7 +1096,7 @@ class RunnerImpl implements Runner {
 				try {
 					const branch = await summarizeBranchSegment({
 						messages,
-						provider: this.provider,
+						provider: summaryProvider,
 						model: summaryModel,
 						speed: summarySpeed,
 						modelMaxTokens: modelMaxTokensFor(summaryReference), // #derived-budget
@@ -1104,30 +1128,42 @@ class RunnerImpl implements Runner {
 			receipt();
 			return { summary: "failed", messages: this.history.length };
 		}
-		// A user-message target whose parent IS the current position ("re-type
-		// this message here") moves nothing — branchTo would rightly reject it.
-		const positionMoves = newLeaf !== store.getLeafId();
-		if (positionMoves) {
-			store.branchTo(newLeaf);
+		if (opts?.signal?.aborted) {
+			receipt();
+			return { aborted: true };
 		}
-		if (summary !== undefined) {
-			if (this.sessionStore !== store) {
-				receipt();
-				return { summary: "failed", messages: this.history.length };
+		// Keep live history aligned even if a destination repair/summary write
+		// fails after the position move. Uncertain stores require reopening.
+		this.continuationNeedsCheck = true;
+		let repaired = 0;
+		try {
+			if (newLeaf !== store.getLeafId()) store.branchTo(newLeaf);
+			if (summary !== undefined) {
+				const missing = destinationScan?.missing ?? [];
+				if (missing.length > 0) {
+					store.appendMessage(interruptedToolResults(missing));
+					repaired = missing.length;
+				}
+				store.appendBranchSummary(summary, summaryUsage, {
+					model: summaryModel,
+					modelReference: summaryReference,
+					...(summaryUsageMissing ? { usageMissing: true } : {}),
+					...(summaryUsagePricing === undefined ? {} : { usagePricing: summaryUsagePricing }),
+				});
+				outcome = "written";
+				this.continuationNeedsCheck = false;
 			}
-			// SA-05 stamps: usage + producing model + missing flag ride the entry.
-			store.appendBranchSummary(summary, summaryUsage, {
-				model: summaryModel,
-				modelReference: summaryReference,
-				...(summaryUsageMissing ? { usageMissing: true } : {}),
-				...(summaryUsagePricing === undefined ? {} : { usagePricing: summaryUsagePricing }),
-			}); // parentId = newLeaf — heads the new position
-			outcome = "written";
+		} catch (error) {
+			receipt(); // Invalid stores refuse secondary writes and diagnose them.
+			throw error;
+		} finally {
+			if (this.sessionStore === store) {
+				const loaded = store.buildContext();
+				this.history.splice(0, this.history.length, ...loaded.messages);
+				this.estimateFloor = loaded.compactionBoundary;
+			}
 		}
-		// The editorText re-edit case may move nothing — history is already right.
-		this.history.length = 0;
-		this.history.push(...store.buildContext().messages);
-		this.syncEstimateFloor();
+		if (repaired > 0) this.noteContinuationRepair(repaired);
 		return {
 			...(editorText === undefined ? {} : { editorText }),
 			...(hadImages === true ? { editorTextDroppedImages: true } : {}),
@@ -1151,6 +1187,7 @@ class RunnerImpl implements Runner {
 		this.history.length = 0;
 		this.history.push(...loaded.messages);
 		this.estimateFloor = loaded.compactionBoundary;
+		this.continuationNeedsCheck = true;
 		this.restoreThinkingFromSession(store); // pi restores the branch's level on resume
 		this.systemText = this.assembleSystem();
 		return { id8: store.header.id.slice(0, 8), messages: this.history.length };
@@ -1403,11 +1440,54 @@ class RunnerImpl implements Runner {
 		return binding === undefined ? this.sessionStore : binding.session;
 	}
 
+	/** Only restored/switched/failed history is scanned. Opening/replaying alone
+	 * stays read-only; repair precedes accepting a new prompt or checkpoint. */
+	private prepareContinuation(): void {
+		const store = this.sessionStore;
+		store?.assertWritable();
+		if (!this.continuationNeedsCheck) return;
+		const loaded = store?.buildContext();
+		const messages = loaded?.messages ?? this.history;
+		const scan = this.checkContinuation(messages);
+		// A flagged torn tail is repaired only at a write/continuation boundary.
+		store?.repairTornFinalLine();
+		if (scan.missing.length > 0) {
+			const result = interruptedToolResults(scan.missing);
+			if (store) store.appendMessage(result);
+			else this.history.push(result);
+		}
+		if (store) {
+			const rebuilt = scan.missing.length > 0 ? store.buildContext() : loaded;
+			if (rebuilt) {
+				this.history.splice(0, this.history.length, ...rebuilt.messages);
+				this.estimateFloor = rebuilt.compactionBoundary;
+			}
+		}
+		this.continuationNeedsCheck = false;
+		if (scan.missing.length > 0) this.noteContinuationRepair(scan.missing.length);
+	}
+
+	private checkContinuation(messages: readonly AgentMessage[]): ToolPairScan {
+		const scan = scanToolPairs(messages);
+		if (!scan.repairable) {
+			throw new SessionError(
+				`Cannot continue this history: ${scan.problem ?? "unpaired tool calls"}. Use /tree to select the first failed continuation user message for re-editing, or select a complete branch; /new starts a fresh conversation. No tools were replayed.`,
+			);
+		}
+		return scan;
+	}
+
+	private noteContinuationRepair(count: number): void {
+		this.options.renderer.note(
+			`▪ recovered ${count} tool call(s) without recorded results; outcomes unknown, no tools replayed — inspect state before retrying`,
+		);
+	}
+
 	private captureRunContext(): RunContext {
 		return {
 			model: this.model,
 			speed: this.speed,
-			provider: this.provider,
+			provider: withWritableSession(this.provider, this.sessionStore),
 			settings: this.settings,
 			session: this.sessionStore,
 			sessionId: this.sessionStore?.header.id ?? this.ephemeralSessionId,
@@ -1430,6 +1510,13 @@ class RunnerImpl implements Runner {
 	}
 
 	runTurn(options: RunTurnOptions): Promise<RunAgentLoopResult> {
+		if (options.signal?.aborted)
+			return Promise.resolve({ stopReason: "aborted", turns: 0, usage: emptyUsage() });
+		try {
+			this.prepareContinuation();
+		} catch (error) {
+			return Promise.reject(error);
+		}
 		// Capture before run_start: model/provider/settings/session/history
 		// remain one binding through compaction and overflow recovery.
 		const context = this.captureRunContext();
@@ -1468,6 +1555,11 @@ class RunnerImpl implements Runner {
 						// never pass through runTurnInner's catch). Mutually exclusive with
 						// run_end's emit by construction: this handler runs only on rejection.
 						(err) => {
+							if (
+								this.sessionStore === context.session &&
+								(context.session !== null || this.ephemeralSessionId === context.sessionId)
+							)
+								this.continuationNeedsCheck = true;
 							try {
 								this.options.extensions?.emitRunError({
 									type: "run_error",
@@ -1520,6 +1612,12 @@ class RunnerImpl implements Runner {
 		try {
 			return await this.runTurnInner(context, options, health);
 		} catch (err) {
+			// An uncertain append is not an invitation to summarize/retry.
+			try {
+				context.session?.assertWritable();
+			} catch {
+				throw err;
+			}
 			if (!isContextOverflowError(err)) throw err;
 			const cause = err instanceof Error ? err.message : String(err);
 			this.logger.log("run_error", { source: "overflow-recovery", message: cause });
@@ -1528,6 +1626,11 @@ class RunnerImpl implements Runner {
 			try {
 				compacted = await this.compactAndSplice(context);
 			} catch (compactErr) {
+				try {
+					context.session?.assertWritable();
+				} catch {
+					throw compactErr;
+				}
 				const compactCause = compactErr instanceof Error ? compactErr.message : String(compactErr);
 				this.logger.log("run_error", { source: "compaction", message: compactCause });
 				throw new Error(
@@ -1562,6 +1665,11 @@ class RunnerImpl implements Runner {
 					health,
 				);
 			} catch (retryErr) {
+				try {
+					context.session?.assertWritable();
+				} catch {
+					throw retryErr;
+				}
 				if (!isContextOverflowError(retryErr)) throw retryErr;
 				const retryCause = retryErr instanceof Error ? retryErr.message : String(retryErr);
 				this.logger.log("run_error", { source: "overflow-recovery", message: `retry failed: ${retryCause}` });
@@ -1663,6 +1771,11 @@ class RunnerImpl implements Runner {
 							try {
 								await this.compactAndSplice(context);
 							} catch (err) {
+								try {
+									session.assertWritable();
+								} catch {
+									throw err;
+								}
 								const cause = err instanceof Error ? err.message : String(err);
 								this.logger.log("run_error", { source: "compaction", message: cause });
 								throw new Error(overflowGuidance(est.tokens, settings, cause));
@@ -1710,6 +1823,8 @@ class RunnerImpl implements Runner {
 	}
 
 	async compactNow(signal?: AbortSignal): Promise<CompactOutcome> {
+		if (signal?.aborted) return "aborted";
+		this.prepareContinuation();
 		// Capture provider/model/session/history before awaiting. A later
 		// /new or /resume owns the live view, not this invocation's checkpoint.
 		// The abort quality gate rejects incomplete checkpoint text before
@@ -1735,6 +1850,7 @@ class RunnerImpl implements Runner {
 	private async compactAndSplice(context: RunContext, signal?: AbortSignal): Promise<boolean> {
 		const { session, provider, settings, model, modelReference, speed } = context;
 		if (!session) return false;
+		session.assertWritable();
 		const compacted = await compactSession({
 			session,
 			provider,

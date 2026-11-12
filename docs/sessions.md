@@ -42,6 +42,31 @@ requests login; it never silently switches the session to API-key billing.
 Large `edit` insertions and deletions retain a short success receipt in model
 history, while the detailed diff is display-only.
 
+After resume, history navigation, or an abnormal run exit, Ink checks the
+selected effective history once before continuing or manually compacting.
+Normal submissions, model-loop iterations and automatic compaction do not
+repeat this pairing scan. Merely opening, replaying or inspecting a session
+does not append tool-result repairs. If a final tool batch has missing results,
+Ink appends error results explicitly stating that outcomes are unknown and may
+have fully or partially executed. It preserves real results and never replays
+old tools; inspect affected state before deciding whether to retry.
+
+Ambiguous histories (duplicate/early results or later messages following an
+unanswered batch) stop locally before a new prompt or inference. For an old
+failed continuation, use `/tree` to select the **first failed user message**
+for re-editing, even if it is the current leaf; this moves before that message.
+The next continuation can close the now-final batch. Alternatively choose a
+complete branch or `/new`. The original failed branch remains preserved.
+A branch summary at an interrupted destination is appended only after its
+missing tool results have been closed.
+
+A torn final record is made append-safe at the next write: complete records
+are retained and an uninterpretable final fragment is removed. If a write
+itself fails, its bytes may be partially or fully present. Ink preserves the
+original error and refuses further writes/inference through that cached store;
+use `/resume <id>` or restart to reload the actual saved state before retrying.
+It does not retry an uncertain write against stale in-memory history.
+
 ## Usage and reference cost
 
 The interactive status bar's `↑` (ordinary input), `↓` (output), `R` (cache
