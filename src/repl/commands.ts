@@ -831,10 +831,14 @@ function maybeNoteDefaultModelHint(ctx: CommandContext): void {
  *  resume, replay, and note are byte-identical whichever way the id arrived. */
 function resumeById(ctx: CommandContext, id: string): CommandOutcome {
 	try {
-		const { id8, messages } = ctx.runner.resumeSession(id);
+		const { id8, messages, repairedTools } = ctx.runner.resumeSession(id);
 		ctx.clearView?.(); // the old conversation leaves the screen FIRST (debt clearance)
 		const session = ctx.runner.session;
 		if (session !== null && messages > 0) ctx.replay(session);
+		if (repairedTools)
+			ctx.renderer.note(
+				`▪ recovered ${repairedTools} interrupted tool call(s); outcomes unknown, no tools replayed — inspect state before retrying`,
+			);
 		ctx.renderer.note(
 			// #fresh-install-hint (round-2 review F5): the third resumed surface —
 			// N3 covered startup only.
@@ -1309,11 +1313,9 @@ export const COMMANDS: readonly SlashCommand[] = [
 					summarize = false;
 					customInstructions = undefined;
 					if (picked === null) return "handled"; // cancelled the command
-					// A user leaf is re-editable: navigating moves BEFORE it.
-					// This also recovers a first failed continuation after a crash.
-					const pickedEntry = session.getEntry(picked);
-					const reeditUser = pickedEntry?.type === "message" && pickedEntry.message.role === "user";
-					if (picked === session.getLeafId() && !reeditUser) {
+					// The current position is a selectable row (absolute
+					// visibility) — pi answers "already there" BEFORE any ask.
+					if (picked === session.getLeafId()) {
 						ctx.renderer.note("▪ already at that point");
 						return "handled";
 					}
@@ -1397,9 +1399,9 @@ export const COMMANDS: readonly SlashCommand[] = [
 				return "handled";
 			}
 			if (targetId === null) return "handled"; // unreachable; type guard
-			const targetEntry = session.getEntry(targetId);
-			const reeditUser = targetEntry?.type === "message" && targetEntry.message.role === "user";
-			if (targetId === session.getLeafId() && !reeditUser) {
+			// The current position is a selectable row (absolute visibility) —
+			// pi's flow answers "already there" BEFORE any ask or progress note.
+			if (targetId === session.getLeafId()) {
 				ctx.renderer.note("▪ already at that point");
 				return "handled";
 			}

@@ -15,7 +15,6 @@ import {
 	overflowGuidance,
 	shouldCompact,
 } from "./compaction.js";
-import { withWritableSession } from "./continuation.js";
 import { createLoopHealth, type HealthSignal, healthEnabled } from "./health.js";
 import { type RunAgentLoopOptions, type RunAgentLoopResult, runAgentLoop } from "./loop.js";
 import type { AgentMessage, Usage } from "./messages.js";
@@ -181,7 +180,6 @@ export function childModelMetadata(options: Pick<SubagentOptions, "model" | "mod
 
 export async function runSubagent(options: SubagentOptions): Promise<SubagentOutcome> {
 	const speed = options.speed;
-	const provider = withWritableSession(options.provider, options.session);
 	// Use only the child's own identity; no-store invocations get a fresh UUID.
 	// Capture before launching so overflow retries keep the same affinity.
 	const sessionId = options.session?.header.id ?? randomUUID();
@@ -243,7 +241,6 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 	// Preserve origin across loop error handling: a Fast SUMMARY overflow is
 	// not a task overflow and must never start another summary/recovery run.
 	let fastSummaryFailed = false;
-	let sessionWriteFailed = false;
 	const onBeforeTurn: RunAgentLoopOptions["onBeforeTurn"] | undefined = autoCompact
 		? async (history) => {
 				if (compactionDisabled) return;
@@ -280,7 +277,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 				// buildContext ([framed summary, ...retainedTail]).
 				compacted = await compactSession({
 					session: options.session,
-					provider,
+					provider: options.provider,
 					model: options.model,
 					...(speed === undefined ? {} : { speed }),
 					...(childReference !== undefined && { modelReference: childReference }),
@@ -302,7 +299,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 				// session store would rebuild (summaryToMessage, SUMMARY_MARK framed).
 				compacted = await compactHistory({
 					messages: history,
-					provider,
+					provider: options.provider,
 					model: options.model,
 					...(speed === undefined ? {} : { speed }),
 					modelReference: estimateTarget,
@@ -327,13 +324,6 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 			}
 			return { compacted: false }; // keepRecent swallowed everything (cut <= 0)
 		} catch (err) {
-			try {
-				options.session?.assertWritable();
-			} catch {
-				// Preserve the checkpoint append failure, not a later refusal.
-				sessionWriteFailed = true;
-				throw err;
-			}
 			// Keep cancellation classification intact, but never suppress a live
 			// Fast failure behind the normal-mode summarizer backstop.
 			if (speed === "fast" && !child.signal.aborted) {
@@ -383,7 +373,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 	 *  it. Same shape as the main loop's retry (runner.ts:772). */
 	const launchLoop = (userMessage: string | undefined): Promise<RunAgentLoopResult> =>
 		runAgentLoop({
-			provider,
+			provider: options.provider,
 			model: options.model,
 			...(speed === undefined ? {} : { speed }),
 			...(childReference !== undefined && { modelReference: childReference }),
@@ -458,18 +448,13 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 	} catch (err) {
 		const crashWith = (reason: string): SubagentOutcome => settled("crash", reason);
 		const rawMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-		try {
-			options.session?.assertWritable();
-		} catch {
-			return crashWith(rawMessage(err));
-		}
 
 		// #overflow-recovery (child): a live context-overflow error gets ONE
 		// compact-and-retry — the main loop's runTurnOrRecoverFromOverflow
 		// mirrored onto the child, minus its session-only compactAndSplice
 		// (compactChildHistory works in both modes). Single attempt, like pi's
 		// _overflowRecoveryAttempted and the main loop.
-		if (sessionWriteFailed || fastSummaryFailed || !isContextOverflowError(err)) {
+		if (fastSummaryFailed || !isContextOverflowError(err)) {
 			// Provider/protocol error: partial recovery — whatever the child already
 			// said survives (§3); the task tool decides error vs partial-result.
 			return crashWith(rawMessage(err));
@@ -485,7 +470,7 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 		try {
 			({ compacted, error } = await compactChildHistory(history));
 		} catch (compactionError) {
-			if (!sessionWriteFailed && child.signal.aborted) {
+			if (child.signal.aborted) {
 				const timedOut = clock !== undefined && !(options.signal?.aborted ?? false) && clock.aborted;
 				return settled(timedOut ? "timeout" : "aborted");
 			}
@@ -510,14 +495,9 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 			// SA-04: both rounds' reports were counted at production.
 			return settled(result.stopReason);
 		} catch (retryErr) {
-			try {
-				options.session?.assertWritable();
-			} catch {
-				return crashWith(rawMessage(retryErr));
-			}
-			// Persistence errors must bypass the retry classifier as well.
-			if (sessionWriteFailed || fastSummaryFailed || !isContextOverflowError(retryErr))
-				return crashWith(rawMessage(retryErr));
+			// Review P1-2: a NON-overflow retry failure (401/500/network) keeps its
+			// raw message — never mislabeled as overflow (runner.ts:775 parity).
+			if (fastSummaryFailed || !isContextOverflowError(retryErr)) return crashWith(rawMessage(retryErr));
 			return crashWith(
 				overflowGuidance(guidanceTokens(), settings, "still over the window after one compaction"),
 			);

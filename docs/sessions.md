@@ -42,30 +42,28 @@ requests login; it never silently switches the session to API-key billing.
 Large `edit` insertions and deletions retain a short success receipt in model
 history, while the detailed diff is display-only.
 
-After resume, history navigation, or an abnormal run exit, Ink checks the
-selected effective history once before continuing or manually compacting.
-Normal submissions, model-loop iterations and automatic compaction do not
-repeat this pairing scan. Merely opening, replaying or inspecting a session
-does not append tool-result repairs. If a final tool batch has missing results,
-Ink appends error results explicitly stating that outcomes are unknown and may
-have fully or partially executed. It preserves real results and never replays
-old tools; inspect affected state before deciding whether to retry.
+When actually resuming with `-r`, `-c`, or `/resume`, Ink checks only the final
+assistant tool batch and any immediately following tool-result messages. It
+preserves recorded results and appends explicit error results for missing ones:
+the outcome is unknown, the tool may have fully or partially executed, and Ink
+did not replay it. Inspect affected state before deciding whether to retry.
+Repairs happen during resume, before accepting new input, even if you then only
+view the conversation. A successfully repaired session is not repaired again.
 
-Ambiguous histories (duplicate/early results or later messages following an
-unanswered batch) stop locally before a new prompt or inference. For an old
-failed continuation, use `/tree` to select the **first failed user message**
-for re-editing, even if it is the current leaf; this moves before that message.
-The next continuation can close the now-final batch. Alternatively choose a
-complete branch or `/new`. The original failed branch remains preserved.
-A branch summary at an interrupted destination is appended only after its
-missing tool results have been closed.
+This is not full-history validation: earlier batches and other branches are not
+scanned for tool pairing. A later user/assistant message after an unanswered
+batch is outside the repair rule; select a complete history position or start
+`/new` rather than expect deeper inconsistencies to be rewritten. Ordinary
+submissions, model iterations, compaction, history navigation and runtime errors
+do not trigger this main-session recovery helper. Existing child continuation
+and normal tool error/cancellation handling are unchanged.
 
-A torn final record is made append-safe at the next write: complete records
-are retained and an uninterpretable final fragment is removed. If a write
-itself fails, its bytes may be partially or fully present. Ink preserves the
-original error and refuses further writes/inference through that cached store;
-use `/resume <id>` or restart to reload the actual saved state before retrying.
-It does not retry an uncertain write against stale in-memory history.
+Resume also uses the existing torn-final-record repair before appending. If
+recovery fails, retry by reopening the session; an interactive failure leaves
+the previously selected conversation active. To avoid changing the file behind
+that active store, a write-requiring `/resume` of the same active file refuses
+before repair: use `/new` then `/resume <id>`, or restart with `ink -r <id>`.
+A valid self-resume that needs no repair remains allowed.
 
 ## Usage and reference cost
 

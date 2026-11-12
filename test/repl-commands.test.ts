@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { utimes } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -10,7 +10,6 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { renderMdPrompt } from "../src/core/commands-md.js";
 import type { AgentMessage, UserMessage } from "../src/core/messages.js";
 import { createSession, listSessions } from "../src/core/session/manager.js";
-import { SessionStore } from "../src/core/session/store.js";
 import { loadSettings } from "../src/core/settings.js";
 import { setTrust } from "../src/core/trust.js";
 import { clearApiKey, loadApiKey, saveApiKey } from "../src/provider/auth-store.js";
@@ -1612,170 +1611,6 @@ describe("/tree (#10 batch 2)", () => {
 		await dispatchCommand("/tree", env.ctx);
 		expect(env.output().slice(base)).toContain("navigated —");
 	});
-});
-
-describe("/tree recovery of failed main-session continuations", () => {
-	it.each([
-		{ surface: "picker", failedCount: 1, summarize: false },
-		{ surface: "picker", failedCount: 3, summarize: false },
-		{ surface: "numbered", failedCount: 1, summarize: false },
-		{ surface: "numbered", failedCount: 3, summarize: false },
-		{ surface: "numbered", failedCount: 1, summarize: true },
-		{ surface: "numbered", failedCount: 3, summarize: true },
-	])(
-		"$surface re-edits the first of $failedCount failed users (summary: $summarize)",
-		async ({ surface, failedCount, summarize }) => {
-			// Pickers use the real three-way ask; numbered selection uses its
-			// normal summary default unless explicitly disabled.
-			vi.stubEnv("INK_BRANCH_SUMMARY", surface === "numbered" && !summarize ? "0" : "1");
-			const failedTexts = Array.from({ length: failedCount }, (_, i) => `failed continuation ${i + 1}`);
-			const env = await makeEnv({
-				seed: [
-					user("original tool batch"),
-					assistant(
-						["old-1", "old-2"].map((id) => ({
-							type: "toolCall",
-							id,
-							name: "bash",
-							arguments: { command: `printf '${id}\\n' >> old-tools-ran` },
-						})),
-						"tool_use",
-					),
-					...failedTexts.map(user),
-				],
-			});
-			onTestFinished(() => env.runner.close());
-			mkdirSync(env.cwd, { recursive: true });
-			const store = env.runner.session!;
-			const originalEntries = structuredClone(store.getEntries());
-			const originalHistory = structuredClone(env.runner.history);
-			const originalLeaf = store.getLeafId();
-			const firstFailed = store.userForkPoints()[1]!;
-			expect(firstFailed.message).toEqual(user(failedTexts[0]!));
-			expect(firstFailed.id === originalLeaf).toBe(failedCount === 1);
-			const originalBytes = readFileSync(store.filePath, "utf8");
-
-			await expect(env.runner.runTurn({ userMessage: "must not be appended" })).rejects.toThrow(
-				/Cannot continue this history.*\/tree.*first failed continuation user message.*\/new/s,
-			);
-			expect(env.requests).toHaveLength(0);
-			expect(readFileSync(store.filePath, "utf8")).toBe(originalBytes);
-			expect(store.getEntries()).toEqual(originalEntries);
-			expect(env.runner.history).toEqual(originalHistory);
-
-			let editor = "";
-			env.ctx.getEditorText = () => editor;
-			env.ctx.setEditorText = (text) => {
-				editor = text;
-			};
-			const ask = vi.fn<NonNullable<CommandContext["select"]>>(async (options) => {
-				expect(options.items.map((item) => item.label)).toEqual([
-					"No summary",
-					"Summarize",
-					"Summarize with custom prompt",
-				]);
-				return 0;
-			});
-			env.ctx.select = ask;
-			if (surface === "picker") {
-				const pick = vi.fn<NonNullable<CommandContext["treeSelect"]>>(async (options) => {
-					const rows = buildTreeRows(options.roots, options.leafId, { filter: "default" });
-					expect(rows.find((row) => row.entryId === firstFailed.id)?.text).toBe(`user: ${failedTexts[0]}`);
-					expect(options.leafId).toBe(originalLeaf);
-					return firstFailed.id;
-				});
-				env.ctx.treeSelect = pick;
-				await dispatchCommand("/tree", env.ctx);
-				expect(pick).toHaveBeenCalledTimes(1);
-				expect(ask).toHaveBeenCalledTimes(1);
-			} else {
-				const rows = buildTreeRows(store.getTree(), store.getLeafId(), { filter: "default" });
-				const row = rows.findIndex((candidate) => candidate.entryId === firstFailed.id) + 1;
-				expect(row).toBeGreaterThan(0);
-				await dispatchCommand("/tree", env.ctx);
-				expect(env.output()).toContain(`#${row}`);
-				expect(env.output()).toContain(`user: ${failedTexts[0]}`);
-				await dispatchCommand(`/tree ${row}`, env.ctx);
-				expect(ask).not.toHaveBeenCalled();
-			}
-
-			const summaryCalls = summarize && failedCount > 1 ? 1 : 0;
-			expect(env.requests).toHaveLength(summaryCalls);
-			expect(editor).toBe(failedTexts[0]);
-			expect(env.output()).toContain("navigated —");
-			expect(env.output()).not.toContain("already at that point");
-			expect(env.replayed).toEqual([store.header.id]);
-			// Without an accepted summary, navigation itself must not add repairs.
-			expect(env.runner.history.filter((message) => message.role === "toolResult")).toHaveLength(
-				summaryCalls,
-			);
-			if (summaryCalls === 0) expect(store.getLeafId()).toBe(firstFailed.parentId);
-
-			const edited = `${editor} (edited)`;
-			const result = await env.runner.runTurn({ userMessage: edited });
-			expect(result.stopReason).toBe("completed");
-			expect(env.requests).toHaveLength(summaryCalls + 1);
-			const request = env.requests.at(-1)!;
-			const repairIndex = request.messages.findIndex((message) => message.role === "toolResult");
-			expect(repairIndex).toBe(2);
-			expect(request.messages.at(-1)).toEqual(user(edited));
-			expect(
-				request.messages.filter((message) => message.role === "user").map((message) => message.content),
-			).not.toContain("must not be appended");
-			for (const text of failedTexts) {
-				expect(request.messages).not.toContainEqual(user(text));
-			}
-			const repairs = env.runner.history.filter((message) => message.role === "toolResult");
-			expect(repairs).toHaveLength(1);
-			expect(repairs[0]?.results.map((result) => result.toolCallId)).toEqual(["old-1", "old-2"]);
-			for (const result of repairs[0]!.results) {
-				expect(result.isError).toBe(true);
-				expect(result.content).toEqual(expect.stringContaining("outcome is unknown"));
-				expect(result.content).toEqual(expect.stringContaining("did not replay"));
-			}
-			expect(env.output().match(/▪ recovered 2 tool call\(s\)/g)).toHaveLength(1);
-			expect(existsSync(path.join(env.cwd, "old-tools-ran"))).toBe(false);
-
-			const reopened = SessionStore.open(store.filePath);
-			expect(reopened.getEntries().slice(0, originalEntries.length)).toEqual(originalEntries);
-			expect(reopened.getBranch(originalLeaf)).toEqual(originalEntries);
-			expect(reopened.getLeafId()).not.toBe(originalLeaf);
-			expect(readFileSync(store.filePath, "utf8").startsWith(originalBytes)).toBe(true);
-			const beforeReopen = readFileSync(store.filePath, "utf8");
-			await dispatchCommand(`/resume ${store.header.id}`, env.ctx);
-			expect(readFileSync(store.filePath, "utf8")).toBe(beforeReopen);
-			await env.runner.runTurn({ userMessage: "continue after reopening the repaired branch" });
-			expect(env.requests).toHaveLength(summaryCalls + 2);
-			expect(env.runner.history.filter((message) => message.role === "toolResult")).toEqual(repairs);
-			expect(SessionStore.open(store.filePath).getBranch(originalLeaf)).toEqual(originalEntries);
-			expect(existsSync(path.join(env.cwd, "old-tools-ran"))).toBe(false);
-		},
-	);
-
-	it.each(["picker", "numbered"])(
-		"%s still treats a current non-user leaf as an early no-op",
-		async (surface) => {
-			const env = await makeEnv({ seed: [user("complete question"), assistantText("complete answer")] });
-			onTestFinished(() => env.runner.close());
-			const store = env.runner.session!;
-			const before = readFileSync(store.filePath, "utf8");
-			const navigate = vi.spyOn(env.runner, "navigateTree");
-			const ask = vi.fn<NonNullable<CommandContext["select"]>>();
-			env.ctx.select = ask;
-			if (surface === "picker") {
-				env.ctx.treeSelect = async () => store.getLeafId();
-				await dispatchCommand("/tree", env.ctx);
-			} else {
-				const rows = buildTreeRows(store.getTree(), store.getLeafId(), { filter: "default" });
-				await dispatchCommand(`/tree ${rows.findIndex((row) => row.isCurrentLeaf) + 1}`, env.ctx);
-			}
-			expect(env.output()).toBe("▪ already at that point\n");
-			expect(ask).not.toHaveBeenCalled();
-			expect(navigate).not.toHaveBeenCalled();
-			expect(env.requests).toHaveLength(0);
-			expect(readFileSync(store.filePath, "utf8")).toBe(before);
-		},
-	);
 });
 
 describe("/sessions + /resume", () => {
