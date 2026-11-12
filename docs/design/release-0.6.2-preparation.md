@@ -195,3 +195,82 @@ passed without modifying the candidate. No original evidence was overwritten.
 Candidate main push, exact-SHA Linux CI, annotated v0.6.2 creation/push,
 registry verification and GitHub Release creation are not yet performed or
 approved by this record. No global installation change is included.
+
+## 6. Hosted CI follow-up: API-key history-recall readiness
+
+Status: design approved before test changes by independent reviewer
+`3eda0931-2b7a-4d2b-9cf0-3c97541e107e`; implementation and independent review
+complete; new exact-SHA hosted CI pending.
+Follow-up worktree: `.worktrees/ink-ci-login-recall-readiness`, branch
+`fix/ci-login-recall-readiness`, base `d48c4e8`.
+
+The preceding pending-state paragraphs are the preparation snapshot. The owner
+subsequently approved and completed the main push 2535855 -> d48c4e8. Pages
+43213094074 passed. CI 43213094148 attempt 1 failed only Node 22.19.0 at
+`test/login-dialog.test.ts:644`, case 10b: loadApiKey returned null instead of the
+fake key. That job passed 6,275 tests with 1 failure and 2 platform skips; Node
+24 passed 6,276 with 2 skips, including packaging. Logs/results are retained as
+`ci-main-full.log`, `ci-main-summary.json`, `ci-main-watch.log` and
+`pages-main-result.json`. An initial read-only run-summary API call timed out;
+a subsequent API read succeeded. No CI rerun, tag or publication was performed.
+
+The recall test used one fixed settle interval after submission before reading
+an asynchronous, locked durable auth save. The production success status is
+emitted only after save and dialog teardown. Replace its prompt-open and
+save-completion timing assumptions with the existing bounded frameEventually
+checks for the prompt and Saved API key status. Keep actual key persistence and
+both recall/history privacy assertions. Do not increase OAUTH_BUDGET, Vitest
+limits or sleeps as a purported fix; do not skip/retry the test or change CI
+parallelism. Production auth/UI/runtime code remains untouched.
+
+Add one contended-save variant of this same recall scenario using the existing
+withAuthStoreLock and deferred helpers. Hold the real save lock, submit the fake
+key, and start the completion waiter; show after an existing settle interval that
+no key or success status is present and the waiter remains pending. Release the
+lock in finally and await its actual owner before cleanup, then require the
+normal success status, actual saved key and unchanged recall/privacy checks.
+Immediately attach rejection handling when creating the waiter, recording its
+fulfilled/rejected outcome; both outcomes mark it finished, so rejection cannot
+look like pending. On every exit path release the lock and await both its owner
+and any started waiter before fixture teardown. Preserve assertion, lock-owner
+and waiter failures (aggregate simultaneous failures), rather than masking them
+or racing cleanup against a timer. Propagate lock acquisition failures as well.
+This proves state-based readiness, not that one larger delay usually succeeds.
+Keep fixtures, fake credentials and lock paths under owned temp roots.
+
+After design approval, implement only this test and update release records.
+Run the login/nearby auth regressions, typecheck, lint and full suites on the
+existing Node runtimes; obtain independent implementation review. Confirm all
+457 frozen artifact files/modes still match source/build, since tests and
+preparation records are not shipped and application bytes must not change.
+Use one follow-up commit plus --no-ff merge; request its exact main push again.
+Require new exact-SHA Linux CI before any separately confirmed v0.6.2 tag push.
+Do not rerun the failed hosted job to bypass the failure or modify published
+metadata/gates/global state.
+
+### Follow-up verification
+
+Only case 10b changed: ordinary and contended variants wait for the existing
+prompt/saved status, preserving actual persistence and both recall assertions.
+A real lock proves that one settle interval is insufficient. Immediate outcome
+handling and finally-based convergence preserve primary and concurrent failures.
+Independent implementation reviewer `8c29fd5d-22eb-4a54-bf76-19c525f2b8aa`
+returned APPROVE with no required changes, including 30 login tests on each of
+Node 22.19.0/24.22.1, nine expected-failure injection scenarios, no unhandled
+rejections, and an independent fresh-build comparison of all 457 artifact files.
+Evidence: `/tmp/ink-ci-login-review.CRO7ys/` and implementation probes under
+`/tmp/ink-ci-login-readiness.0HxAJ5/`. The old fixed-wait assertion was reproduced
+as a failure under the held lock; corrected variants passed.
+
+Final coordinator full suites on macOS Node 25.5.0, 22.19.0 and 24.22.1 each
+passed **191 files / 6,279 tests, 0 skipped**, with both typechecks on each
+runtime. Lint (352 files), script/docs checks, build and diff checks passed.
+Logs: `login-followup-full-node25.5.0.log`,
+`login-followup-full-node22.19.0.log`, `login-followup-full-node24.22.1.log`.
+All three returned exit 0 and retained nonempty run roots as before:
+`ink-test-run-1q1lgK`, `ink-test-run-jBsC51`, `ink-test-run-eLUt6R`.
+The extra test is the contended variant; no production file or shipped note
+changed, and the original frozen artifact remains the candidate application.
+New commit/merge and its separately confirmed push still require new Linux CI;
+the failed run is retained rather than rerun. No tag or npm/GitHub Release has
+been created by this follow-up.
