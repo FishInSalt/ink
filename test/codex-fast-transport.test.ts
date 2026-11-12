@@ -18,6 +18,7 @@ vi.mock("../src/provider/codex-auth.js", () => ({
 
 const TOKEN = "fake-subscription-access";
 const ENDPOINT = "https://api.openai.com/v1/responses";
+const FAST_HINT = "To retry without Fast, explicitly select the normal model with /model.";
 const request = (fields: Partial<LLMRequest> = {}): LLMRequest => ({
 	system: "system",
 	model: "gpt-5.5",
@@ -41,11 +42,11 @@ const streamResponse = (frames: unknown[]) =>
 	new Response(frames.map((value) => `data: ${JSON.stringify(value)}\n\n`).join(""), {
 		headers: { "content-type": "text/event-stream", "x-request-id": "req_fast" },
 	});
-const jsonError = (status: number, code: string) =>
-	new Response(
-		JSON.stringify({ error: { code, param: "service_tier", message: "Fast admission refused" } }),
-		{ status, headers: { "x-request-id": "req_admission" } },
-	);
+const jsonError = (status: number, code?: string, param?: string, message = "Request refused") =>
+	new Response(JSON.stringify({ error: { code, param, message } }), {
+		status,
+		headers: { "x-request-id": "req_admission" },
+	});
 function harness(replies: Array<() => Response | Promise<Response>> = [() => streamResponse([terminal()])]) {
 	const auth = vi.fn(async () => ({ accessToken: TOKEN }));
 	const fetch = vi.fn<typeof globalThis.fetch>(async () => {
@@ -157,45 +158,114 @@ describe("Codex Fast raw request boundary", () => {
 });
 
 describe("Fast recovery hints preserve original errors", () => {
-	const cases: { name: string; make: () => unknown; hint: boolean }[] = [
-		{ name: "ordinary Error", make: () => new Error("adapter failed"), hint: true },
+	async function rejectFromAuth(original: unknown, speed: LLMRequest["speed"]) {
+		const auth = vi.fn(async () => {
+			throw original;
+		});
+		const fetch = vi.fn<typeof globalThis.fetch>();
+		const provider = createCodexResponsesProvider({ auth, fetch });
+		const actual = await collect(provider.stream(request({ speed }))).catch((error: unknown) => error);
+		// Avoid coercing hostile accessors/proxies even in assertion output.
+		expect(actual === original).toBe(true);
+		expect(auth).toHaveBeenCalledTimes(1);
+		expect(fetch).not.toHaveBeenCalled();
+	}
+
+	const unrelated: { name: string; make: () => unknown }[] = [
+		{ name: "ordinary Error", make: () => new Error("adapter failed") },
 		{
-			name: "typed Codex error",
+			name: "typed unrelated Codex error with misleading param and message",
 			make: () =>
-				new CodexResponseError("adapter failed", { status: 503, code: "adapter_error", retryable: true }),
-			hint: true,
-		},
-		{ name: "native AbortError", make: () => new DOMException("adapter aborted", "AbortError"), hint: true },
-		{
-			name: "native TimeoutError",
-			make: () => new DOMException("adapter timed out", "TimeoutError"),
-			hint: true,
-		},
-		{ name: "frozen Error", make: () => Object.freeze(new Error("immutable failure")), hint: false },
-		{
-			name: "non-configurable message",
-			make: () =>
-				Object.defineProperty(new Error("immutable failure"), "message", {
-					writable: false,
-					configurable: false,
+				new CodexResponseError("unsupported_service_tier: Fast unavailable", {
+					status: 503,
+					code: "adapter_error",
+					param: "service_tier",
+					retryable: true,
 				}),
+		},
+		{ name: "native AbortError", make: () => new DOMException("adapter aborted", "AbortError") },
+		{ name: "native TimeoutError", make: () => new DOMException("adapter timed out", "TimeoutError") },
+		{
+			name: "Error impersonating the typed class",
+			make: () =>
+				Object.assign(new Error("unsupported_service_tier"), {
+					name: "CodexResponseError",
+					code: "unsupported_service_tier",
+					param: "service_tier",
+				}),
+		},
+		{
+			name: "non-Error object with tier fields",
+			make: () => ({ code: "unsupported_service_tier", param: "service_tier", message: "refused" }),
+		},
+		{ name: "non-Error string", make: () => "unsupported_service_tier" },
+		{ name: "null", make: () => null },
+		{ name: "undefined", make: () => undefined },
+	];
+	for (const { name, make } of unrelated) {
+		it.each([undefined, "fast"] as const)(
+			`leaves ${name} unchanged from injected auth (speed=%s)`,
+			async (speed) => {
+				const original = make();
+				const message = original instanceof Error ? original.message : undefined;
+				await rejectFromAuth(original, speed);
+				if (original instanceof Error) expect(original.message).toBe(message);
+				if (original instanceof CodexResponseError) {
+					expect(original).toMatchObject({
+						status: 503,
+						code: "adapter_error",
+						param: "service_tier",
+						retryable: true,
+					});
+				}
+			},
+		);
+	}
+
+	const tierFields = {
+		status: 400,
+		code: "unsupported_service_tier",
+		param: "service_tier",
+		reason: "failed",
+		requestId: "req_tier",
+		retryable: false,
+	};
+	const tierError = () => new CodexResponseError("Priority refused", tierFields);
+	const classified: {
+		name: string;
+		make: () => CodexResponseError;
+		hint: boolean;
+		unreadable?: boolean;
+	}[] = [
+		{ name: "typed tier error", make: tierError, hint: true },
+		{ name: "frozen tier error", make: () => Object.freeze(tierError()), hint: false },
+		{ name: "sealed tier error", make: () => Object.seal(tierError()), hint: true },
+		{
+			name: "non-configurable message on a tier error",
+			make: () => Object.defineProperty(tierError(), "message", { writable: false, configurable: false }),
 			hint: false,
 		},
 		{
-			name: "throwing message getter",
+			name: "configurable read-only message on a tier error",
+			make: () => Object.defineProperty(tierError(), "message", { writable: false, configurable: true }),
+			hint: true,
+		},
+		{
+			name: "throwing message getter on a tier error",
 			make: () =>
-				Object.defineProperty(new Error(), "message", {
+				Object.defineProperty(tierError(), "message", {
 					get() {
 						throw new Error("getter failed");
 					},
 				}),
 			hint: false,
+			unreadable: true,
 		},
 		{
-			name: "throwing message setter",
+			name: "throwing message setter on a tier error",
 			make: () =>
-				Object.defineProperty(new Error(), "message", {
-					get: () => "adapter failed",
+				Object.defineProperty(tierError(), "message", {
+					get: () => "Priority refused",
 					set() {
 						throw new Error("setter failed");
 					},
@@ -203,54 +273,103 @@ describe("Fast recovery hints preserve original errors", () => {
 				}),
 			hint: true,
 		},
-		{ name: "non-Error object", make: () => ({ reason: "adapter failed" }), hint: false },
-		{ name: "non-Error string", make: () => "adapter failed", hint: false },
+		{
+			name: "getter-only message on a tier error",
+			make: () =>
+				Object.defineProperty(tierError(), "message", { get: () => "Priority refused", configurable: true }),
+			hint: true,
+		},
 	];
-	for (const { name, make, hint } of cases) {
+	for (const { name, make, hint, unreadable } of classified) {
 		it.each([undefined, "fast"] as const)(
-			`keeps ${name} identity from injected auth (speed=%s)`,
+			`keeps ${name} identity and typed fields (speed=%s)`,
 			async (speed) => {
 				const original = make();
-				const auth = vi.fn(async () => {
-					throw original;
-				});
-				const fetch = vi.fn<typeof globalThis.fetch>();
-				const provider = createCodexResponsesProvider({ auth, fetch });
-				const actual = await collect(provider.stream(request({ speed }))).catch((error: unknown) => error);
-				// Avoid coercing a hostile message accessor even in assertion output.
-				expect(actual === original).toBe(true);
-				expect(auth).toHaveBeenCalledTimes(1);
-				expect(fetch).not.toHaveBeenCalled();
-				if (hint && original instanceof Error) {
-					expect(original.message.includes("Fast was requested")).toBe(speed === "fast");
-				}
-				if (original instanceof CodexResponseError) {
-					expect(original).toMatchObject({ status: 503, code: "adapter_error", retryable: true });
+				const descriptor = Object.getOwnPropertyDescriptor(original, "message");
+				await rejectFromAuth(original, speed);
+				expect(original).toMatchObject(tierFields);
+				if (unreadable) expect(Object.getOwnPropertyDescriptor(original, "message")).toEqual(descriptor);
+				else {
+					expect(original.message).toBe(
+						speed === "fast" && hint ? `Priority refused — ${FAST_HINT}` : "Priority refused",
+					);
 				}
 			},
 		);
 	}
 
-	it.each([undefined, "fast"] as const)(
-		"keeps an injected body's native AbortError (speed=%s)",
-		async (speed) => {
-			const original = new DOMException("adapter body aborted", "AbortError");
-			const { provider, fetch } = harness([
-				() =>
-					new Response(
-						new ReadableStream({
-							start(controller) {
-								controller.error(original);
-							},
-						}),
-					),
-			]);
-			const actual = await collect(provider.stream(request({ speed }))).catch((error: unknown) => error);
-			expect(actual === original).toBe(true);
-			expect(original.message.includes("Fast was requested")).toBe(speed === "fast");
-			expect(fetch).toHaveBeenCalledTimes(1);
-		},
-	);
+	for (const field of ["code", "param", "prototype"] as const) {
+		it.each([undefined, "fast"] as const)(
+			`guards a throwing classifier ${field} accessor (speed=%s)`,
+			async (speed) => {
+				const read = vi.fn(() => {
+					throw new Error("classifier accessor failed");
+				});
+				const target = new CodexResponseError("Original failure", {
+					code: field === "param" ? "unsupported_parameter" : "unsupported_service_tier",
+					param: "service_tier",
+				});
+				const original =
+					field === "prototype"
+						? new Proxy(target, { getPrototypeOf: read })
+						: Object.defineProperty(target, field, { get: read });
+				await rejectFromAuth(original, speed);
+				expect(read).toHaveBeenCalledTimes(speed === "fast" ? 1 : 0);
+				expect(target.message).toBe("Original failure");
+			},
+		);
+	}
+
+	it("an explicit tier code does not require reading a hostile param", async () => {
+		const param = vi.fn(() => {
+			throw new Error("param getter failed");
+		});
+		const original = Object.defineProperty(tierError(), "param", { get: param });
+		await rejectFromAuth(original, "fast");
+		expect(original.message).toBe(`Priority refused — ${FAST_HINT}`);
+		expect(param).not.toHaveBeenCalled();
+	});
+
+	for (const kind of ["AbortError", "TimeoutError"] as const) {
+		it.each([undefined, "fast"] as const)(
+			`keeps an injected body's native ${kind} unchanged (speed=%s)`,
+			async (speed) => {
+				const original = new DOMException("adapter body stopped", kind);
+				const { provider, fetch } = harness([
+					() =>
+						new Response(
+							new ReadableStream({
+								start(controller) {
+									controller.error(original);
+								},
+							}),
+						),
+				]);
+				const actual = await collect(provider.stream(request({ speed }))).catch((error: unknown) => error);
+				expect(actual === original).toBe(true);
+				expect(original.message).toBe("adapter body stopped");
+				expect(fetch).toHaveBeenCalledTimes(1);
+			},
+		);
+	}
+
+	it("retains stream interruption guidance without suggesting normal mode", async () => {
+		const { provider, fetch } = harness([
+			() =>
+				new Response(
+					new ReadableStream({
+						start(controller) {
+							controller.error(new Error("terminated"));
+						},
+					}),
+				),
+		]);
+		await expect(collect(provider.stream(request()))).rejects.toMatchObject({
+			name: "StreamInterruptedError",
+			message: 'Codex stream interrupted — connection closed; send "continue" to resume',
+		});
+		expect(fetch).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("Fast wire identity and replay", () => {
@@ -367,7 +486,7 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 			name: "CodexResponseError",
 			code: "connection_failed",
 			retryable: true,
-			message: expect.stringMatching(/Fast.*\/model.*normal/),
+			message: "Codex request failed before the response stream opened (5 attempts)",
 		});
 		await vi.runAllTimersAsync();
 		await failure;
@@ -380,30 +499,98 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 		}
 	});
 
-	it.each([
-		[400, "unsupported_service_tier"],
-		[401, "invalid_token"],
-		[403, "permission_denied"],
-		[404, "model_not_found"],
-		[422, "invalid_service_tier"],
-		[429, "subscription_sharing_usage_limit_exceeded"],
-		[503, "unsupported_service_tier"],
-	] as const)("HTTP %i (%s) preserves diagnostics and never retries normally", async (status, code) => {
-		const { provider, auth, fetch } = harness([() => jsonError(status, code)]);
-		const req = Object.freeze(request());
-		await expect(collect(provider.stream(req))).rejects.toMatchObject({
+	it.each([429, 503])("exhausts HTTP %i retries without a Fast hint or fallback", async (status) => {
+		vi.useFakeTimers();
+		const code = status === 429 ? "rate_limit_exceeded" : "server_error";
+		const fail = () => jsonError(status, code);
+		const { provider, auth, fetch } = harness([fail, fail, fail]);
+		const failure = expect(collect(provider.stream(request()))).rejects.toMatchObject({
 			name: "CodexResponseError",
 			status,
 			code,
-			param: "service_tier",
-			requestId: "req_admission",
-			retryable: false,
-			message: expect.stringMatching(/Fast admission refused.*Fast.*\/model.*normal/),
+			param: undefined,
+			retryable: true,
+			message: `OpenAI Codex API error ${status}: Request refused`,
 		});
-		expect(req.speed).toBe("fast");
+		await vi.runAllTimersAsync();
+		await failure;
 		expect(auth).toHaveBeenCalledTimes(1);
-		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(fetch).toHaveBeenCalledTimes(3);
+		for (const [url, init] of fetch.mock.calls) {
+			expect(url).toBe(ENDPOINT);
+			expect(body(init).service_tier).toBe("priority");
+		}
 	});
+
+	const admissionCases: {
+		status: number;
+		code?: string;
+		param?: string;
+		hint: boolean;
+		message?: string;
+	}[] = [
+		{ status: 400, code: "unsupported_service_tier", param: "service_tier", hint: true },
+		{ status: 400, code: "unsupported_service_tier", hint: true },
+		{ status: 422, code: "invalid_service_tier", param: "service_tier", hint: true },
+		{ status: 400, code: "tier_unavailable", hint: true },
+		{ status: 400, code: "unsupported_parameter", param: "service_tier", hint: true },
+		{ status: 503, code: "unsupported_service_tier", param: "service_tier", hint: true },
+		{ status: 401, code: "invalid_token", param: "authorization", hint: false },
+		{ status: 403, code: "permission_denied", hint: false },
+		{ status: 404, code: "model_not_found", param: "model", hint: false },
+		{ status: 429, code: "subscription_sharing_usage_limit_exceeded", hint: false },
+		{ status: 429, code: "insufficient_quota", hint: false },
+		{ status: 400, code: "context_length_exceeded", param: "input", hint: false },
+		{
+			status: 400,
+			code: "invalid_request_error",
+			param: "input",
+			message: "No tool output found for function call call_missing",
+			hint: false,
+		},
+		{ status: 400, hint: false }, // Neither status nor typed class alone is evidence.
+		{ status: 400, param: "service_tier", hint: false }, // Bare parameter is insufficient.
+		// Conflicting evidence: an unrelated code must outweigh a tier parameter.
+		{ status: 401, code: "invalid_token", param: "service_tier", hint: false },
+		{ status: 400, code: "invalid_request_error", param: "service_tier", hint: false },
+		{ status: 400, code: "context_length_exceeded", param: "service_tier", hint: false },
+		{ status: 400, code: "unknown_code", param: "service_tier", hint: false },
+		{ status: 400, code: "unsupported_parameter", param: "model", hint: false },
+		{ status: 400, code: "unsupported_parameter", param: "service_tiers", hint: false },
+		{ status: 400, code: "unsupported_parameter", hint: false },
+		{ status: 400, code: "Unsupported_service_tier", hint: false },
+		{
+			status: 400,
+			code: "invalid_request_error",
+			message: "unsupported_service_tier: service_tier priority Fast unavailable",
+			hint: false,
+		},
+	];
+	for (const speed of [undefined, "fast"] as const) {
+		it.each(admissionCases)(
+			`HTTP $status code=$code param=$param preserves diagnostics (speed=${speed})`,
+			async ({ status, code, param, hint, message }) => {
+				const { provider, auth, fetch } = harness([() => jsonError(status, code, param, message)]);
+				const req = Object.freeze(request({ speed }));
+				const caught = await collect(provider.stream(req)).catch((error: unknown) => error);
+				expect(caught).toBeInstanceOf(CodexResponseError);
+				expect(caught).toMatchObject({
+					status,
+					code,
+					param,
+					reason: undefined,
+					requestId: "req_admission",
+					retryable: false,
+				});
+				expect((caught as Error).message).toContain(message ?? "Request refused");
+				expect((caught as Error).message.includes(FAST_HINT)).toBe(speed === "fast" && hint);
+				expect(req.speed).toBe(speed);
+				expect(auth).toHaveBeenCalledTimes(1);
+				expect(fetch).toHaveBeenCalledTimes(1);
+				expect(body(fetch.mock.calls[0]?.[1]).service_tier).toBe(speed === "fast" ? "priority" : undefined);
+			},
+		);
+	}
 
 	it("redacts HTTP credentials while retaining safe upstream fields and recovery guidance", async () => {
 		const { provider, fetch } = harness([
@@ -435,54 +622,79 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 		const message = (caught as Error).message;
 		expect(message).toContain("Priority unavailable");
 		expect(message).toContain("[redacted]");
-		expect(message).toMatch(/Fast.*\/model.*normal/);
+		expect(message).toContain(FAST_HINT);
 		expect(message).not.toMatch(/fake-subscription-access|another-secret|\r|\n/);
 		expect(fetch).toHaveBeenCalledTimes(1);
 	});
 
-	it.each(["response.failed", "response.cancelled", "error", "response.incomplete"])(
-		"retains redacted %s diagnostics and does not fall back",
-		async (kind) => {
-			const error = {
-				code: "tier_unavailable",
-				param: "service_tier",
-				message: `Priority refused: ${TOKEN} Bearer hidden-secret`,
-			};
-			const fields =
-				kind === "error"
-					? { error }
-					: {
-							response: {
-								status: kind.split(".")[1],
-								error,
-								incomplete_details: { reason: "content_filter" },
-							},
-						};
-			const { provider, auth, fetch } = harness([() => streamResponse([frame(kind, fields)])]);
-			const events: LLMEvent[] = [];
-			let caught: unknown;
-			try {
-				await collect(provider.stream(request()), events);
-			} catch (failure) {
-				caught = failure;
-			}
-			expect(caught).toBeInstanceOf(CodexResponseError);
-			expect(caught).toMatchObject({
-				status: 200,
-				code: "tier_unavailable",
-				param: "service_tier",
-				requestId: "req_fast",
-				retryable: false,
-			});
-			expect((caught as Error).message).toMatch(/Priority refused.*Fast.*\/model.*normal/);
-			expect((caught as Error).message).not.toMatch(
-				/fake-subscription-access|hidden-secret|API error 200|(?:failed|incomplete|error) 200:/,
-			);
-			expect(events.some((event) => event.type === "message_end")).toBe(false);
-			expect(auth).toHaveBeenCalledTimes(1);
-			expect(fetch).toHaveBeenCalledTimes(1);
-		},
-	);
+	for (const kind of [
+		"response.failed",
+		"response.cancelled",
+		"error",
+		"response.incomplete",
+		"response.completed",
+	] as const) {
+		it.each([
+			{ code: "unsupported_service_tier", param: undefined, hint: true },
+			{ code: "invalid_service_tier", param: "service_tier", hint: true },
+			{ code: "tier_unavailable", param: "service_tier", hint: true },
+			{ code: "unsupported_parameter", param: "service_tier", hint: true },
+			{ code: "unsupported_parameter", param: "input", hint: false },
+			{ code: "context_length_exceeded", param: "input", hint: false },
+			{ code: "invalid_request_error", param: "input", hint: false },
+			{ code: "invalid_response", param: undefined, hint: false },
+			{ code: "insufficient_quota", param: undefined, hint: false },
+			{ code: "invalid_token", param: "authorization", hint: false },
+			{ code: "server_error", param: undefined, hint: false },
+			// Conflicting structured fields do not turn a context error into a tier rejection.
+			{ code: "context_length_exceeded", param: "service_tier", hint: false },
+		])(
+			`retains redacted ${kind} $code/$param diagnostics without fallback`,
+			async ({ code, param, hint }) => {
+				const diagnostic =
+					code === "invalid_request_error" ? "No tool output found for function call call_missing" : code;
+				const error = { code, param, message: `${diagnostic}: ${TOKEN} Bearer hidden-secret` };
+				const fields =
+					kind === "error"
+						? { error }
+						: {
+								response: {
+									status: kind.split(".")[1],
+									error,
+									incomplete_details: { reason: "content_filter" },
+								},
+							};
+				const { provider, auth, fetch } = harness([() => streamResponse([frame(kind, fields)])]);
+				const events: LLMEvent[] = [];
+				const caught = await collect(provider.stream(request()), events).catch((failure: unknown) => failure);
+				expect(caught).toBeInstanceOf(CodexResponseError);
+				expect(caught).toMatchObject({
+					status: 200,
+					code,
+					param,
+					reason: {
+						"response.failed": "failed",
+						"response.cancelled": "cancelled",
+						error: "error",
+						"response.incomplete": "content_filter",
+						"response.completed": undefined,
+					}[kind],
+					requestId: "req_fast",
+					retryable: false,
+				});
+				const message = (caught as Error).message;
+				expect(message).toContain(diagnostic);
+				expect(message).toContain("[redacted]");
+				expect(message.includes(FAST_HINT)).toBe(hint);
+				expect(message).not.toMatch(
+					/fake-subscription-access|hidden-secret|API error 200|(?:failed|incomplete|error) 200:/,
+				);
+				expect(events.some((event) => event.type === "message_end")).toBe(false);
+				expect(auth).toHaveBeenCalledTimes(1);
+				expect(fetch).toHaveBeenCalledTimes(1);
+			},
+		);
+	}
 
 	it("rejects redirects without credential forwarding or fallback", async () => {
 		const { provider, auth, fetch } = harness([
@@ -495,7 +707,7 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 		await expect(collect(provider.stream(request()))).rejects.toMatchObject({
 			code: "redirect_rejected",
 			status: 307,
-			message: expect.stringMatching(/redirect.*Fast.*\/model.*normal/),
+			message: "Codex credential-bearing request rejected a redirect",
 		});
 		expect(auth).toHaveBeenCalledTimes(1);
 		expect(fetch).toHaveBeenCalledTimes(1);
@@ -503,7 +715,7 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 	});
 
 	it.each(["data: {malformed-private-frame}\n\n", ": keepalive\n\n"])(
-		"a malformed or missing terminal frame adds recovery guidance without retrying (%s)",
+		"a malformed or missing terminal frame fails without a Fast hint or retry (%s)",
 		async (data) => {
 			const { provider, fetch } = harness([() => new Response(data)]);
 			const events: LLMEvent[] = [];
@@ -514,10 +726,45 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 				caught = error;
 			}
 			expect(caught).toBeInstanceOf(CodexResponseError);
-			expect((caught as Error).message).toMatch(/Fast.*\/model.*normal/);
+			expect((caught as Error).message).not.toContain(FAST_HINT);
 			expect((caught as Error).message).not.toContain("malformed-private-frame");
 			expect(events).toEqual([]);
 			expect(fetch).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it.each([undefined, "fast"] as const)(
+		"refuses malformed native replay without a Fast hint before auth or HTTP (speed=%s)",
+		async (speed) => {
+			const { provider, auth, fetch } = harness();
+			const messages: AgentMessage[] = [
+				{
+					role: "assistant",
+					blocks: [
+						{
+							type: "text",
+							text: "old answer",
+							responses: {
+								version: 1,
+								provider: "openai-codex",
+								itemId: " ",
+								contentIndex: 0,
+								kind: "output_text",
+							},
+						},
+					],
+					usage: { inputTokens: 1, outputTokens: 1 },
+					stopReason: "end_turn",
+					provenance: { version: 1, provider: "openai-codex", model: "gpt-5.5" },
+				},
+			];
+			await expect(collect(provider.stream(request({ speed, messages })))).rejects.toMatchObject({
+				name: "CodexResponseError",
+				code: "invalid_replay_metadata",
+				message: "Codex replay metadata is malformed",
+			});
+			expect(auth).not.toHaveBeenCalled();
+			expect(fetch).not.toHaveBeenCalled();
 		},
 	);
 
@@ -530,7 +777,7 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 		const provider = createCodexResponsesProvider({ auth, fetch });
 		const req = Object.freeze(request());
 		await expect(collect(provider.stream(req))).rejects.toBe(original);
-		expect(original.message).toMatch(/Subscription authorization required.*Fast.*\/model.*normal/);
+		expect(original.message).toBe("Subscription authorization required");
 		expect(auth).toHaveBeenCalledTimes(1);
 		expect(fetch).not.toHaveBeenCalled();
 		expect(req.speed).toBe("fast");
@@ -539,7 +786,7 @@ describe("Fast admission, diagnostics, and retry policy", () => {
 	it("leaves normal error diagnostics unchanged", async () => {
 		const { provider } = harness([() => jsonError(400, "unsupported_service_tier")]);
 		await expect(collect(provider.stream(request({ speed: undefined })))).rejects.toMatchObject({
-			message: "OpenAI Codex API error 400: Fast admission refused",
+			message: "OpenAI Codex API error 400: Request refused",
 		});
 	});
 });
@@ -732,7 +979,10 @@ describe("Fast terminal tier observations", () => {
 					persisted.push(message);
 				},
 			}),
-		).rejects.toBeInstanceOf(CodexResponseError);
+		).rejects.toMatchObject({
+			name: "CodexResponseError",
+			message: expect.not.stringContaining(FAST_HINT),
+		});
 		expect(execute).not.toHaveBeenCalled();
 		expect(history).toEqual([{ role: "user", content: "probe" }]);
 		expect(persisted).toEqual(history);
