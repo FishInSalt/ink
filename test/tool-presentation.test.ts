@@ -300,6 +300,20 @@ describe("semantic tool presentation", () => {
 		for (const row of activity.render(width)) expect(visibleWidth(row)).toBeLessThanOrEqual(width);
 		expect(sanitizeDisplay(activity.render(width)[2] ?? "")).toContain("…");
 	});
+	it("counts clipped source glyphs as rows without losing following output graphemes", () => {
+		const fold = new ToolBlockFold(outputBlock(result("e\u0301漢abc")));
+		expect(fold.render(5).slice(0, 3).map(sanitizeDisplay)).toEqual(["  ⎿ e\u0301", "    ", "    a"]);
+		expect(
+			fold
+				.render(5)
+				.map((row) => sanitizeDisplay(row).trimStart())
+				.join(""),
+		).toContain("Ctrl+O");
+		fold.setExpanded(true);
+		expect(fold.render(5).map(sanitizeDisplay)).toEqual(["  ⎿ e\u0301", "    ", "    a", "    b", "    c"]);
+		expect(plain(fold, 10)).toBe("  ⎿ e\u0301漢abc");
+	});
+
 	it("previews use 3/3/8 body rows, resize counts and expanded cap", () => {
 		const input = new ToolBlockFold(inputBlock("a", "bash", { command: "x".repeat(20000) }));
 		const output = new ToolBlockFold(outputBlock(result("x\n".repeat(10))));
