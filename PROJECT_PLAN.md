@@ -17,23 +17,42 @@
 
 ---
 
-## Latest release preparation: Ink 0.6.1
+## Latest publication: Ink 0.6.1
 
-- **Scope:** maintenance patch from reviewed main `c0a0c0a`; no additional
-  feature, dependency, workflow or session-format changes. Preparation follows
-  the [release design and execution record](docs/design/release-0.6.1-preparation.md).
-- **State:** independent design revision 2 approved before metadata changes.
-  Local source/test typechecks, lint (347 files), build, identity/npm-version,
-  docs-site (24 pages), offline artifact smoke (454 files) and full suites on
-  macOS Node 22.19.0/24.22.1/25.5.0 (187 files, 5,763 passed each) passed.
-  Installed full-CLI PTY acceptance passed 3 scenarios/161 assertions. Final
-  independent implementation/artifact review (77a8ae59) and PTY evidence review
-  (62be434b) both APPROVE with no required fixes; npm publication, GitHub Release
-  and global upgrade have not been performed.
-- **Boundaries:** each external action requires separate confirmation. The
-  installed application cannot be replaced while a relevant Ink session is
-  running; global upgrade requires an independently reviewed, quiescent
-  terminal handoff and the verified artifact with tested offline dependencies.
+- **Scope and preparation:** maintenance patch from reviewed main `c0a0c0a`;
+  no additional feature, dependency, workflow or session-format changes in the
+  release-preparation batch. Independent design revision 2 approved before
+  metadata changes; final implementation/artifact review (77a8ae59) and PTY
+  evidence review (62be434b) both APPROVE. Local macOS Node
+  22.19.0/24.22.1/25.5.0 suites each passed 187 files / 5,763 tests; installed
+  candidate PTY acceptance passed 3 scenarios / 161 assertions. The
+  [publication record](docs/design/release-0.6.1-preparation.md#publication)
+  supersedes earlier publication-pending statements without rewriting the
+  historical preparation plan and local evidence.
+- **Published 2026-11-12:** reviewed candidate `c03a169` was merged with
+  `--no-ff` as `5457731`, with identical trees; annotated `v0.6.1` selects
+  that source commit. CI `43159647864` and Pages `43159647894` succeeded.
+  Linux Node 22.19.0/24.22.2 each passed 187 files / 5,761 tests with two
+  unchanged Darwin-only skips. Release run `43160272629`, attempt 1, passed
+  gate, real npm publish and visibility: the new 10-minute window passed on
+  its first release use, with no workflow rerun. npm `latest` selects `0.6.1`.
+- **Registry and GitHub verification:** all 454 registry file bodies/modes
+  match the reviewed candidate; two registry signatures and two publish/provenance
+  attestations passed cryptographic verification; all seven negative controls
+  were rejected. Temporary
+  verification-tool fixes were approved by reviewer `06c991da` before the real
+  verification runs; they are not product bugs or changes to tagged product
+  files. The isolated offline installation verified 12 lockfile-pinned
+  production packages, help/version on local Node 22.19.0/24.22.1/25.5.0 and
+  local npm-exec. Formal Latest GitHub Release `442614558` has the exact
+  approved 4,020-byte CHANGELOG body.
+- **Remaining boundaries:** no npm/tag/GitHub Release publication is pending.
+  The local global package remains `0.6.0`; concrete upgrade-script
+  preparation/reviews and standalone approval are incomplete. Do not replace
+  an installation used by a live Ink session; require the independently
+  reviewed, quiescent separate-terminal handoff and verified offline artifact/
+  dependency set. This documentation-only follow-up still requires independent
+  review; it does not commit, merge or push the publication record.
 
 ## Previous maintenance: startup model after session trust
 

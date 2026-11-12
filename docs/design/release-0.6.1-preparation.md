@@ -1,11 +1,21 @@
 # Ink 0.6.1 release preparation
 
 Date: 2026-11-12
-Status: design and final independent reviews approved; local candidate verified; publication pending.
+Status: published and verified; global upgrade and publication-record independent review/integration pending.
 Branch/worktree: `release/0.6.1`, `.worktrees/ink-release-0.6.1`.
 Base: `c0a0c0adaaea234d572778e10183443c9c225bac` (clean local main).
 Previous release: `ink-agent@0.6.0`, tag `v0.6.0`, source `5a4056b`.
 Evidence root: `/tmp/ink-release-0.6.1.VVf5Da/`.
+
+> **Publication supersedes earlier pending statements.** The
+> [Publication record](#publication) below records completed main push, hosted
+> CI/Pages, tag/npm publication and the formal Latest GitHub Release on
+> 2026-11-12. It supersedes their preparation-time `pending` / `not performed`
+> statements. The preparation branch/base above, design §§1–5, early execution
+> record and local-candidate results remain historical snapshots, not a claim
+> that publication is still outstanding. Global upgrade is still pending;
+> publication-record review/integration and its separately approved push are
+> also not complete.
 
 ## 1. Goal, identity and approval boundaries
 
@@ -254,3 +264,206 @@ installation was used. Worktree dependencies were reused read-only.
   automated tests cover additional temporary trust/cancellation/abort paths.
   Nonempty test roots were retained as required. No external push/tag/release,
   real npm publication, production-state migration or global upgrade occurred.
+
+## Publication
+
+Published and verified on 2026-11-12. This section records completed operations
+and retained evidence; it authorizes no new publication, rerun, push or global
+installation. The preparation-time observations above remain historical.
+
+### Source, tag and supported Linux CI
+
+- Reviewed candidate: `c03a169fcc1926ee0070153f56b52598aec5ae0b`.
+  Main release merge: `5457731e30539046d4a9c93283c2b4a34bb3d8bb`, integrated
+  with `--no-ff`. Both have tree `3c370309b588d019b438f105ef52d0d89c8623dc`;
+  the merge did not change the reviewed candidate's files.
+- Annotated `v0.6.1` tag object:
+  `48e05bcf0f76507d29e541350b5df9fa84014adb`. Its peeled commit is the release
+  merge, not a later publication-documentation commit. Do not move or recreate it.
+- [CI `43159647864`](https://github.com/FishInSalt/ink/actions/runs/43159647864)
+  succeeded on that exact merge. Both Ubuntu jobs passed prerequisite checks,
+  source/test typechecks, lint, build, release identity and packaging smoke.
+  Full-suite results from `ci-main-result-retry.json` and `ci-main-full.log`:
+
+  | Linux runtime | npm | Test files passed | Tests passed | Skipped |
+  | --- | --- | --- | --- | --- |
+  | Node 22.19.0 | 10.9.3 | 187 | 5,761 | 2 |
+  | Node 24.22.2 | 11.19.1 | 187 | 5,761 | 2 |
+
+  The two unchanged Darwin-only skips are the named-pasteboard JXA integration
+  in `test/images-resize.test.ts` and real packaged-helper load in
+  `test/tui-transport.test.ts`. These Linux results supplement the macOS matrix
+  above; they do not mean 5,763 tests executed on Linux.
+- [Pages `43159647894`](https://github.com/FishInSalt/ink/actions/runs/43159647894)
+  completed both build and deployment successfully for the same merge, as
+  recorded in `pages-main-result.json`.
+- Integrated local evidence (`integrated-verification.json`) also records
+  candidate/main tree equality and all 454 artifact files matching. No source,
+  lockfile, CHANGELOG or workflow changes were needed after the reviewed merge.
+
+### Release workflow and registry visibility
+
+[Release run `43160272629`, attempt 1](https://github.com/FishInSalt/ink/actions/runs/43160272629/attempts/1)
+was a `v0.6.1` tag-push run at the release merge. `release-result.json` and
+`release-full.log` show successful gate and publish jobs, the real npm publish
+step and registry visibility check; dry-run and skipped-publication notices
+were skipped, not mistaken for publication.
+
+The Node 24.22.2/npm 11.19.1 gate passed 187 files / 5,761 tests with the same
+two Darwin-only skips. Gate and publish-job 454-file artifact smokes passed.
+Real `npm publish --ignore-scripts --provenance --access public` returned
+`+ ink-agent@0.6.1` at `2026-11-12T05:19:29Z`. The workflow recorded successful
+publication separately from pending registry verification, then reported
+matching exact-version metadata/source at `2026-11-12T05:23:06Z`.
+
+This was the **first release use of the new 10-minute visibility window**, and
+it passed on attempt 1. There was no workflow rerun, publish retry or dispatch.
+A successful visibility check is not itself cryptographic artifact/provenance
+verification; that separate verification is recorded next. No npm publication
+remains pending; do not rerun this workflow or reuse the version/tag.
+
+### Registry artifact, signatures and provenance
+
+- Exact-version and `latest` registry metadata both select `ink-agent@0.6.1`,
+  `gitHead` `5457731e30539046d4a9c93283c2b4a34bb3d8bb`, and the official
+  `https://registry.npmjs.org/ink-agent/-/ink-agent-0.6.1.tgz` tarball.
+- Downloaded registry archive: 866,810 bytes; SHA-256
+  `ea0b8eb565fee60f9cc53ada0ccc43bcdf2ae29eab9bd1024d5c1d2630eb7a95`;
+  SHA-1 `a44b5bda9ef1bae087b0da4e4a51a5422e3c2ef1`.
+  Integrity:
+  `sha512-cxuX1c3G5q2f79E5QQGyAQ2xh7wo9LDnCPPznu8ofR2lxzh7xMHHcDwrwhO3yVA/B5LnRJcyVXmu1zrKXka0LA==`.
+  All **454 file bodies and modes** match the reviewed local candidate, whose
+  SHA-256 remains
+  `f68d0fa0ae3e3c9b61c9a4defc42e8eb48aeeb62db12399b085a7ab177ed4f31`.
+  The differing compressed archive digests are not application-content changes.
+- Two registry signatures verified for both exact-version and latest metadata.
+  The npm publish attestation and SLSA provenance both passed cryptographic
+  verification using existing Sigstore libraries and refreshed TUF-authenticated
+  trust data in a private scratch cache. Verification includes DSSE, certificate
+  chain/SCT, transparency inclusion proof/checkpoint and signed entry timestamps
+  (SETs), which authenticate Rekor v1 `integratedTime`.
+- Verified artifact digest, repository `https://github.com/FishInSalt/ink`,
+  `.github/workflows/release.yml`, issuer
+  `https://token.actions.githubusercontent.com`, `refs/tags/v0.6.1`, merged
+  source SHA and run `43160272629` / attempt `1` all match. Provenance
+  transparency-log index: `3825553002`; publish-attestation index: `3825606814`.
+- Seven named negative controls were all rejected: `changed-signed-payload`,
+  `wrong-workflow-identity`, `wrong-oidc-issuer`, `wrong-artifact-digest`,
+  `wrong-source-commit`, `missing-rekor-v1-set` and
+  `tampered-rekor-integrated-time`. These include semantic identity/digest
+  controls, not seven distinct signature-corruption tests. The time-tampering
+  control specifically failed with `TLOG_INCLUSION_PROMISE_ERROR`.
+- Successful schema-2 report:
+  `postpublish-prepared/registry-verification-DjEE8u/registry-crypto-verification.json`.
+  Its SHA-256, retained from the verifier's final `VERIFICATION_SUCCESS` output,
+  is `ee1955f6577d57aa14a33ac579d8aece49a3bd1647e564529c9cef8edc065fbf`.
+  This is the external handoff value used by the installer, not a hash taken
+  from an arbitrary self-consistent report as proof of its origin.
+
+Before those real runs, independent reviewer `06c991da` identified two P1
+issues in the **temporary scratch verification tools**, not the product:
+self-consistent report/TUF-cache replacements lacked an independently retained
+report digest, and proof/checkpoint alone did not authenticate Rekor v1
+`integratedTime` when SET was absent. The reviewed fixes require an external
+success-report SHA-256 with complete input/script/cache inventories, and valid
+SETs for every attestation entry. They also add the two SET/time controls.
+Reviewer `06c991da` approved the design and closed the implementation and
+negative-control review before the actual verifier and installer runs. No product bug
+is attributed to these tools, and no tagged product file, dependency, workflow
+or tag was changed. Earlier scratch `FIX-PLAN.md`, `FIX-IMPLEMENTATION.md` and
+README pending statements are retained as pre-execution history; the actual
+successful run reports and logs below establish the executed results.
+
+### Isolated registry installation
+
+`postpublish-prepared/registry-install-SFuP0K/registry-install-verification.json`
+records a passed schema-2 installation at `2026-11-12T06:31:51.955Z`. Its
+`sourceReportSha256` equals the externally retained verifier digest above.
+It reverified the fixed evidence cryptographically offline, including all seven
+negative controls, before installation in a fresh scratch prefix.
+
+- All 454 installed application file bodies/modes match the verified registry
+  archive and reviewed candidate, with no unexpected application files.
+- The actual production set is exactly **12 lockfile-pinned packages**, checked
+  by name/version/resolved/integrity against the reviewed set and isolated
+  cache. It retains pi-tui 1.5.1 and marked 18.0.11, not the additional source
+  dev/shared-root marked 18.1.0. The tested set digest is
+  `12df297ae09fdc59c95883a17d10c426a9a9b9892773ba6abb4562112c5736c4`.
+  This verifies dependency identity and tarball integrity, not independent
+  byte-by-byte comparison of every dependency file.
+- Installed `--help` and exact `Ink 0.6.1` version output passed on local macOS
+  arm64 Node **22.19.0, 24.22.1 and 25.5.0**. Saved runtime-byte consistency was
+  checked; official Node runtime-signature verification is not claimed.
+- Neutral-cwd npm-exec inferred the sole bin from the verified local registry
+  tarball and passed; its application files and exact production set matched.
+  There was no plain `ink` package lookup or global installation.
+- Installation used offline mode, no lifecycle scripts, isolated state/config
+  and a Node API network blocker. The intentional blocker self-test passed and
+  was recorded separately; unexpected network attempts: **0**. This guard is
+  not an operating-system network sandbox. No credentials or original evidence
+  were written, and no global upgrade was authorized or performed.
+
+These are installed help/version/npm-exec and artifact/dependency checks, not a
+new full-CLI PTY acceptance run against the registry artifact or a real-provider
+or entitlement test. The reviewed candidate's earlier 3-scenario/161-assertion PTY
+evidence remains separate.
+
+### GitHub Release
+
+The non-draft, non-prerelease
+[GitHub Release v0.6.1](https://github.com/FishInSalt/ink/releases/tag/v0.6.1),
+id **`442614558`**, titled **Ink 0.6.1**, was published at
+`2026-11-12T07:27:59Z`. The saved tag-specific and latest-release API responses
+both identify this release as Latest. Its **4,020-byte UTF-8 body** equals
+`release-notes.md` and exactly the approved `## [0.6.1] - 2026-11-12` CHANGELOG
+section's notes, byte-for-byte; no earlier notes or generated additions are
+included. It has no separately uploaded release assets.
+
+### Evidence, global upgrade and documentation follow-up
+
+All evidence paths below are relative to `/tmp/ink-release-0.6.1.VVf5Da/`
+(`/private/tmp/...` is its canonical macOS alias):
+
+- `ci-main-result-retry.json`, `ci-main-full.log`, `pages-main-result.json`;
+- `release-result.json`, `release-full.log`;
+- `github-release-0.6.1.json`, `github-latest-release.json`, `release-notes.md`;
+- `registry-verifier-live-attempt-001.log`, `registry-install-live-attempt-001.log`;
+- `postpublish-prepared/registry-verification-DjEE8u/registry-crypto-verification.json`
+  and its retained registry inputs, tarball and private TUF cache;
+- `postpublish-prepared/registry-install-SFuP0K/registry-install-verification.json`
+  and its retained installation, verified registry-tarball copy and tested cache;
+- `postpublish-prepared/FIX-PLAN.md`, `postpublish-prepared/FIX-IMPLEMENTATION.md`,
+  `postpublish-prepared/before-fix-06c991da/` and offline regression evidence;
+- `GLOBAL-UPGRADE-PLAN.md`: a separate upgrade design, not an executed upgrade.
+
+No npm/tag/GitHub Release publication remains pending. The local global package
+at `/opt/homebrew/lib/node_modules/ink-agent` remains **0.6.0**, a real directory;
+`/opt/homebrew/bin/ink` still points to its `bin/ink.js`. Concrete upgrade-script
+preparation, independent reviews and standalone upgrade approval remain
+incomplete. Do not replace the installation used by any live Ink session or
+claim that it has upgraded. Section 5's normal-exit, separate-terminal handoff
+and verified offline artifact/dependency requirements still apply; no background
+upgrade, process termination or production-state/configuration change is part
+of this documentation batch.
+
+This documentation-only follow-up implements approved section 4, step 5 in
+`.worktrees/ink-release-0.6.1-publication`, branch
+`docs/release-0.6.1-publication`, based on `5457731`. It changes only this record,
+RELEASING.md and PROJECT_PLAN.md. Source, version/dependency pins, lockfiles,
+CHANGELOG, workflows and the published tag remain unchanged. Independent
+fresh-context documentation reviewer 369f1f18 returned APPROVE with no required
+fixes after checking original CI, registry, installation and GitHub evidence,
+including a separate offline cryptographic recheck. This closes the document
+review before its local commit. Integration must preserve concurrent main work,
+use `--no-ff` by default and obtain separate approval for any remote push. The
+full product suite is not rerun for these documentation-only changes; the
+candidate and hosted results above remain the product-test evidence.
+
+Documentation validation: `npm run lint` checked 347 files without fixes;
+script syntax, bilingual docs links/parity/anchors and the legacy-name guard
+passed. A separate check of these three changed documents passed **23 relative
+links / 8 anchors**, with 0 failures; `git diff --check` passed. Validation logs
+are under `/tmp/ink-release-0.6.1-docs.YmEqYL/`. Shared dependencies were used
+read-only through a temporary worktree-local symlink, removed afterward; no
+`npm ci` or install was run. These checks supplement, rather than replace, the
+independent documentation review recorded above.
