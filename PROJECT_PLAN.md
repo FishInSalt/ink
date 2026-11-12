@@ -26,11 +26,15 @@
 - **State:** independent design review approved before the five identity-pin
   updates. Local typechecks, lint (352 files), build, identity/npm-version and
   docs-site checks passed. Full suites on macOS Node 22.19.0/24.22.1/25.5.0 each
-  passed 191 files / 6,278 tests with 0 skips. Offline smoke and source/installed
+  passed 191 files / 6,279 tests with 0 skips after the test-only readiness
+  follow-up (original preparation: 6,278). Offline smoke and source/installed
   comparisons passed for 457 application files. Final independent source/notes/
   artifact review APPROVE includes a fresh build and second offline installation.
-  `0.6.2` has not been published. The approved source push at `2535855` passed
-  GitHub CI and Pages, not the release candidate's CI.
+  `0.6.2` has not been published. Candidate `d48c4e8` passed Pages and Linux
+  Node 24, but Node 22.19.0 failed one existing login-recall fixed-wait assertion.
+  The independently approved test-only follow-up uses saved-status readiness
+  and real lock contention without changing production bytes or time budgets;
+  its new exact-SHA Linux CI remains pending. The failed run was not rerun.
 - **Boundaries:** preserve history and use a normal --no-ff integration. Exact
   candidate push, publication-triggering tag push and GitHub Release creation
   require separate confirmation. No global upgrade is included.

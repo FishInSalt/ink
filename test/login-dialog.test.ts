@@ -635,20 +635,73 @@ describe("login dialog (#login-dialog)", () => {
 		await settle();
 	});
 
-	it("10b. the typed key never leaks into input history (up-arrow recall)", async () => {
-		const env = await fresh();
-		env.terminal.data("/login zai\r");
-		await settle();
-		env.terminal.data("sk-secret-1\r");
-		await settle();
-		expect(loadApiKey("zai", env.authPath)).toBe("sk-secret-1");
-		// Submission may render the API key in the dialog; recall must not.
-		const recallMark = env.terminal.writes.length;
-		env.terminal.data("\x1b[A");
-		await settle();
-		expect(env.terminal.frameSince(recallMark)).toContain("/login zai");
-		expect(env.terminal.frameSince(recallMark)).not.toContain("sk-secret-1");
-	});
+	it.each([false, true])(
+		"10b. the typed key never leaks into input history (up-arrow recall; contended=$0)",
+		async (contended) => {
+			const env = await fresh();
+			const { withAuthStoreLock } = await import("../src/provider/auth-storage.js");
+			const acquired = deferred();
+			const release = deferred();
+			const failures: unknown[] = [];
+			let held: Promise<PromiseSettledResult<void>> | undefined;
+			let completion: Promise<void> | undefined;
+			let finished = false;
+			try {
+				if (contended) {
+					held = Promise.allSettled([
+						withAuthStoreLock(env.authPath, async () => {
+							acquired.resolve();
+							await release.promise;
+						}),
+					]).then(([outcome]) => outcome);
+					// Acquisition failure must not leave us waiting for acquired forever.
+					await Promise.race([
+						acquired.promise,
+						held.then((outcome) => {
+							if (outcome.status === "rejected") throw outcome.reason;
+						}),
+					]);
+				}
+				env.terminal.data("/login zai\r");
+				await frameEventually(env, "Enter Z.AI API key", OAUTH_BUDGET);
+				env.terminal.data("sk-secret-1\r");
+				// Own rejection immediately; either outcome means no longer pending.
+				completion = frameEventually(env, "Saved API key for Z.AI", OAUTH_BUDGET).then(
+					() => {
+						finished = true;
+					},
+					(error: unknown) => {
+						finished = true;
+						failures.push(error);
+					},
+				);
+				if (contended) {
+					await settle();
+					expect(loadApiKey("zai", env.authPath)).toBeNull();
+					expect(env.terminal.frameSince(0)).not.toContain("Saved API key for Z.AI");
+					expect(finished).toBe(false);
+				}
+			} catch (error) {
+				failures.unshift(error);
+			} finally {
+				release.resolve();
+				const outcome = await held;
+				if (outcome?.status === "rejected" && !failures.includes(outcome.reason)) {
+					failures.push(outcome.reason);
+				}
+				await completion;
+			}
+			if (failures.length === 1) throw failures[0];
+			if (failures.length > 1) throw new AggregateError(failures, "API-key recall readiness failed");
+			expect(loadApiKey("zai", env.authPath)).toBe("sk-secret-1");
+			// Submission may render the API key in the dialog; recall must not.
+			const recallMark = env.terminal.writes.length;
+			env.terminal.data("\x1b[A");
+			await settle();
+			expect(env.terminal.frameSince(recallMark)).toContain("/login zai");
+			expect(env.terminal.frameSince(recallMark)).not.toContain("sk-secret-1");
+		},
+	);
 
 	it("logout owns the machine through revocation and local clearing; Ctrl+C cancels only revocation", async () => {
 		const fake = await fakeCodexAuth();
