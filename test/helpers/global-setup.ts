@@ -2,20 +2,25 @@ import type { TestProject } from "vitest/node";
 import { createTestRunRoot } from "./test-run-root.js";
 
 export default function setup(project: TestProject): () => void {
-	const run = createTestRunRoot();
-	let unsubscribe: (() => void) | undefined;
-	try {
-		project.provide("testRunRoot", run.root);
-		// Cancellation may precede worker close: restore the coordinator's env
-		// now, but leave the root available until Vitest calls global teardown.
-		unsubscribe = project.vitest.onCancel(() => run.restoreEnvironment());
-		return () => {
-			unsubscribe?.();
-			run.teardown();
-		};
-	} catch (error) {
-		unsubscribe?.();
+	const hadEnv = Object.hasOwn(project.config, "env");
+	const originalEnv = project.config.env;
+	const workerEnv = { ...originalEnv };
+	// Vitest rebuilds worker environments from project.config.env on each run.
+	// Its onCancel listeners are cleared on rerun, unlike this global setup.
+	// Never redirect the coordinator: cancellation cannot restore it too early
+	// or leave it redirected when a later run has no setup listener.
+	const run = createTestRunRoot({ env: workerEnv });
+	const teardown = () => {
+		if (hadEnv) project.config.env = originalEnv;
+		else Reflect.deleteProperty(project.config, "env");
 		run.teardown();
+	};
+	try {
+		project.config.env = workerEnv;
+		project.provide("testRunRoot", run.root);
+		return teardown;
+	} catch (error) {
+		teardown();
 		throw error;
 	}
 }

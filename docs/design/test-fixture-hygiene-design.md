@@ -10,13 +10,17 @@ The approved `simplification-design.md` revision 2, package E supersedes the
 historical §A2 sweep and the 24-hour artifact retention policy below:
 
 - Vitest global setup creates one unique **0700** run root under the original
-  `os.tmpdir()` and sets `TMPDIR`, `TMP`, and `TEMP` before workers start.
-  Workers and plain Node + `--import` tsx lease roles inherit this containment.
-- Teardown restores exact original values, deleting originally absent keys,
-  and attempts **only `rmdir` on its own root**. Nonempty roots are retained
-  and their paths reported. Cancellation restores the coordinator environment;
-  final teardown waits for Vitest's worker shutdown. Setup errors use the same
-  nonrecursive lifecycle. Abruptly killed runs may retain their entire root.
+  `os.tmpdir()` and binds `TMPDIR`, `TMP`, and `TEMP` to a private copy of
+  `project.config.env` before workers start. The coordinator's environment is
+  never redirected. Workers and plain Node + `--import` tsx lease roles inherit
+  containment on every watch rerun, including reruns after cancellation.
+- Global setup runs once; Vitest clears `onCancel` listeners between runs, so
+  containment must not depend on a setup-time cancellation listener. Worker
+  configuration keeps the root until final teardown after worker shutdown.
+  Teardown restores the exact original config/env object and its absent or
+  empty keys, then attempts **only `rmdir` on its own root**. Nonempty roots
+  are retained and their paths reported. Setup errors use the same restoration
+  and nonrecursive lifecycle. Abruptly killed runs may retain their entire root.
 - Per-test cleanup, the settings sandbox's existing cleanup and the FIFO
   fixture's ownership-aware cleanup still own their respective contents.
   Global teardown cannot recursively remove retained FIFO paths, diagnostic
@@ -33,7 +37,10 @@ historical §A2 sweep and the 24-hour artifact retention policy below:
 - Regressions exercise the actual root helper (empty/nonempty, FIFO/diagnostic
   preservation, exact environment restoration and failure), a real Vitest
   worker + Node/tsx bootstrap, all lease interleavings, and failed/no-ready
-  roles. Existing offline and FIFO safety tests remain in place.
+  roles. A noninteractive real Vitest watch API probe covers cancel-first then
+  rerun, and success then cancelled rerun, with absent/empty original temp env
+  and a further successful round. Its bounded parent cleanup owns the entire
+  runner process group. Existing offline and FIFO safety tests remain in place.
 
 The remainder is the historical implementation record, not the current cleanup
 contract. In particular §7's old leak gate and §8's next-day sweep expectation

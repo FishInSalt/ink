@@ -90,44 +90,53 @@ describe("private test run root lifecycle", () => {
 		expect(env).toEqual({ TMPDIR: "", TEMP: "original" });
 	});
 
-	it("global setup error and cancellation restore the coordinator env and preserve contents", () => {
+	it.each([
+		{},
+		{ env: undefined },
+		{ env: {} },
+		{ env: { TMPDIR: "", TMP: undefined, TEMP: "original", OTHER: "unchanged" } },
+	])("global setup scopes worker env and restores the exact config: %j", (config) => {
 		const original = keys.map((key) => [key, process.env[key]] as const);
 		const parent = mkTempDir("ink-test-root-");
-		// Nested roots contain only this test's synthetic diagnostic files;
-		// their owning test removes them after preservation has been checked.
-		process.env.TMPDIR = parent;
-		let cancel!: () => void;
+		const beforeConfig = { ...config };
+		const beforeEnv = config.env;
+		if (beforeEnv) Object.freeze(beforeEnv);
 		let root = "";
-		const unsubscribe = vi.fn();
 		const project = {
+			config,
 			provide(_key: string, value: string) {
 				root = value;
 			},
-			vitest: {
-				onCancel(fn: () => void) {
-					cancel = fn;
-					return unsubscribe;
-				},
-			},
 		} as unknown as TestProject;
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		process.env.TMPDIR = parent;
+		delete process.env.TMP;
+		process.env.TEMP = "";
+		const coordinator = keys.map((key) => [key, process.env[key]]);
 		try {
 			const teardown = setup(project);
-			writeFileSync(path.join(root, "diagnostic"), "cancelled");
-			cancel();
-			expect(process.env.TMPDIR).toBe(parent);
-			for (const [key, value] of original) if (key !== "TMPDIR") expect(process.env[key]).toBe(value);
-			expect(readFileSync(path.join(root, "diagnostic"), "utf8")).toBe("cancelled");
+			expect(keys.map((key) => [key, process.env[key]])).toEqual(coordinator);
+			for (const key of keys) expect(project.config.env[key]).toBe(root);
+			expect(config.env).not.toBe(beforeEnv);
+			writeFileSync(path.join(root, "diagnostic"), "retained through reruns");
 			teardown();
-			expect(unsubscribe).toHaveBeenCalledOnce();
+			expect(config).toEqual(beforeConfig);
+			expect(Object.hasOwn(config, "env")).toBe(Object.hasOwn(beforeConfig, "env"));
+			expect(config.env).toBe(beforeEnv);
+			expect(keys.map((key) => [key, process.env[key]])).toEqual(coordinator);
+			expect(readFileSync(path.join(root, "diagnostic"), "utf8")).toBe("retained through reruns");
 			expect(warn).toHaveBeenCalledWith(expect.stringContaining(root));
+
 			project.provide = (_key, value) => {
 				root = value as string;
 				writeFileSync(path.join(root, "diagnostic"), "setup error");
 				throw new Error("provide failed");
 			};
 			expect(() => setup(project)).toThrow("provide failed");
-			expect(process.env.TMPDIR).toBe(parent);
+			expect(config).toEqual(beforeConfig);
+			expect(Object.hasOwn(config, "env")).toBe(Object.hasOwn(beforeConfig, "env"));
+			expect(config.env).toBe(beforeEnv);
+			expect(keys.map((key) => [key, process.env[key]])).toEqual(coordinator);
 			expect(readFileSync(path.join(root, "diagnostic"), "utf8")).toBe("setup error");
 		} finally {
 			warn.mockRestore();

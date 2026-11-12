@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { expect, inject, it } from "vitest";
 import { NETWORK_PRELOAD } from "../helpers/cli-fixture.js";
 
-it("probes the actual global-setup -> worker -> Node+tsx bootstrap", () => {
+it("probes the actual global-setup -> worker -> Node+tsx bootstrap", async () => {
 	const root = inject("testRunRoot");
 	expect(tmpdir()).toBe(root);
 	for (const key of ["TMPDIR", "TMP", "TEMP"]) expect(process.env[key]).toBe(root);
@@ -35,4 +35,15 @@ it("probes the actual global-setup -> worker -> Node+tsx bootstrap", () => {
 	// even after the settings sandbox has cleaned its own contents.
 	writeFileSync(path.join(root, "bootstrap-diagnostic"), "retained evidence");
 	writeFileSync(inject("bootstrapReport"), JSON.stringify({ root, fixture, child, home: process.env.HOME }));
+	const control = inject("bootstrapControl");
+	if (control) {
+		// Keep the run active until the API driver has cancelled or continued it.
+		// No sleep-based guess about worker startup or cancellation timing.
+		writeFileSync(control.ready, "");
+		const deadline = Date.now() + 10_000;
+		while (!existsSync(control.release)) {
+			if (Date.now() >= deadline) throw new Error(`bootstrap release timeout: ${control.release}`);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	}
 });
