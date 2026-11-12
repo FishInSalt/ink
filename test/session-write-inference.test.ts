@@ -14,6 +14,7 @@ import {
 	gate,
 	makeConsole,
 	makeRenderer,
+	type ScriptStep,
 	scriptedProvider,
 	ticks,
 	user,
@@ -65,7 +66,7 @@ function failAppend(mode: Mode, error: Error, when: (line: string) => boolean = 
 	return () => failed;
 }
 
-async function mainFixture(tools: Tool[] = [], scripts = [done()]) {
+async function mainFixture(tools: Tool[] = [], scripts: ScriptStep[] = [done()]) {
 	const base = mkTempDir("ink-write-inference-");
 	const cwd = path.join(base, "project");
 	fs.mkdirSync(cwd);
@@ -230,6 +231,142 @@ describe("write-invalid inference boundaries", () => {
 		});
 		expect(outcome.status).toBe("crash");
 		expect(requests).toBe(1);
+	});
+});
+
+describe("overflow retry preserves persistence failures", () => {
+	function nativeFailure(base: string): Error {
+		try {
+			actual.appendFileSync(path.join(base, "context_length", "missing.jsonl"), "fixture");
+		} catch (error) {
+			return error as Error;
+		}
+		throw new Error("expected native ENOENT");
+	}
+
+	it("preserves the original main assistant append error after overflow recovery", async () => {
+		const env = await mainFixture(
+			[],
+			[
+				() => {
+					throw new Error("context window exceeded");
+				},
+				done(),
+				done(),
+			],
+		);
+		const store = env.runner.session!;
+		for (const message of [
+			user("older material".repeat(9000)),
+			done(),
+			user("recent material".repeat(9000)),
+			done(),
+		])
+			store.appendMessage(message);
+		env.runner.resumeSession(store.header.id);
+		const failure = nativeFailure(env.base);
+		failAppend(
+			"zero",
+			failure,
+			(line) => line.startsWith('{"type":"message"') && line.includes('"role":"assistant"'),
+		);
+		await expect(env.runner.runTurn({ userMessage: "continue" })).rejects.toBe(failure);
+		expect(env.requests).toHaveLength(3);
+		expect(() => env.runner.session!.assertWritable()).toThrow(/reopen with \/resume/);
+	});
+
+	it.each([false, true])("preserves a child assistant append failure (overflow retry=%s)", async (retry) => {
+		const base = mkTempDir("ink-child-assistant-write-");
+		const store = createSession(base, base);
+		for (const message of [user("old".repeat(1000)), done(), user("recent material".repeat(100)), done()])
+			store.appendMessage(message);
+		const failure = nativeFailure(base);
+		const requests: LLMRequest[] = [];
+		failAppend(
+			"zero",
+			failure,
+			(line) => line.startsWith('{"type":"message"') && line.includes('"role":"assistant"'),
+		);
+		const scripts: ScriptStep[] = retry
+			? [
+					() => {
+						throw new Error("context window exceeded");
+					},
+					done(),
+					done(),
+				]
+			: [done()];
+		const outcome = await runSubagent({
+			provider: scriptedProvider(scripts, requests),
+			model: "test-model",
+			system: "test",
+			prompt: "continue",
+			tools: [],
+			session: store,
+			initialHistory: store.buildContext().messages,
+			onMessage: (message) => store.appendMessage(message),
+			autoCompact: false,
+			settings: { contextWindow: 2500, reserveTokens: 500, keepRecentTokens: 40 },
+		});
+		expect(outcome.status).toBe("crash");
+		expect(outcome.reason).toBe(failure.message);
+		expect(requests).toHaveLength(retry ? 3 : 1);
+	});
+
+	it("preserves a second child checkpoint failure inside the overflow retry", async () => {
+		const base = mkTempDir("ink-child-retry-write-");
+		const store = createSession(base, base);
+		for (const message of [user("old".repeat(1000)), done(), user("recent material".repeat(100)), done()])
+			store.appendMessage(message);
+		const failure = nativeFailure(base);
+		let taskCalls = 0;
+		let summaries = 0;
+		let checkpoints = 0;
+		const failed = failAppend(
+			"zero",
+			failure,
+			(line) => line.includes('"type":"compaction"') && ++checkpoints === 2,
+		);
+		const outcome = await runSubagent({
+			provider: {
+				name: "mock",
+				async *stream(request) {
+					let message: ReturnType<typeof done>;
+					if (request.system.startsWith("You are a context summarization assistant.")) {
+						summaries++;
+						message = done();
+						yield { type: "text_delta", text: "done" };
+					} else {
+						if (++taskCalls === 1) throw new Error("context window exceeded");
+						message = toolCall();
+						message.blocks.push({ type: "text", text: "progress ".repeat(1500) });
+						message.usage = { inputTokens: 5000, outputTokens: 5 };
+					}
+					yield { type: "message_end", message };
+				},
+			},
+			model: "test-model",
+			modelReference: "anthropic/test-model",
+			system: "test",
+			prompt: "continue",
+			tools: [
+				{
+					name: "probe",
+					description: "probe",
+					parameters: { type: "object" },
+					execute: async () => ({ output: "done" }),
+				},
+			],
+			session: store,
+			initialHistory: store.buildContext().messages,
+			onMessage: (message) => store.appendMessage(message),
+			autoCompact: true,
+			settings: { contextWindow: 2500, reserveTokens: 500, keepRecentTokens: 40 },
+		});
+		expect(failed()).toBe(true);
+		expect(outcome.status).toBe("crash");
+		expect(outcome.reason).toBe(failure.message);
+		expect([taskCalls, summaries, checkpoints]).toEqual([2, 2, 2]);
 	});
 });
 

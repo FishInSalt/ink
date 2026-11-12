@@ -458,6 +458,11 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 	} catch (err) {
 		const crashWith = (reason: string): SubagentOutcome => settled("crash", reason);
 		const rawMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+		try {
+			options.session?.assertWritable();
+		} catch {
+			return crashWith(rawMessage(err));
+		}
 
 		// #overflow-recovery (child): a live context-overflow error gets ONE
 		// compact-and-retry — the main loop's runTurnOrRecoverFromOverflow
@@ -505,9 +510,14 @@ export async function runSubagent(options: SubagentOptions): Promise<SubagentOut
 			// SA-04: both rounds' reports were counted at production.
 			return settled(result.stopReason);
 		} catch (retryErr) {
-			// Review P1-2: a NON-overflow retry failure (401/500/network) keeps its
-			// raw message — never mislabeled as overflow (runner.ts:775 parity).
-			if (fastSummaryFailed || !isContextOverflowError(retryErr)) return crashWith(rawMessage(retryErr));
+			try {
+				options.session?.assertWritable();
+			} catch {
+				return crashWith(rawMessage(retryErr));
+			}
+			// Persistence errors must bypass the retry classifier as well.
+			if (sessionWriteFailed || fastSummaryFailed || !isContextOverflowError(retryErr))
+				return crashWith(rawMessage(retryErr));
 			return crashWith(
 				overflowGuidance(guidanceTokens(), settings, "still over the window after one compaction"),
 			);

@@ -1665,6 +1665,11 @@ class RunnerImpl implements Runner {
 					health,
 				);
 			} catch (retryErr) {
+				try {
+					context.session?.assertWritable();
+				} catch {
+					throw retryErr;
+				}
 				if (!isContextOverflowError(retryErr)) throw retryErr;
 				const retryCause = retryErr instanceof Error ? retryErr.message : String(retryErr);
 				this.logger.log("run_error", { source: "overflow-recovery", message: `retry failed: ${retryCause}` });
