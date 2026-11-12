@@ -5,7 +5,7 @@ import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_MAX_TOKENS } from "../src/core/constants.js";
 import { AGENTS_SKILLS_PATH, INK_RESOURCE_PATHS } from "../src/core/resource-paths.js";
-import { effectiveSettings, loadSettings } from "../src/core/settings.js";
+import { effectiveSettings, loadSettings, loadSettingsSnapshot } from "../src/core/settings.js";
 import * as trust from "../src/core/trust.js";
 import { ExtensionRegistry } from "../src/extensions/registry.js";
 import { discoverMcpConfig } from "../src/mcp/config.js";
@@ -22,6 +22,7 @@ const source = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
 const file = ts.createSourceFile("cli.ts", source, ts.ScriptTarget.Latest, true);
 const names = new Set([
 	"parseArgs",
+	"applyConfiguredModelDefaults",
 	"runnerOptions",
 	"resolveProjectTrust",
 	"broadAncestorWarning",
@@ -180,6 +181,8 @@ function harness(
 		requestedModel: () => ({ model: "test-model", source: "cli" }),
 		envThinking: () => undefined,
 		loadSettings: () => loadSettings(paths.globalPath),
+		loadSettingsSnapshot: (input: Parameters<typeof loadSettingsSnapshot>[0]) =>
+			loadSettingsSnapshot({ ...input, globalPath: paths.globalPath }),
 		effectiveSettings: (input: Parameters<typeof effectiveSettings>[0]) =>
 			effectiveSettings({ ...input, globalPath: paths.globalPath }),
 		resolveShell: () => "tui",

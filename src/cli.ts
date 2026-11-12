@@ -7,7 +7,7 @@ import type { ImageBlock } from "./core/messages.js";
 import { killTrackedDetachedChildren } from "./core/process-tree.js";
 import { AGENTS_SKILLS_PATH, INK_RESOURCE_PATHS } from "./core/resource-paths.js";
 import { listSessions, resolveSession } from "./core/session/manager.js";
-import { effectiveSettings, loadProjectSettings, loadSettings } from "./core/settings.js";
+import { effectiveSettings, loadSettings, loadSettingsSnapshot } from "./core/settings.js";
 import { buildSkillCommands, loadSkills, type Skill } from "./core/skills.js";
 import {
 	askTrustOnce,
@@ -48,43 +48,32 @@ import { resolveShell } from "./tui.js";
  *  Removing this rung is a separate, budgeted milestone (design §8). */
 const BUILTIN_MODEL = "claude-sonnet-4-5";
 
-// M15 precedence: INK_MODEL > global settings defaultModel > project settings
-// defaultModel (ONLY when the trust store already says trusted — parse time
-// precedes the interactive trust resolution, and "unknown" must be the
-// conservative skip) > builtin.
-// #startup-model-resolution D2: the rung rides along as `source` — only
-// `builtin` tolerates resolution; every configured rung is a user decision
-// (P5: explicit sources are never overridden).
-const requestedModel = (argv: string[] = []): { model: string; source: ModelSource } => {
+// Parsing is config/trust-I/O free, including help/version. Keep defined-but-
+// empty INK_MODEL selections; only actual CLI flags may override them here.
+const requestedModel = (): { model: string; source: ModelSource } => {
 	const env = process.env.INK_MODEL;
-	if (env !== undefined) return { model: env, source: "env" };
-	// --no-trust refuses this directory's .ink/ resources (review P1-3): the
-	// project settings file must not seed the model the flag just refused —
-	// the parse-time default runs before trustDecision is known, so the flag
-	// is pre-scanned from raw argv.
-	if (argv.includes("--no-trust")) {
-		const globalDefault = loadSettings().defaultModel;
-		return globalDefault !== undefined
-			? { model: globalDefault, source: "global" }
-			: { model: BUILTIN_MODEL, source: "builtin" };
-	}
-	// project WINS over global (pi's scope semantics — the design table's
-	// "env > project > global > default"; smoke caught the inverted order)
-	const projectDefault = projectDefaultModelIfTrusted();
-	if (projectDefault !== undefined) return { model: projectDefault, source: "project" };
-	const globalDefault = loadSettings().defaultModel;
-	if (globalDefault !== undefined) return { model: globalDefault, source: "global" };
-	return { model: BUILTIN_MODEL, source: "builtin" };
+	return env !== undefined ? { model: env, source: "env" } : { model: BUILTIN_MODEL, source: "builtin" };
 };
 
-function projectDefaultModelIfTrusted(): string | undefined {
-	try {
-		const home = homedir();
-		const data = readTrustFile(defaultTrustStorePath(home));
-		if (nearestTrustEntry(data, process.cwd())?.trusted !== true) return undefined;
-		return loadProjectSettings(process.cwd(), true).defaultModel;
-	} catch {
-		return undefined; // corrupt store → treat as unknown → skip (conservative)
+/** Apply defaults only after this startup's trust decision (including a
+ *  session-only grant). One snapshot supplies both value and provenance;
+ *  never re-query persistent trust or change explicit -m intent. D2 follows
+ *  this step and may resolve only the remaining builtin selection. */
+function applyConfiguredModelDefaults(opts: CliOptions, projectTrusted: boolean): void {
+	if (opts.modelSource === "cli" || opts.modelSource === "env") return;
+	const { project, global } = loadSettingsSnapshot({
+		cwd: process.cwd(),
+		projectAllowed: projectTrusted,
+	});
+	if (project.defaultModel !== undefined) {
+		opts.model = project.defaultModel;
+		opts.modelSource = "project";
+	} else if (global.defaultModel !== undefined) {
+		opts.model = global.defaultModel;
+		opts.modelSource = "global";
+	} else {
+		opts.model = BUILTIN_MODEL;
+		opts.modelSource = "builtin";
 	}
 }
 
@@ -227,7 +216,7 @@ on/off, codex effort). Set with --thinking <level> or INK_THINKING, in
 a session with /think <level> (bare /think or Shift+Tab cycles).
 `;
 function parseArgs(argv: string[]): CliOptions {
-	const requested = requestedModel(argv);
+	const requested = requestedModel();
 	const opts: CliOptions = {
 		prompt: undefined,
 		fileArgs: [],
@@ -542,7 +531,7 @@ async function runInteractive(opts: CliOptions, argv: string[]): Promise<void> {
 	// outcomes — queues here and prints AFTER the welcome panel/banner, so
 	// the greeting tops the screen instead of drowning under environment
 	// noise. Errors and interactive asks print live (they use other paths);
-	// print mode doesn't wrap at all and keeps its byte contract.
+	// print mode only buffers trust notes until credential preflight succeeds.
 	const startupNotes: string[] | null = interactive ? [] : null;
 	if (startupNotes !== null) {
 		const liveNote = renderer.note.bind(renderer);
@@ -558,19 +547,6 @@ async function runInteractive(opts: CliOptions, argv: string[]): Promise<void> {
 			released = true;
 			for (const line of startupNotes.splice(0)) liveNote(line);
 		};
-	}
-	// #startup-model-resolution (D2): the requested model came from the
-	// builtin rung, is unusable, and exactly ONE credential source exists →
-	// resolve to that family's switchHint before the runner is built. The
-	// note rides the deferral wrapper above (it lands after the welcome
-	// panel in the TUI, live in the scripted shell). Explicit sources and
-	// the resume path are untouched (P5; D3 owns -c/-r inside the runner).
-	const startupDecision = decideStartupResolution(opts);
-	if (startupDecision.kind === "resolve") {
-		opts.model = startupDecision.fallback.reference;
-		renderer.note(
-			`▪ no startup model configured — using ${startupDecision.fallback.reference} (only configured provider; /model to change, /settings defaultModel to keep)`,
-		);
 	}
 	let runner: Runner;
 	let commands: readonly RegisteredExtensionCommand[] = [];
@@ -589,6 +565,17 @@ async function runInteractive(opts: CliOptions, argv: string[]): Promise<void> {
 				? (cwd, resources) => askTrustViaTui({ transcript: transcript, cwd, resources })
 				: undefined,
 		);
+		applyConfiguredModelDefaults(opts, projectTrusted);
+		// D2 runs after defaults: only an unusable builtin may resolve to the
+		// unique configured family. The note uses the startup deferral above;
+		// configured sources and actual restores remain untouched (D3).
+		const startupDecision = decideStartupResolution(opts);
+		if (startupDecision.kind === "resolve") {
+			opts.model = startupDecision.fallback.reference;
+			renderer.note(
+				`▪ no startup model configured — using ${startupDecision.fallback.reference} (only configured provider; /model to change, /settings defaultModel to keep)`,
+			);
+		}
 		const extensions = await loadExtensionSetup(opts, renderer, confirm?.handler, projectTrusted);
 		extensionRegistry = extensions.runtime;
 		const skills = loadSkillSetup(opts, renderer, projectTrusted);
@@ -973,13 +960,9 @@ async function runPrint(opts: CliOptions, argv: string[]): Promise<void> {
 		liveTools: false,
 		toolStyle: "two-line",
 	});
-	// #fresh-install-hint (D3, round-1 F1/N8): the pre-flight runs BEFORE any
-	// runner construction — createRunner creates the run logger AND the
-	// session store — but AFTER @file argument validation (a missing file is
-	// the user's more immediate error and owns the exit). Print mode has no
-	// /login, so the error teaches the env var + the interactive path. (The
-	// trust store MAY be written earlier by --trust/--no-trust — the
-	// recorded exception, design D3 side-effect scope.)
+	// Validate attachments first, then trust/defaults/credential preflight,
+	// before ANY loaders or Runner/session/logger/MCP construction. Explicit
+	// trust decisions may persist even when model preflight then fails.
 	let attachImages: ImageBlock[] | undefined;
 	if (opts.fileArgs.length > 0) {
 		const processed = await processFileArguments(opts.fileArgs);
@@ -997,16 +980,31 @@ async function runPrint(opts: CliOptions, argv: string[]): Promise<void> {
 			opts.prompt = undefined;
 		}
 	}
-	const unavailable = printModelUnusable(opts);
-	if (unavailable !== undefined) {
-		process.stderr.write(red(`ink: ${unavailable}\n`));
-		process.exitCode = 1;
+	let projectTrusted: boolean;
+	const trustNotes: string[] = [];
+	const liveNote = renderer.note;
+	try {
+		// Successful startup retains the original stdout note order. Until
+		// preflight succeeds, trust notes must not contaminate stdout.
+		renderer.note = (text: string): void => {
+			trustNotes.push(text);
+		};
+		try {
+			projectTrusted = await resolveProjectTrust(opts, renderer, false);
+		} finally {
+			renderer.note = liveNote;
+		}
+		applyConfiguredModelDefaults(opts, projectTrusted);
+		const unavailable = printModelUnusable(opts);
+		if (unavailable !== undefined) throw new Error(unavailable);
+	} catch (err) {
+		for (const line of trustNotes.splice(0)) process.stderr.write(`${line}\n`);
+		reportStartupError(err);
 		return;
 	}
+	for (const line of trustNotes.splice(0)) renderer.note(line);
 	let runner: Runner;
-	let projectTrusted: boolean;
 	try {
-		projectTrusted = await resolveProjectTrust(opts, renderer, false);
 		const extensions = await loadExtensionSetup(opts, renderer, undefined, projectTrusted);
 		const skills = loadSkillSetup(opts, renderer, projectTrusted);
 		runner = await createRunner({
