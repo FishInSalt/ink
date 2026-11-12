@@ -159,17 +159,21 @@ export interface RunnerOptions {
 	sessionBaseDir?: string; // hermetic tests (passed through to the session manager)
 	/** Hermetic tests: the settings file path (default ~/.ink/settings.json). */
 	settingsPath?: string;
-	/** M15: project settings visibility (the M8 trust gate result for the
-	 *  session cwd — false keeps <cwd>/.ink/settings.json unread). */
+	/** Session trust for project settings, agents and system-prompt files.
+	 *  Only true grants access; legacy per-resource false still restricts it.
+	 *  When absent, retain the legacy defaults (false / true / false). */
+	projectTrusted?: boolean;
+	/** Legacy scope restriction for project settings; default false when
+	 *  projectTrusted is absent. False always keeps project settings unread. */
 	projectSettingsAllowed?: boolean;
 	/** Hermetic tests: overrides ~/.ink/agents for the agent registry (M5c). */
 	agentsHomeDir?: string;
-	/** M8 trust gate: false skips `<cwd>/.ink/agents` (global agents still load). */
+	/** Legacy scope restriction for project agents; default true when
+	 *  projectTrusted is absent. Global agents still load after denial. */
 	agentsProjectAllowed?: boolean;
-	/** #system-md: the session-resolved trust bit for project SYSTEM.md /
-	 *  APPEND_SYSTEM.md. The loader must NOT re-read the trust store — the
-	 *  "session" answer grants without recording (design review P1-1).
-	 *  Default false (conservative when not told). */
+	/** Legacy scope restriction for project SYSTEM.md / APPEND_SYSTEM.md;
+	 *  default false when projectTrusted is absent. Loaders use the captured
+	 *  session permission, never re-read the trust store. */
 	systemPromptProjectAllowed?: boolean;
 	/** Hermetic tests: overrides ~/.ink for SYSTEM.md/APPEND_SYSTEM.md
 	 *  discovery (design review P1-2 — a real global file on the dev machine
@@ -421,11 +425,29 @@ type TaskOwnerScope = {
 	binding: Readonly<{ session: SessionStore | null }> | undefined;
 };
 
+/** Capture the session decision once, without widening legacy restrictions.
+ * Invalid JavaScript canonical inputs deny rather than becoming grants. */
+function projectResourcePermissions(options: RunnerOptions) {
+	if (options.projectTrusted === undefined) {
+		return {
+			settings: options.projectSettingsAllowed === true,
+			agents: options.agentsProjectAllowed ?? true,
+			systemPrompt: options.systemPromptProjectAllowed ?? false,
+		};
+	}
+	return {
+		settings: options.projectTrusted === true && options.projectSettingsAllowed !== false,
+		agents: options.projectTrusted === true && options.agentsProjectAllowed !== false,
+		systemPrompt: options.projectTrusted === true && options.systemPromptProjectAllowed !== false,
+	};
+}
+
 class RunnerImpl implements Runner {
 	readonly history: AgentMessage[] = [];
 	model: string;
 	private modelSpeed: ModelSpeed | undefined;
 	private readonly options: RunnerOptions;
+	private readonly projectPermissions: ReturnType<typeof projectResourcePermissions>;
 	private readonly logger: RunLogger;
 	private provider: LLMProvider; // wrapped with logging once; /model may swap it (multi-provider)
 	/** #fresh-install-hint (D7): true while the live provider instance is
@@ -457,7 +479,7 @@ class RunnerImpl implements Runner {
 	/** M15: whether <cwd>/.ink/settings.json participates this session (the
 	 *  startup trust resolution — /settings uses the same gate for writes). */
 	get projectSettingsAllowed(): boolean {
-		return this.options.projectSettingsAllowed === true;
+		return this.projectPermissions.settings;
 	}
 
 	get runnerCwd(): string {
@@ -514,6 +536,7 @@ class RunnerImpl implements Runner {
 		speed?: ModelSpeed,
 	) {
 		this.options = options;
+		this.projectPermissions = projectResourcePermissions(options);
 		this.logger = logger;
 		this.provider = provider;
 		// #fresh-install-hint (D7): an injected fake provider marks the whole
@@ -537,7 +560,7 @@ class RunnerImpl implements Runner {
 		// never the process cwd — runner tests and multi-cwd callers rely on it.
 		this.effective = effectiveSettings({
 			cwd: this.options.cwd ?? process.cwd(),
-			projectAllowed: this.options.projectSettingsAllowed === true,
+			projectAllowed: this.projectPermissions.settings,
 			globalPath: this.options.settingsPath,
 		});
 		this.modelSelectionHasIntent =
@@ -595,7 +618,7 @@ class RunnerImpl implements Runner {
 		// this.tools (name-filtered at spawn), so push
 		// after the array is built. Agents load once from disk (M5c) — new agent
 		// files need a restart, like extension changes.
-		this.agents = loadAgentDefinitions(options.cwd, options.agentsHomeDir, options.agentsProjectAllowed);
+		this.agents = loadAgentDefinitions(options.cwd, options.agentsHomeDir, this.projectPermissions.agents);
 		this.tools.push(
 			createTaskTool({
 				getProvider: () => this.provider,
@@ -788,7 +811,7 @@ class RunnerImpl implements Runner {
 		// in override mode it is the sole surviving machine fact (review P2-5).
 		const promptFiles = loadSystemPromptFiles(
 			this.options.cwd,
-			this.options.systemPromptProjectAllowed ?? false,
+			this.projectPermissions.systemPrompt,
 			this.options.systemPromptHomeDir ?? os.homedir(),
 		);
 		this.systemSources = {

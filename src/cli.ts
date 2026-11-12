@@ -5,6 +5,7 @@ import { DEFAULT_MAX_TOKENS } from "./core/constants.js";
 import { processFileArguments } from "./core/file-processor.js";
 import type { ImageBlock } from "./core/messages.js";
 import { killTrackedDetachedChildren } from "./core/process-tree.js";
+import { AGENTS_SKILLS_PATH, INK_RESOURCE_PATHS } from "./core/resource-paths.js";
 import { listSessions, resolveSession } from "./core/session/manager.js";
 import { effectiveSettings, loadProjectSettings, loadSettings } from "./core/settings.js";
 import { buildSkillCommands, loadSkills, type Skill } from "./core/skills.js";
@@ -576,8 +577,9 @@ async function runInteractive(opts: CliOptions, argv: string[]): Promise<void> {
 	// Hoisted out of the try: runRepl (below the block) needs the registry
 	// for the extension status sink; the runner got it inside.
 	let extensionRegistry: ExtensionRegistry | undefined;
+	let projectTrusted: boolean;
 	try {
-		const projectTrusted = await resolveProjectTrust(
+		projectTrusted = await resolveProjectTrust(
 			opts,
 			renderer,
 			interactive,
@@ -626,11 +628,9 @@ async function runInteractive(opts: CliOptions, argv: string[]): Promise<void> {
 			}),
 		];
 		runner = await createRunner({
-			projectSettingsAllowed: projectTrusted,
 			...runnerOptions(opts, argv, renderer),
-			systemPromptProjectAllowed: projectTrusted,
+			projectTrusted,
 			deferInit: !interactive,
-			agentsProjectAllowed: projectTrusted,
 			extensions: extensions.runtime,
 			extensionFailures: extensions.failures,
 			skills: skills.skills,
@@ -643,7 +643,7 @@ async function runInteractive(opts: CliOptions, argv: string[]): Promise<void> {
 	// stays tool-agnostic; the manager splices into the live tools array and
 	// the REPL drives its run boundaries. Skipped entirely when the settings
 	// gate is off (D4) — no discovery, no spawns, /mcp reports the gate.
-	const mcp = createMcpSetup(renderer, runner);
+	const mcp = createMcpSetup(renderer, runner, projectTrusted);
 	let code: number;
 	try {
 		code = await runRepl({
@@ -678,23 +678,23 @@ async function runInteractive(opts: CliOptions, argv: string[]): Promise<void> {
 /** M18 MCP setup (interactive + print): discovery, gate, manager, and the
  *  initial fire-and-forget connections. Returns undefined when disabled or
  *  unconfigured — callers treat that as "module inert" (D4).
- *  M19 batch 0: project-tier config rides the M8 trust gate (the same
- *  session-resolved `projectSettingsAllowed` bit as extensions/settings).
+ *  Project-tier config uses the session trust decision directly, independent
+ *  of the Runner's legacy settings-only scope restriction.
  *  INK_MCP=0 is the env escape hatch (mirrors INK_AUTOCOMPACT) for CI and
  *  quick diagnostics. */
-function createMcpSetup(renderer: Renderer, runner: Runner): McpManager | undefined {
+function createMcpSetup(renderer: Renderer, runner: Runner, projectTrusted: boolean): McpManager | undefined {
 	if (process.env.INK_MCP === "0") return undefined;
 	const settings = runner.effectiveSettings();
 	if (settings.mcp?.enabled === false) return undefined;
 	const discovered = discoverMcpConfig({
-		cwd: process.cwd(),
-		projectAllowed: runner.projectSettingsAllowed,
+		cwd: runner.runnerCwd,
+		projectAllowed: projectTrusted,
 	});
 	for (const note of discovered.notes) renderer.note(note);
 	if (discovered.servers.length === 0) return undefined;
 	const manager = new McpManager({
 		servers: discovered.servers,
-		cwd: process.cwd(),
+		cwd: runner.runnerCwd,
 		version: VERSION,
 		renderer,
 		// prompt-audit P7: the catalog is assembled at warmup, before any MCP
@@ -889,10 +889,10 @@ async function resolveProjectTrust(
 	const cwd = process.cwd();
 	const resources = trustRequiringResources(cwd, homedir()).filter(
 		(r) =>
-			!(opts.noExtensions && r === ".ink/extensions") && // -ne already refuses that tier
+			!(opts.noExtensions && r === INK_RESOURCE_PATHS.extensions) && // -ne already refuses that tier
 			// --no-skills likewise (review A8: "." is the degenerate ancestor entry
 			// when cwd itself sits inside a .agents/skills chain)
-			!(opts.noSkills && (r === ".ink/skills" || r.endsWith(".agents/skills") || r === ".")),
+			!(opts.noSkills && (r === INK_RESOURCE_PATHS.skills || r.endsWith(AGENTS_SKILLS_PATH) || r === ".")),
 	);
 	if (resources.length === 0) return true; // zero friction for plain repos
 	const store = defaultTrustStorePath(homedir());
@@ -1004,16 +1004,15 @@ async function runPrint(opts: CliOptions, argv: string[]): Promise<void> {
 		return;
 	}
 	let runner: Runner;
+	let projectTrusted: boolean;
 	try {
-		const projectTrusted = await resolveProjectTrust(opts, renderer, false);
+		projectTrusted = await resolveProjectTrust(opts, renderer, false);
 		const extensions = await loadExtensionSetup(opts, renderer, undefined, projectTrusted);
 		const skills = loadSkillSetup(opts, renderer, projectTrusted);
 		runner = await createRunner({
-			projectSettingsAllowed: projectTrusted,
 			...runnerOptions(opts, argv, renderer),
+			projectTrusted,
 			interactive: false, // #fresh-install-hint F3: print mode — no D2 note on stdout
-			systemPromptProjectAllowed: projectTrusted,
-			agentsProjectAllowed: projectTrusted,
 			extensions: extensions.runtime,
 			extensionFailures: extensions.failures,
 			skills: skills.skills, // commands stay interactive-only (§11.1)
@@ -1048,7 +1047,7 @@ async function runPrint(opts: CliOptions, argv: string[]): Promise<void> {
 		// one-shot has no second run to flush them into — parking beats leaking
 		// an unexecutable tool into the wire request, review P2-3); close lives
 		// in finally so a failed run still kills the children (review P1-2).
-		const mcp = createMcpSetup(renderer, runner);
+		const mcp = createMcpSetup(renderer, runner, projectTrusted);
 		try {
 			mcp?.onRunStart();
 			const result = await runner.runTurn({
