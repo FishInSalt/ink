@@ -550,7 +550,7 @@ describe("Fast child compaction and retries", () => {
 			for (const message of history) session?.appendMessage(message);
 			const taskRequests: LLMRequest[] = [];
 			const summaries: LLMRequest[] = [];
-			const diagnostic = `Codex request rejected: ${code}`;
+			const diagnostic = "Fast request rejected; use /model to explicitly select the normal model";
 			const provider: LLMProvider = {
 				name: "openai-codex",
 				async *stream(request) {
@@ -561,11 +561,7 @@ describe("Fast child compaction and retries", () => {
 							yield { type: "message_end", message: answer() };
 							return;
 						}
-						throw new CodexResponseError(diagnostic, {
-							code,
-							status: 400,
-							param: code === "context_length_exceeded" ? "input" : "service_tier",
-						});
+						throw new CodexResponseError(diagnostic, { code, status: 400, param: "service_tier" });
 					}
 					taskRequests.push(request);
 					if (overflow && taskRequests.length === 1) throw new Error("context length exceeded");

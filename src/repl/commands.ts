@@ -1309,11 +1309,9 @@ export const COMMANDS: readonly SlashCommand[] = [
 					summarize = false;
 					customInstructions = undefined;
 					if (picked === null) return "handled"; // cancelled the command
-					// A user leaf is re-editable: navigating moves BEFORE it.
-					// This also recovers a first failed continuation after a crash.
-					const pickedEntry = session.getEntry(picked);
-					const reeditUser = pickedEntry?.type === "message" && pickedEntry.message.role === "user";
-					if (picked === session.getLeafId() && !reeditUser) {
+					// The current position is a selectable row (absolute
+					// visibility) — pi answers "already there" BEFORE any ask.
+					if (picked === session.getLeafId()) {
 						ctx.renderer.note("▪ already at that point");
 						return "handled";
 					}
@@ -1397,9 +1395,9 @@ export const COMMANDS: readonly SlashCommand[] = [
 				return "handled";
 			}
 			if (targetId === null) return "handled"; // unreachable; type guard
-			const targetEntry = session.getEntry(targetId);
-			const reeditUser = targetEntry?.type === "message" && targetEntry.message.role === "user";
-			if (targetId === session.getLeafId() && !reeditUser) {
+			// The current position is a selectable row (absolute visibility) —
+			// pi's flow answers "already there" BEFORE any ask or progress note.
+			if (targetId === session.getLeafId()) {
 				ctx.renderer.note("▪ already at that point");
 				return "handled";
 			}

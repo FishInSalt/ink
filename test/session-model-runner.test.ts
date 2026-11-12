@@ -571,11 +571,6 @@ describe("runner per-session model restoration", () => {
 		expect(live.contextWindow).toBe(window);
 		expect(live.thinkingLevel).toBe("high");
 		expect(snapshot(session)).toEqual(before);
-		const beforeCalls = calls.length;
-		await expect(live.runTurn({ userMessage: "must reopen first" })).rejects.toThrow(/reopen with \/resume/);
-		expect(calls).toHaveLength(beforeCalls);
-		expect(live.history).toEqual(messages);
-		live.resumeSession(session.header.id);
 		await live.runTurn({ userMessage: "still original provider" });
 		expect(calls.at(-1)?.family).toBe(initial.provider);
 		expect(calls.at(-1)?.request.model).toBe(initial.modelId);
@@ -766,13 +761,6 @@ describe("runner session speed restoration", () => {
 			expect(live.contextWindow).toBe(window);
 			expect(live.history).toEqual(history);
 			expect(snapshot(store)).toEqual(before);
-			const beforeCalls = calls.length;
-			await expect(live.runTurn({ userMessage: "must reopen first" })).rejects.toThrow(
-				/reopen with \/resume/,
-			);
-			expect(calls).toHaveLength(beforeCalls);
-			expect(live.history).toEqual(history);
-			live.resumeSession(store.header.id);
 			await live.runTurn({ userMessage: "unchanged selection" });
 			expect(calls.at(-1)?.request.speed).toBe(isFast ? "fast" : undefined);
 		},

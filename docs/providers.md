@@ -254,20 +254,13 @@ field. `·fast` is selection/display syntax, not a new model: context, vision,
 pricing metadata and replay identity stay base-only. Thinking remains independent
 (`/think`, `--thinking`); selecting Fast does not lower it.
 
-Errors preserve the selection and original typed diagnostics. Only explicit
-service-tier rejections in Fast mode get the hint: `To retry without Fast,
-explicitly select the normal model with /model.` Ink recognizes typed
-`unsupported_service_tier`, `invalid_service_tier`, or `tier_unavailable` codes,
-or `unsupported_parameter` with `param:"service_tier"`. These are conservative
-structured diagnostics, not entitlement guarantees or a promise of upstream
-code spellings. HTTP status, a bare parameter, or message text alone does not
-qualify. Unrelated authentication, quota, network, timeout/interruption, context,
-missing-tool-output, replay and protocol errors receive no Fast hint. Normal-mode
-errors are unchanged. A hint never replaces the original failure if its error
-object cannot be annotated. Retries keep Fast; there is no silent normal retry,
-model substitution, credential/billing switch, or legacy-backend fallback. A valid
-terminal response completes normally even if its reported tier is `default`,
-`standard`, `flex`, unknown, or missing. This also applies to the
+Errors preserve the selection and show recovery guidance: explicitly choose
+the normal model before retrying normally. Recovery hints never replace the
+original failure if its error object cannot be annotated. Retries keep Fast;
+there is no silent
+normal retry, model substitution, credential/billing switch, or legacy-backend
+fallback. A valid terminal response completes normally even if its reported tier
+is `default`, `standard`, `flex`, unknown, or missing. This also applies to the
 already-supported `max_output_tokens` incomplete path; incomplete tool batches
 remain non-executable. Actual stream failures, terminal errors, unsupported
 incomplete reasons, invalid tools/replay, and truncated streams still fail.

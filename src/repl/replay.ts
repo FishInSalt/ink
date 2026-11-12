@@ -58,9 +58,8 @@ export function replaySession(options: ReplayOptions, session: SessionStore): nu
 	renderer.raw("\n"); // settle any markdown tail; blank line before the prompt
 	renderer.endRun();
 	// Session ended mid-run (Ctrl+C / crash / force-quit): the tool line was
-	// never finalized. Show it honestly; the runner checks reconstructed
-	// history once before continuation and closes only an unambiguous tail.
-	// Replay itself never repairs or executes tools.
+	// never finalized. Show it honestly — the next request self-heals the
+	// context via synthesizeMissingToolResults; this is display only.
 	for (const { name, args } of options.toolSink ? [] : unmatchedTools.values()) {
 		renderer.writeLine(`${renderer.dim(`● ${name} ${summarizeArgs(name, args)}`)} … no result (interrupted)`);
 	}
