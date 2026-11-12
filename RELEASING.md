@@ -3,13 +3,14 @@
 Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/design/ink-rename-design.md)
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
-The selected candidate is **`ink-agent@0.6.1`**, with the sole `ink` executable.
-Version `0.6.1` is being prepared and is not yet published; npm `latest` still
-selects `0.6.0`. The dated `0.6.1` CHANGELOG section contains the candidate notes;
-preparation, reviews and validation are recorded in
-[`docs/design/release-0.6.1-preparation.md`](docs/design/release-0.6.1-preparation.md).
-The verified `0.6.0` publication history remains below and in its
-[publication record](docs/design/release-0.6.0-preparation.md#publication).
+The current published release is **`ink-agent@0.6.1`**, with the sole `ink`
+executable. Read-only checks on 2026-11-12 confirmed npm `latest` selects
+`0.6.1`, source `5457731`, and GitHub Latest selects the non-draft,
+non-prerelease `v0.6.1`. The [publication status](docs/design/release-0.6.1-preparation.md#publication)
+supersedes the earlier preparation-time pending statements; it does not claim a
+new artifact/signature verification or global upgrade. Unreleased source changes
+are listed separately in CHANGELOG. The verified `0.6.0` publication history
+remains below and in its [publication record](docs/design/release-0.6.0-preparation.md#publication).
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -38,7 +39,7 @@ require their ordinary approvals. Preserve historical tags/workflow files and
 [`docs/design/publishing-design.md`](docs/design/publishing-design.md) is an archival design,
 not the current release procedure.
 
-## OIDC publication is live (through `0.6.0`)
+## OIDC publication is live (through `0.6.1`)
 
 The `latest` observations in the historical entries below describe each release's
 verification date; the current selection is stated above.
@@ -207,6 +208,16 @@ visibility-check follow-ups are recorded in
 Do not rerun the workflow or reuse its tag/version; no npm publication is pending.
 Global installation was not performed and remains a separate operator action.
 
+`ink-agent@0.6.1` is published from merge commit `5457731`, the peeled target of
+annotated tag `v0.6.1`. On 2026-11-12 the npm latest metadata reported that exact
+version/source, and the GitHub latest-release API reported the formal
+[GitHub Release v0.6.1](https://github.com/FishInSalt/ink/releases/tag/v0.6.1),
+published at `2026-11-12T07:27:59Z`. These are read-only metadata observations,
+not a fresh cryptographic artifact/provenance check or a claim about the global
+installation. See the [publication status](docs/design/release-0.6.1-preparation.md#publication).
+Do not republish this version, rerun publication or move/reuse its tag. No
+publication or global installation was performed by this documentation update.
+
 The binding must match `release.yml`: GitHub Actions, repository
 `FishInSalt/ink`, workflow filename `release.yml`, no environment. Ownership and
 publishability of `ink-agent` are established (registry presence is not
@@ -277,7 +288,7 @@ tests, design docs, or unexpected artifacts. Top-level English and zh-CN
 user documentation is intentionally shipped. It installs locally in a private
 temporary prefix with temporary HOME/cache, no credentials, no install
 scripts, and no network. It executes help and exact `Ink 0.6.1` version
-(for this candidate), then checks npm-exec's single-bin inference against the
+(for this version), then checks npm-exec's single-bin inference against the
 **local tarball from a neutral cwd**. It never invokes `npx ink` or modifies
 shared dependencies. The optional cache source is read-only; missing cached
 dependencies fail instead of fetching. Scratch paths are printed for

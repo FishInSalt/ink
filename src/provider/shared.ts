@@ -67,38 +67,21 @@ function streamInterruptionDetail(err: unknown): string | undefined {
 		chain.push(current);
 		current = (current as { cause?: unknown }).cause;
 	}
-	// Prefer the socket code + its message (e.g. "UND_ERR_SOCKET: other side
-	// closed") over the outer wrapper's generic "terminated".
+	// Public diagnostics use only this closed vocabulary. Socket and wrapper
+	// messages can contain credentials or URLs; keep them solely in `cause`.
 	for (const node of chain) {
 		const codeValue = (node as { code?: unknown }).code;
 		const code = typeof codeValue === "string" ? codeValue : undefined;
 		if (code === "UND_ERR_SOCKET" || code === "ECONNRESET" || code === "EPIPE") {
-			return normalizeStreamDetail(`${code}: ${node.message}`);
+			return `${code}: connection closed`;
 		}
 	}
-	let sawTransportMessage = false;
 	for (const node of chain) {
 		if (node.message === "terminated" || node.message === "fetch failed") {
-			sawTransportMessage = true;
-			break;
+			return "connection closed";
 		}
 	}
-	if (!sawTransportMessage) return undefined;
-	// No socket code: prefer the deepest specific message over the wrapper's
-	// generic "terminated"/"fetch failed", so a cause like "other side closed"
-	// is not dropped.
-	for (let i = chain.length - 1; i >= 0; i--) {
-		const node = chain[i];
-		if (node !== undefined && node.message !== "terminated" && node.message !== "fetch failed") {
-			return normalizeStreamDetail(node.message);
-		}
-	}
-	return "connection closed";
-}
-
-function normalizeStreamDetail(text: string): string {
-	const collapsed = text.replace(/\s+/g, " ").trim();
-	return collapsed === "" ? "connection closed" : collapsed;
+	return undefined;
 }
 
 /** Wrap an SSE event source so a mid-stream socket close becomes a typed,

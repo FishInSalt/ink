@@ -49,6 +49,9 @@ the outcome is unknown, the tool may have fully or partially executed, and Ink
 did not replay it. Inspect affected state before deciding whether to retry.
 Repairs happen during resume, before accepting new input, even if you then only
 view the conversation. A successfully repaired session is not repaired again.
+The inspected batch's call IDs and tool names, including result identities, must
+be nonempty strings. Malformed identities or ambiguous pairing refuse resume
+before any structural repair or append; the file is left unchanged.
 
 This is not full-history validation: earlier batches and other branches are not
 scanned for tool pairing. A later user/assistant message after an unanswered

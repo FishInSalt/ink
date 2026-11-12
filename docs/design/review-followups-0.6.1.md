@@ -1,7 +1,7 @@
 # Review follow-ups after Ink 0.6.1
 
 Date: 2026-11-12
-Status: design approved; implementation in progress.
+Status: implemented; independent design and implementation reviews approved.
 Independent adversarial design review `276125b3-4a73-4e51-b534-b19132f32eb8`
 closed after preserving unknown_incomplete context-recovery compatibility.
 Base: main `5c43548`, latest published `v0.6.1` / source `5457731`.
@@ -125,3 +125,61 @@ run focused regressions on Node 22.19.0 and Node 24; do not download/install too
 Require independent implementation review before completion. Record exact test
 counts, failures and retained temp warnings. Commit normally and integrate to
 local main with `--no-ff` after confirming main/worktree state; no remote push.
+
+## Completion and verification
+
+The production changes are confined to three existing files:
+`src/core/session/resume-tail.ts` validates only the four tail identity fields;
+`src/provider/shared.ts` publishes a fixed interruption vocabulary while
+preserving raw causes; `src/core/compaction.ts` applies the approved structured
+precedence and retains unknown_incomplete fallback. No Runner, store, provider
+request, child-continuation, file-format, version, dependency or workflow change
+was needed.
+
+Independent implementation reviews closed with APPROVE and no required fixes:
+
+- `2c7fcf2b-d6ac-4616-85ba-7ad12982865a`: resume-tail, real built CLI regressions
+  and sessions documentation; independently verified 186 tests and compiled
+  runtime equality, plus a fresh object-ID baseline/current comparison.
+- `2fa044b2-ef7a-419d-a6fc-13bd83d8a1f8`: interruption privacy, classification,
+  real Runner/child/log persistence and documentation; independently ran 810
+  tests across 12 files in a private copy, both typechecks and docs validation.
+
+Final coordinator verification on macOS arm64:
+
+| Runtime | Verification | Result |
+| --- | --- | --- |
+| Node 25.5.0 | npm run typecheck, npm run lint, npm run build | passed; lint checked 352 files |
+| Node 25.5.0 | CI_REQUIRE_SEARCH_TOOLS=1 npm test -- --maxWorkers=6 | 191 files, 6,278 tests passed |
+| Node 22.19.0 | both TypeScript configurations, 7 changed/new test files | 739 tests passed |
+| Node 24.22.1 | both TypeScript configurations, 7 changed/new test files | 739 tests passed |
+| Node 25.5.0 | docs site build, docs checks, git diff --check | 24 pages; 11 topics in each language; passed |
+
+The full suite has 345 more tests than baseline (5,933). Runtime matrix checks
+used existing scratch Node binaries, not new downloads or installations. Logs:
+`/tmp/ink-review-followups-full-tests.log`,
+`/tmp/ink-review-followups-node22.19.0-tests.log`, and
+`/tmp/ink-review-followups-node24.22.1-tests.log`.
+
+Tests first demonstrated the original failures before the implementation fixes.
+One worker's initial npm typecheck invocation under the offline preload was
+blocked attempting a registry check; both direct equivalent tsc commands and
+the final coordinator npm typecheck subsequently passed. An isolated-copy docs
+check initially lacked README inputs; it passed after those inputs were copied.
+These tooling failures did not require changing product behavior or disabling
+the network guard.
+
+The final full suite exited 0 and intentionally retained nonempty run root
+`/var/folders/y5/4pt277ys42g1kz84rh0g922c0000gn/T/ink-test-run-N8LrT0` with an
+ENOTEMPTY report. Supported-runtime focused runs had no retained-root warning.
+The earlier review-root investigation confirmed deliberate visual and bootstrap
+artifacts plus contained caches/output/image files; this batch does not claim
+all test-produced contents have a cleanup owner. No warning was hidden and no
+old root was deleted. Raw causes remain unsanitized local debugging data;
+public diagnostics and Runner logs alone are covered by this privacy fix.
+
+No real model request, Linux run, fresh registry-artifact verification, remote
+push/publication, global upgrade or real-session/configuration change was
+performed. npm/GitHub availability was checked read-only; published 0.6.1 and
+its tag remain unchanged. Final local integration uses the approved --no-ff
+merge, with candidate/merge tree equality checked separately.

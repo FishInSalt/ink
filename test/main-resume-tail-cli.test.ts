@@ -151,13 +151,13 @@ export default function(api) {
 		const args = entrance === "-r" ? ["-r", id] : ["-c"];
 		return collectCliOutput(start(prompt ? [...args, "-p", PROMPT] : args), prompt ? "" : "/quit\n");
 	}
-	function seed(answered: number[]) {
+	function seed(answered: number[], blocks = calls) {
 		const store = createSession(fixture.cwd, path.join(fixture.home, ".ink/sessions"));
 		store.setModel({ provider: "anthropic", modelId: MODEL });
 		store.appendMessage({ role: "user", content: "saved request" });
 		store.appendMessage({
 			role: "assistant",
-			blocks: calls,
+			blocks,
 			usage: { inputTokens: 1, outputTokens: 1 },
 			stopReason: "tool_use",
 		});
@@ -234,6 +234,47 @@ export default function(api) {
 			expect(readFileSync(store.filePath, "utf8")).toBe(after);
 			expect(requests).toHaveLength(prompt ? 1 : 0);
 			expect(readFileSync(activity, "utf8")).toBe("loaded\nloaded\n"); // no tool hooks or execution
+		},
+	);
+
+	it.each(
+		entrances.flatMap((entrance) =>
+			(entrance === "/resume" ? [false] : [false, true]).flatMap((prompt) =>
+				["newline", "unterminated", "torn fragment"].map((ending) => ({ entrance, ending, prompt })),
+			),
+		),
+	)(
+		"$entrance rejects the original object-ID regression with $ending, new prompt=$prompt, repeatedly",
+		async ({ entrance, ending, prompt }) => {
+			// Persist the original malformed shape, then let the real built CLI parse it.
+			const malformed = calls.map((call, index) =>
+				index === 0 ? { ...call, id: { original: "object-id", toString: null } } : call,
+			) as unknown as typeof calls;
+			const store = seed([], malformed);
+			const bytes = readFileSync(store.filePath);
+			if (ending === "unterminated") writeFileSync(store.filePath, bytes.subarray(0, -1));
+			if (ending === "torn fragment")
+				writeFileSync(store.filePath, Buffer.concat([bytes, Buffer.from('{"type":"message","id":"残缺')]));
+			const before = readFileSync(store.filePath);
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const result = await resume(entrance, store.header.id, prompt);
+				const output = result.stderr + result.stdout;
+				// Interactive warmup keeps the REPL usable; print startup exits with an error.
+				expect(result.code, output).toBe(prompt ? 1 : 0);
+				expect(output).toContain("Cannot repair final tool batch: invalid call identity");
+				expect(output).not.toContain("▪ recovered");
+				expect(output).not.toContain("▪ resumed");
+				expect(output).not.toContain("object-id");
+				expect(output).not.toContain("Cannot convert object");
+				expect(readFileSync(store.filePath)).toEqual(before);
+				expect(
+					SessionStore.open(store.filePath)
+						.buildContext()
+						.messages.map((message) => message.role),
+				).toEqual(["user", "assistant"]);
+			}
+			expect(requests).toEqual([]);
+			expect(readFileSync(activity, "utf8")).toBe("loaded\nloaded\n");
 		},
 	);
 

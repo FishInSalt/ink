@@ -276,17 +276,34 @@ export function shouldCompact(contextTokens: number, settings: CompactionSetting
  * Drives the one-shot compact-and-retry recovery (#overflow-grace).
  */
 const CONTEXT_OVERFLOW_RE =
-	/prompt is too long|context[_ ]length|maximum context|context (window|length) exceed|too many (input )?tokens|input tokens? (exceed|too (large|long))|exceeds (the )?(maximum )?context/i;
+	/prompt is too long|context_(length|window)_exceeded|maximum context|context (window|length) exceed|too many (input )?tokens|input tokens? (exceed|too (large|long))|exceeds (the )?(maximum )?context/i;
+const CONTEXT_OVERFLOW_CODES = new Set(["context_length_exceeded", "context_window_exceeded"]);
+const GENERIC_REQUEST_CODES = new Set([
+	"invalid_request_error",
+	"invalid_request",
+	"bad_request",
+	"error",
+	"request_failed",
+]);
+const GENERIC_FAILURE_REASONS = new Set(["failed", "incomplete", "error", "unknown_incomplete"]);
 
 export function isContextOverflowError(err: unknown): boolean {
 	if (!(err instanceof Error)) return false;
 	const fields = err as Error & { code?: unknown; reason?: unknown };
-	if (
-		[fields.code, fields.reason].some(
-			(value) => value === "context_length_exceeded" || value === "context_window_exceeded",
-		)
-	)
-		return true;
+	// A specific code wins even over a conflicting context reason. Generic
+	// request containers carry no classification, so consult reason next.
+	const code = fields.code;
+	if (typeof code === "string" && code !== "") {
+		if (CONTEXT_OVERFLOW_CODES.has(code)) return true;
+		if (!GENERIC_REQUEST_CODES.has(code)) return false;
+	}
+	const reason = fields.reason;
+	if (typeof reason === "string" && reason !== "") {
+		if (CONTEXT_OVERFLOW_CODES.has(reason)) return true;
+		// unknown_incomplete is the provider's missing-reason sentinel, not
+		// evidence of a specific non-context failure. Keep legacy recovery.
+		if (!GENERIC_FAILURE_REASONS.has(reason)) return false;
+	}
 	return CONTEXT_OVERFLOW_RE.test(err.message);
 }
 

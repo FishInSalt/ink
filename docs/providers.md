@@ -113,7 +113,12 @@ files are not rewritten.
 
 If the response stream closes mid-answer, Ink reports a stream interruption
 instead of a bare `terminated`; it does not automatically replay partial
-requests. Completed tool results stay in the session: resume with `ink -r <id>`
+requests. Public interruption diagnostics use fixed `connection closed` wording
+and, when recognized, only `UND_ERR_SOCKET`, `ECONNRESET` or `EPIPE`. Arbitrary
+transport/cause messages, URLs and credentials are not copied into that public
+message or its run-error log. The original error remains available as `cause`
+for local debugging and is not sanitized. Completed tool results stay in the
+session: resume with `ink -r <id>`
 and send a message such as "continue". This is an ordinary message, not a
 special command. A terminal event ends reading immediately. Only an explicit
 output-token-limit incomplete response follows the truncation path; content
@@ -121,6 +126,14 @@ filtering and other incomplete reasons are reported as errors. A missing or
 inaccurate response `Content-Type` does not reject valid SSE bytes; Ink validates
 the stream itself and requires a terminal response event. JSON/HTML bodies are
 not treated as successful streamed answers.
+
+Context-overflow recovery honors specific structured error codes before reasons
+and message text: a tier, authentication, quota or protocol rejection is not
+compacted and retried merely because its message mentions a context limit.
+Generic request/status diagnostics can still use established overflow wording;
+`unknown_incomplete` means no specific incomplete reason was supplied and does
+not disable that fallback. Explicit context-overflow codes/reasons still permit
+the existing one-shot compact-and-retry, without changing the selected speed.
 
 Ink uses a stable, hashed conversation ID for `prompt_cache_key` and the
 `session_id` / `x-client-request-id` HTTP headers. The raw session ID is not

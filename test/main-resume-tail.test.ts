@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage, ToolResultMessage } from "../src/core/messages.js";
 import { createSession } from "../src/core/session/manager.js";
 import * as tail from "../src/core/session/resume-tail.js";
-import { SessionStore } from "../src/core/session/store.js";
+import { SessionError, SessionStore } from "../src/core/session/store.js";
 import type { LLMRequest } from "../src/provider/types.js";
 import { Renderer } from "../src/render.js";
 import { dispatchCommand } from "../src/repl/commands.js";
@@ -29,6 +29,36 @@ const result = (...ids: string[]): ToolResultMessage => ({
 	role: "toolResult",
 	results: ids.map((id) => ({ toolCallId: id, toolName: "probe", content: `saved ${id}`, isError: false })),
 });
+const identityFields = ["id", "name", "toolCallId", "toolName"] as const;
+type IdentityField = (typeof identityFields)[number];
+const malformedIdentities = identityFields.flatMap((field) =>
+	[
+		{ kind: "object", value: { marker: "malformed-identity", toString: null } },
+		{ kind: "array", value: ["malformed-identity"] },
+		{ kind: "number", value: 17 },
+		{ kind: "null", value: null },
+		{ kind: "missing", value: undefined },
+		{ kind: "empty", value: "" },
+	].map(({ kind, value }) => ({
+		field,
+		kind,
+		value,
+		error: `Cannot repair final tool batch: invalid ${field === "id" || field === "name" ? "call" : "result"} identity`,
+	})),
+);
+function malformedTail(field: IdentityField, value: unknown): AgentMessage[] {
+	const declaration = calls("pending", "a");
+	const output = result("a");
+	const isCall = field === "id" || field === "name";
+	// Deliberately model malformed JSON that passes the store's envelope parser.
+	const identity = (isCall ? declaration.blocks[1]! : output.results[0]!) as unknown as Record<
+		string,
+		unknown
+	>;
+	if (value === undefined) delete identity[field];
+	else identity[field] = value;
+	return [user("中断前 🔧"), declaration, ...(isCall ? [] : [output])];
+}
 
 beforeEach(() => {
 	vi.mocked(fs.appendFileSync).mockReset().mockImplementation(actual.appendFileSync);
@@ -98,10 +128,38 @@ describe("final assistant batch only", () => {
 		expect(tail.missingTailCalls([earlier, user("failed continuation")])).toEqual([]);
 		expect(tail.missingTailCalls([calls("old-gap"), user("later"), done()])).toEqual([]);
 	});
+	it("keeps nonempty identities opaque without trimming, normalization or coercion", () => {
+		const declaration = calls(" a ", "a", " ", "__proto__");
+		for (const block of declaration.blocks) {
+			if (block.type === "toolCall") block.name = " ";
+		}
+		const output = result("a");
+		output.results[0]!.toolName = " ";
+		expect(tail.missingTailCalls([declaration, output])).toEqual([
+			{ id: " a ", name: " " },
+			{ id: " ", name: " " },
+			{ id: "__proto__", name: " " },
+		]);
+	});
+	it.each(malformedIdentities)(
+		"does not extend validation into earlier history or a no-tool suffix: $field/$kind",
+		({ field, value }) => {
+			const malformed = malformedTail(field, value);
+			expect(tail.missingTailCalls([...malformed, user("later"), calls("last")])).toEqual([
+				{ id: "last", name: "probe" },
+			]);
+			expect(tail.missingTailCalls([...malformed, user("later")])).toEqual([]);
+			const orphan = malformedTail(field === "toolName" ? "toolName" : "toolCallId", value).at(-1)!;
+			expect(tail.missingTailCalls([done(), orphan])).toEqual([]);
+		},
+	);
 	it.each(
-		[[calls("a", "a")], [calls("a"), result("a"), result("a")], [calls("a"), result("foreign")]].map(
-			(messages) => ({ messages }),
-		),
+		[
+			[calls("a", "a")],
+			[calls("a"), result("a"), result("a")],
+			[calls("a"), result("foreign")],
+			[calls("a"), { ...result("a"), results: [{ ...result("a").results[0]!, toolName: "other" }] }],
+		].map((messages) => ({ messages })),
 	)("refuses ambiguous final-batch identities before writing: $messages", ({ messages }) => {
 		const env = world(messages);
 		const before = fs.readFileSync(env.store.filePath);
@@ -109,6 +167,45 @@ describe("final assistant batch only", () => {
 			/Cannot repair final tool batch/,
 		);
 		expect(fs.readFileSync(env.store.filePath)).toEqual(before);
+	});
+});
+
+describe("malformed final-batch identities", () => {
+	it.each(
+		malformedIdentities.flatMap((identity) =>
+			["newline", "unterminated", "torn fragment"].map((ending) => ({ ...identity, ending })),
+		),
+	)(
+		"refuses $field/$kind with $ending before any repair or append, repeatedly",
+		({ field, value, error, ending }) => {
+			const env = world(malformedTail(field, value));
+			const bytes = fs.readFileSync(env.store.filePath);
+			if (ending === "unterminated") fs.writeFileSync(env.store.filePath, bytes.subarray(0, -1));
+			if (ending === "torn fragment")
+				actual.appendFileSync(env.store.filePath, '{"type":"message","id":"残缺');
+			const before = fs.readFileSync(env.store.filePath);
+			const repair = vi.spyOn(SessionStore.prototype, "repairTornFinalLine");
+			vi.mocked(fs.appendFileSync).mockClear();
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const candidate = SessionStore.open(env.store.filePath);
+				expect(candidate.tornFinalLine).toBe(ending !== "newline");
+				expect(() => tail.recoverMainSession(candidate)).toThrowError(new SessionError(error));
+				expect(fs.readFileSync(env.store.filePath)).toEqual(before);
+			}
+			expect(repair).not.toHaveBeenCalled();
+			expect(fs.appendFileSync).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(identityFields)("never coerces a malformed %s into an error message", (field) => {
+		const coerce = vi.fn(() => {
+			throw new Error("identity coercion must not run");
+		});
+		const expected = `Cannot repair final tool batch: invalid ${field === "id" || field === "name" ? "call" : "result"} identity`;
+		expect(() => tail.missingTailCalls(malformedTail(field, { [Symbol.toPrimitive]: coerce }))).toThrowError(
+			new SessionError(expected),
+		);
+		expect(coerce).not.toHaveBeenCalled();
 	});
 });
 
@@ -294,6 +391,61 @@ describe("failed candidate is never published", () => {
 });
 
 describe("resume notice survives TUI clearing", () => {
+	it.each(malformedIdentities)(
+		"keeps the active conversation and screen after refusing $field/$kind, repeatedly",
+		async ({ field, value, error }) => {
+			const env = world(malformedTail(field, value));
+			const bytes = fs.readFileSync(env.store.filePath);
+			fs.writeFileSync(env.store.filePath, bytes.subarray(0, -1));
+			const before = fs.readFileSync(env.store.filePath);
+			const transcript = new TranscriptSink();
+			const write = (text: string) => transcript.feed(text);
+			const renderer = new Renderer({ write, ansi: false, liveTools: false, toolStyle: "one-line" });
+			const live = await runnerFor(env, { renderer });
+			await live.runner.runTurn({ userMessage: "previous conversation remains visible" });
+			const previous = live.runner.session!;
+			const previousBytes = fs.readFileSync(previous.filePath);
+			const history = [...live.runner.history];
+			const model = live.runner.modelSelectionReference();
+			const thinking = live.runner.thinkingLevel;
+			const floor = live.runner.contextEstimateFloor;
+			renderer.note("previous conversation remains visible");
+			const clearView = vi.fn(() => transcript.clear());
+			const replay = vi.fn();
+			const repair = vi.spyOn(SessionStore.prototype, "repairTornFinalLine");
+			vi.mocked(fs.appendFileSync).mockClear();
+			for (let attempt = 0; attempt < 2; attempt++) {
+				await dispatchCommand(`/resume ${env.store.header.id}`, {
+					runner: live.runner,
+					renderer,
+					clearView,
+					isActive: () => false,
+					requestExit: () => {},
+					abortActive: () => false,
+					submitPrompt: () => {},
+					replay,
+				});
+				expect(live.runner.session).toBe(previous);
+				expect(live.runner.history).toEqual(history);
+				expect(live.runner.modelSelectionReference()).toBe(model);
+				expect(live.runner.thinkingLevel).toBe(thinking);
+				expect(live.runner.contextEstimateFloor).toBe(floor);
+				expect(fs.readFileSync(env.store.filePath)).toEqual(before);
+				expect(fs.readFileSync(previous.filePath)).toEqual(previousBytes);
+			}
+			const screen = transcript.render(160).join("\n");
+			expect(screen).toContain("previous conversation remains visible");
+			expect(screen.split(error)).toHaveLength(3);
+			expect(screen).not.toContain("recovered");
+			expect(screen).not.toContain("▪ resumed");
+			expect(clearView).not.toHaveBeenCalled();
+			expect(replay).not.toHaveBeenCalled();
+			expect(repair).not.toHaveBeenCalled();
+			expect(fs.appendFileSync).not.toHaveBeenCalled();
+			expect(live.requests).toHaveLength(1);
+		},
+	);
+
 	it.each([false, true])(
 		"reports recovery after replay, and preserves the old view on failure (write failure=%s)",
 		async (fail) => {

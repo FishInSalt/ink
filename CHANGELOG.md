@@ -8,6 +8,31 @@ their original release identity.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Interrupted main-session resume.** At `-r`, `-c` and `/resume`, preserve real
+  results and append explicit unknown-outcome errors only for missing results
+  in the final assistant tool batch. Do not replay tools or inspect older
+  batches. Reject malformed non-string/empty call or result identities and
+  ambiguous pairing before changing the file. Failed interactive resumes keep
+  the previous conversation; write-requiring active-file resumes refuse before
+  repair. Successful recovery is idempotent, with a visible notice after replay.
+- **Fast error guidance.** Add the normal-mode retry hint only for explicit
+  structured service-tier rejections, not unrelated auth, quota, network,
+  context or protocol failures. Preserve original errors, request speed,
+  credential routing and existing retry behavior; no silent normal fallback.
+- **Stream-interruption diagnostics.** Publish only fixed connection-closed
+  wording and recognized socket codes, not arbitrary transport/cause messages
+  that may contain credentials or URLs. Preserve the raw cause for local
+  debugging, without copying it into public messages or run-error logs.
+- **Context-recovery classification.** Specific structured error codes take
+  precedence over reasons and message text, preventing tier and other
+  non-context rejections from triggering an unnecessary summary and retry.
+  Keep generic-error and missing-incomplete-reason fallback for genuine
+  overflows, and require stronger evidence than a bare `context length` mention.
+- **Release documentation.** Record the observed `0.6.1` publication instead of
+  describing it as pending; no new publication or global upgrade is included.
+
 ## [0.6.1] - 2026-11-12
 
 ### Fixed

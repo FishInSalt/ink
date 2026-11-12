@@ -6,6 +6,7 @@ import {
 	estimateContextTokens,
 	estimateTokens,
 	findCutIndex,
+	isContextOverflowError,
 	serializeForSummary,
 	shouldCompact,
 	summarizeBranchSegment,
@@ -479,6 +480,99 @@ describe("compactSession", () => {
 });
 
 describe("isContextOverflowError (overflow-grace)", () => {
+	const contextCodes = ["context_length_exceeded", "context_window_exceeded"];
+	const genericCodes = ["invalid_request_error", "invalid_request", "bad_request", "error", "request_failed"];
+	const emptyFields = [undefined, "", null, 0, false, {}, []];
+	const overflow = "context length exceeded: too many input tokens";
+	const structured = (code: unknown, reason: unknown, message = overflow) =>
+		Object.assign(new Error(message), { code, reason });
+
+	it.each([
+		"prompt is too long: 500000 tokens > 200000 maximum",
+		"maximum context length is 272000 tokens",
+		"context length exceeded",
+		"context window exceeded",
+		"context_length_exceeded",
+		"context_window_exceeded",
+		"too many input tokens",
+		"too many tokens",
+		"input tokens exceed the limit",
+		"input token too large",
+		"input tokens too long",
+		"request exceeds the maximum context window",
+	])("retains legacy overflow text: %s", (message) => {
+		expect(isContextOverflowError(new Error(message))).toBe(true);
+	});
+
+	it.each([
+		"service tier unavailable for this context length",
+		"context length must be specified",
+		"unsupported context_length parameter",
+		"context window information unavailable",
+	])("does not treat a bare context mention as overflow: %s", (message) => {
+		expect(isContextOverflowError(new Error(message))).toBe(false);
+	});
+
+	it.each([
+		"tier_unavailable",
+		"unsupported_service_tier",
+		"invalid_service_tier",
+		"unsupported_parameter",
+		"invalid_api_key",
+		"authentication_error",
+		"insufficient_quota",
+		"rate_limit_exceeded",
+		"invalid_response",
+		"missing_terminal",
+		"connection_failed",
+		"ECONNRESET",
+		"EPIPE",
+		"unknown_incomplete", // Generic only as a reason, not as a code.
+		"prefix_context_length_exceeded",
+		"context_window_exceeded_suffix",
+		"CONTEXT_LENGTH_EXCEEDED",
+		" invalid_request_error",
+		"invalid_request_error ",
+	])("a specific non-context code %s overrides text and conflicting context reasons", (code) => {
+		for (const reason of [undefined, "failed", "unknown_incomplete", ...contextCodes]) {
+			expect(isContextOverflowError(structured(code, reason))).toBe(false);
+		}
+	});
+
+	it.each(contextCodes)("an explicit context code %s overrides any reason or message", (code) => {
+		for (const reason of [undefined, "content_filter", "tier_unavailable", ...contextCodes]) {
+			expect(isContextOverflowError(structured(code, reason, "request refused"))).toBe(true);
+		}
+	});
+
+	it.each([...genericCodes, ...emptyFields])("code %j allows reason classification then text", (code) => {
+		for (const reason of contextCodes) {
+			expect(isContextOverflowError(structured(code, reason, "request refused"))).toBe(true);
+		}
+		for (const reason of [...emptyFields, "failed", "incomplete", "error", "unknown_incomplete"]) {
+			expect(isContextOverflowError(structured(code, reason))).toBe(true);
+			expect(isContextOverflowError(structured(code, reason, "request refused"))).toBe(false);
+		}
+		for (const reason of [
+			"content_filter",
+			"max_output_tokens",
+			"cancelled",
+			"tier_unavailable",
+			"authentication_error",
+			"insufficient_quota",
+			"invalid_response",
+			"connection_failed",
+			"invalid_request_error", // Generic as a code only.
+			"prefix_context_length_exceeded",
+			"context_window_exceeded_suffix",
+			"CONTEXT_LENGTH_EXCEEDED",
+			"unknown_incomplete_suffix",
+			" unknown_incomplete",
+		]) {
+			expect(isContextOverflowError(structured(code, reason))).toBe(false);
+		}
+	});
+
 	it("matches every provider's phrasing; rejects unrelated errors", async () => {
 		const { isContextOverflowError } = await import("../src/core/compaction.js");
 		expect(
