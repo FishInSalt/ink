@@ -9,6 +9,7 @@
  */
 import { formatTokens } from "../format.js";
 import type { ChildLaunchRecord, CurrentChildEnvironment, LaunchEnvironmentFacts } from "./child-launch.js";
+import { scanToolPairs } from "./continuation.js";
 import type { AgentMessage } from "./messages.js";
 import type { SessionStore } from "./session/store.js";
 import type { TaskRecord, TaskRecordUsage } from "./task-record.js";
@@ -135,102 +136,6 @@ export type ContinuationHistory =
 	| { ok: true; messages: AgentMessage[]; compactionBoundary: number; repairs: string[] }
 	| { ok: false; problem: string };
 
-interface ToolPairScan {
-	missing: Array<{ id: string; name: string }>;
-	repairable: boolean;
-	problem?: string;
-}
-
-function scanToolPairs(messages: readonly AgentMessage[]): ToolPairScan {
-	// SA-08 round 3 (F-5): validate the pairing in message ORDER with three
-	// distinct structures (design §9). A duplicate call id, a result with no
-	// PRECEDING call, and a repeated result cannot be paired unambiguously —
-	// they refuse; only the confirmed crash tail is repairable.
-	const seenCallIds = new Set<string>();
-	const matchedIds = new Set<string>();
-	const pending = new Map<string, { id: string; name: string }>();
-	for (const message of messages) {
-		// SA-08 round 4 (F-5b): a new user/assistant message while calls still
-		// await results means the conversation moved on with the batch
-		// unfinished — refuse at the boundary, before any repair, mutation or
-		// provider call (design §12). Only the confirmed crash tail (pure
-		// toolResult messages after the last batch) stays repairable.
-		if (message.role !== "toolResult" && pending.size > 0) {
-			const ids = [...pending.keys()].join(", ");
-			return {
-				missing: [],
-				repairable: false,
-				problem: `a new ${message.role} message begins a turn while tool call(s) ${ids} are still awaiting results — the transcript cannot be paired unambiguously (start a new task instead)`,
-			};
-		}
-		if (message.role === "assistant") {
-			for (const block of message.blocks) {
-				if (block.type !== "toolCall") continue;
-				if (seenCallIds.has(block.id)) {
-					return {
-						missing: [],
-						repairable: false,
-						problem: `tool call ${block.id} is declared more than once — the transcript cannot be paired unambiguously (start a new task instead)`,
-					};
-				}
-				seenCallIds.add(block.id);
-				pending.set(block.id, { id: block.id, name: block.name });
-			}
-		} else if (message.role === "toolResult") {
-			for (const result of message.results) {
-				const id = result.toolCallId;
-				if (!seenCallIds.has(id)) {
-					return {
-						missing: [],
-						repairable: false,
-						problem: `a tool result for ${id} has no preceding tool call — the transcript is not continuable (start a new task instead)`,
-					};
-				}
-				if (matchedIds.has(id)) {
-					return {
-						missing: [],
-						repairable: false,
-						problem: `the tool result for ${id} is recorded more than once — the transcript is not continuable (start a new task instead)`,
-					};
-				}
-				matchedIds.add(id);
-				pending.delete(id);
-			}
-		}
-	}
-	const missing = [...pending.values()];
-	if (missing.length === 0) return { missing, repairable: true };
-
-	// The only repairable shape: the crash tail — every missing id belongs to
-	// the LAST assistant message, and every message after it is a toolResult
-	// message (a partial results message may follow A). Anything else means
-	// real damage beyond a crash tail.
-	let lastAssistantIndex = -1;
-	for (let i = messages.length - 1; i >= 0; i--) {
-		if (messages[i]?.role === "assistant") {
-			lastAssistantIndex = i;
-			break;
-		}
-	}
-	const lastAssistant = lastAssistantIndex === -1 ? undefined : messages[lastAssistantIndex];
-	const lastIds = new Set<string>();
-	if (lastAssistant?.role === "assistant") {
-		for (const block of lastAssistant.blocks) {
-			if (block.type === "toolCall") lastIds.add(block.id);
-		}
-	}
-	const allFromLast = missing.every(({ id }) => lastIds.has(id));
-	const laterAllResults = messages.slice(lastAssistantIndex + 1).every((m) => m.role === "toolResult");
-	if (lastAssistant === undefined || !allFromLast || !laterAllResults) {
-		return {
-			missing,
-			repairable: false,
-			problem: `the transcript is inconsistent beyond a crash tail (tool call ${missing[0]?.id ?? "?"} has no recorded result and is not part of the last assistant turn) — start a new task instead`,
-		};
-	}
-	return { missing, repairable: true };
-}
-
 /**
  * §6: continuation-boundary repair + effective-history build, in the pinned
  * order — 6.1 read-only pairing scan (refusals here mutate nothing),
@@ -241,7 +146,10 @@ export function buildContinuationHistory(store: SessionStore): ContinuationHisto
 	const first = store.buildContext();
 	const scan = scanToolPairs(first.messages);
 	if (!scan.repairable) {
-		return { ok: false, problem: scan.problem ?? "the transcript is not continuable" };
+		return {
+			ok: false,
+			problem: `${scan.problem ?? "the transcript is not continuable"} — start a new task instead`,
+		};
 	}
 	const repairs: string[] = [];
 	// Truncation is irreversible by design — it only ever removes bytes no
