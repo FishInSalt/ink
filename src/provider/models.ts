@@ -15,7 +15,7 @@
 
 import { catalogEntryFor, catalogEntryForReference } from "./catalog.js";
 import { discoveredWindowFor } from "./discover.js";
-import { type ProviderName, parseModelRef } from "./resolve.js";
+import { type ProviderName, parseModelRef } from "./model-ref.js";
 
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 	// Anthropic (pi anthropic.json catalog)

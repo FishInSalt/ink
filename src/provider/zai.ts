@@ -19,16 +19,8 @@ import type { LLMProvider } from "./types.js";
 
 export const ZAI_DEFAULT_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
 
-/** pi.dev live catalog (2026-09) — the ids Z.ai's coding endpoint serves. */
-export const ZAI_SEED_MODELS = [
-	"glm-4.7",
-	"glm-5-turbo",
-	"glm-5.2",
-	"glm-5.2-highspeed",
-	"glm-5.3",
-	"glm-5.3-flash",
-	"glm-5.3-highspeed",
-] as const;
+// Compatibility export; offline picker policy owns the shared seed set.
+export { ZAI_SEED_MODELS } from "./model-seeds.js";
 
 export function createZaiProvider(): LLMProvider {
 	// ZAI_BASE_URL overrides (the CN mirror: https://open.bigmodel.cn/api/coding/paas/v4)

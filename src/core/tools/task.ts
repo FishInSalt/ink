@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { Type } from "typebox";
 import { firstLine } from "../../format.js";
-import type { ProviderName } from "../../provider/resolve.js";
+import type { ProviderName } from "../../provider/model-ref.js";
 import type { ThinkingLevel } from "../../provider/thinking.js";
 import type { LLMProvider, ModelSpeed } from "../../provider/types.js";
 import type { AgentDefinition } from "../agents/registry.js";

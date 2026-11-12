@@ -1,6 +1,6 @@
 import { familyConfigured } from "./discover.js";
 import { LOGIN_TARGETS } from "./login-targets.js";
-import type { ProviderName } from "./resolve.js";
+import type { ProviderName } from "./model-ref.js";
 
 /**
  * #fresh-install-hint: is the CURRENT model actually usable?

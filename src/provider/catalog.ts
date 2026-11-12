@@ -2,7 +2,7 @@
  * Model catalog service (M14): pi.dev is the single source of truth for
  * model metadata — context windows, cost rates, thinking ladders, vision
  * capability, family model lists. Static tables (models.ts, thinking.ts
- * MODEL_RULES, vision.ts, FAMILY_FALLBACKS) are FROZEN: first-run bootstrap
+ * MODEL_RULES, vision.ts, model-seeds.ts) are FROZEN: first-run bootstrap
  * and offline floor, no longer hand-maintained.
  *
  * Wire: GET {INK_CATALOG_BASE_URL|https://pi.dev}/api/models/providers/<family>
@@ -17,20 +17,14 @@
  *
  * Divergences recorded in docs/design/m14-model-catalog-design.md §4: no
  * localGeneratedAt guard (static tables frozen → remote always wins),
- * single-flight instead of pi's per-runtime coordinator, module overlay +
+ * single-flight instead of pi's per-runtime coordinator, module store +
  * atomic write instead of pi's publish/store transaction.
  */
 
-// NOTE (review P2-6): catalog.ts ↔ resolve.ts form a static import cycle
-// through the providers (they import thinking.ts/vision.ts, which import
-// catalog.ts). Verified init-safe — every module here executes only
-// declarations at top level; keep it that way.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ProviderName } from "./resolve.js";
-import { parseModelRef } from "./resolve.js";
-import { thinkingMetaFor } from "./thinking.js";
+import { type ProviderName, parseModelRef } from "./model-ref.js";
 
 export const CATALOG_FAMILIES: readonly ProviderName[] = [
 	"anthropic",
@@ -86,7 +80,6 @@ interface ProviderCache {
 	source?: string;
 	models: Record<string, CatalogEntry>;
 	checkedAt: number;
-	lastModified?: number;
 	etag?: string;
 }
 
@@ -106,7 +99,6 @@ export interface CatalogRefreshSummary {
 // Module state + test seams (discover.ts precedent)
 // ---------------------------------------------------------------------------
 
-const overlay = new Map<ProviderName, Record<string, CatalogEntry>>();
 const store = new Map<ProviderName, ProviderCache>();
 
 let now: () => number = Date.now;
@@ -134,7 +126,6 @@ export function setCatalogFetcherForTest(fn: CatalogFetcher): void {
 }
 
 export function resetCatalogForTest(): void {
-	overlay.clear();
 	store.clear();
 	inFlight = null;
 }
@@ -151,7 +142,7 @@ function catalogBase(): string {
 // Load + consult
 // ---------------------------------------------------------------------------
 
-/** Synchronously load the disk cache into the overlay. Absent or corrupt
+/** Synchronously load the disk cache into the store. Absent or corrupt
  *  file → no-op (the static floor shows through). */
 export function loadCatalogCache(path = catalogPath()): boolean {
 	try {
@@ -188,8 +179,12 @@ export function loadCatalogCache(path = catalogPath()): boolean {
 				if (typeof candidate.id !== "string" || candidate.id === "") continue;
 				models[candidate.id] = sanitizeEntry(candidate as CatalogEntry);
 			}
-			store.set(family, { ...entry, models });
-			overlay.set(family, models);
+			store.set(family, {
+				models,
+				checkedAt: entry.checkedAt,
+				source: typeof entry.source === "string" ? entry.source : undefined,
+				etag: typeof entry.etag === "string" ? entry.etag : undefined,
+			});
 		}
 		return true;
 	} catch {
@@ -200,7 +195,7 @@ export function loadCatalogCache(path = catalogPath()): boolean {
 /** Consult point: the catalog entry for an exact (family, id), or null. */
 export function catalogEntryFor(provider: string, modelId: string): CatalogEntry | null {
 	const family = provider as ProviderName;
-	const models = overlay.get(family);
+	const models = store.get(family)?.models;
 	const entry = models?.[modelId];
 	return entry ?? null;
 }
@@ -212,27 +207,11 @@ export function catalogEntryForReference(reference: string): CatalogEntry | null
 	return catalogEntryFor(ref.provider, ref.modelId);
 }
 
-/** The model's output-token cap for budget math (#derived-budget), or
- *  undefined when neither source knows. Sources, in order: the pi.dev
- *  catalog's maxTokens; the thinking table's maxOutputTokens (pi's
- *  model.maxTokens mirror). Callers treat undefined as "no model-side
- *  bound" — never as zero. */
-export function modelMaxTokensFor(reference: string): number | undefined {
-	const entry = catalogEntryForReference(reference);
-	if (entry?.maxTokens !== undefined && Number.isFinite(entry.maxTokens) && entry.maxTokens > 0) {
-		return entry.maxTokens;
-	}
-	const ref = parseModelRef(reference);
-	const meta = thinkingMetaFor(ref.provider, ref.modelId);
-	if (meta?.maxOutputTokens !== undefined && meta.maxOutputTokens > 0) return meta.maxOutputTokens;
-	return undefined;
-}
-
 /** Public METADATA ids, not account availability. Subscription callers
  *  must use discoverCodexModels/cachedCodexModelIds for selectable models;
  *  any offline metadata rows must be labeled availability unverified. */
 export function catalogModelIds(provider: string): string[] | null {
-	const models = overlay.get(provider as ProviderName);
+	const models = store.get(provider as ProviderName)?.models;
 	if (models === undefined) return null;
 	const ids = Object.keys(models);
 	return ids.length > 0 ? ids : null;
@@ -315,7 +294,7 @@ async function refreshFamily(
 	try {
 		const cached = store.get(family);
 		// Revalidate ONLY when a cached body backs the validator — a 304 must
-		// never empty the overlay (pi parity).
+		// never empty the store (pi parity).
 		const validator = cached !== undefined && Object.keys(cached.models).length > 0 ? cached.etag : undefined;
 		// Each family uses its own metadata catalog. Catalog transport fields
 		// are ignored; subscription inference still uses public Responses.
@@ -341,14 +320,14 @@ async function refreshFamily(
 		const checkedAt = now();
 
 		if (response.status === 304 && cached !== undefined) {
-			// Unchanged: the overlay already holds the body; move the window only.
+			// Unchanged: the store already holds the body; move the window only.
 			persistFamily(family, { ...cached, checkedAt });
 			summary.skippedFresh.push(family);
 			return;
 		}
 		if (response.status === 404 || response.status === 501) {
 			// This family has no catalog — record it so the window still applies.
-			persistFamily(family, { models: {}, checkedAt, lastModified: 0, etag: undefined });
+			persistFamily(family, { models: {}, checkedAt });
 			summary.noCatalog.push(family);
 			return;
 		}
@@ -360,11 +339,9 @@ async function refreshFamily(
 		}
 
 		const models = parseCatalog(family, await response.json());
-		const lastModified = Date.parse(response.headers.get("last-modified") ?? "");
 		persistFamily(family, {
 			models,
 			checkedAt,
-			lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
 			etag: response.headers.get("etag") ?? undefined,
 		});
 		summary.fetched.push(family);
@@ -464,11 +441,10 @@ function sanitizeEntry(entry: CatalogEntry): CatalogEntry {
 	return clean;
 }
 
-/** Update the overlay + store and write the file atomically. */
+/** Update the store and write the file atomically. */
 function persistFamily(family: ProviderName, cache: ProviderCache): void {
 	const entry = family === "openai-codex" ? { ...cache, source: CODEX_METADATA_SOURCE } : cache;
 	store.set(family, entry);
-	overlay.set(family, entry.models);
 
 	const path = catalogPath();
 	const file: CatalogFile = { version: 2, providers: {} };
@@ -485,6 +461,6 @@ function persistFamily(family: ProviderName, cache: ProviderCache): void {
 		writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { encoding: "utf-8" });
 		renameSync(tmp, path);
 	} catch {
-		// Unwritable cache dir: the overlay still works for this process.
+		// Unwritable cache dir: the store still works for this process.
 	}
 }

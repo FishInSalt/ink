@@ -4,16 +4,15 @@ import { dirname, join } from "node:path";
 import { authFilePath, loadApiKey, resolveApiKey } from "./auth-store.js";
 import { getCodexAccessToken, getCodexRegistrationKey, loadCodexCredential } from "./codex-auth.js";
 import { bundledCodexFastModeSupport } from "./codex-speed-catalog.js";
-import { DEEPSEEK_DEFAULT_BASE_URL, DEEPSEEK_SEED_MODELS, deepseekApiKey } from "./deepseek.js";
+import { DEEPSEEK_DEFAULT_BASE_URL, deepseekApiKey } from "./deepseek.js";
+import type { ProviderName } from "./model-ref.js";
 import {
 	MOONSHOT_CN_DEFAULT_BASE_URL,
 	MOONSHOT_DEFAULT_BASE_URL,
-	MOONSHOT_SEED_MODELS,
 	moonshotApiKey,
 	moonshotCnApiKey,
 } from "./moonshotai.js";
-import type { ProviderName } from "./resolve.js";
-import { ZAI_DEFAULT_BASE_URL, ZAI_SEED_MODELS, zaiApiKey } from "./zai.js";
+import { ZAI_DEFAULT_BASE_URL, zaiApiKey } from "./zai.js";
 
 /**
  * Model-list discovery (#model-discovery): ask each configured endpoint what
@@ -128,15 +127,14 @@ export function familyConfigured(family: ProviderName): boolean {
 export async function discoverModels(family: ProviderName): Promise<string[] | null> {
 	if (!familyConfigured(family)) return null;
 	if (family === "openai-codex") return discoverCodexModels();
-	// deepseek: mirror of the zai branch below (official endpoint serves an
-	// OpenAI-style /models; seeds are the pi.dev offline floor).
+	// First-party API-key families return only what their endpoint lists.
+	// The picker applies the catalog/static policy when discovery fails.
 	if (family === "deepseek") {
-		const cacheKey = "deepseek";
+		const base = (process.env.DEEPSEEK_BASE_URL ?? DEEPSEEK_DEFAULT_BASE_URL).replace(/\/+$/, "");
+		const cacheKey = `deepseek|${base}`;
 		const hit = cache.get(cacheKey);
 		if (hit !== undefined && now() - hit.at < CACHE_TTL_MS) return hit.ids;
-		const redirected = process.env.DEEPSEEK_BASE_URL !== undefined; // #gateway-truth
-		const base = (process.env.DEEPSEEK_BASE_URL ?? DEEPSEEK_DEFAULT_BASE_URL).replace(/\/+$/, "");
-		const ids = await fetchJson(
+		return fetchJson(
 			`${base}/models`,
 			{
 				accept: "application/json",
@@ -144,23 +142,20 @@ export async function discoverModels(family: ProviderName): Promise<string[] | n
 			},
 			cacheKey,
 		).catch(() => null);
-		return redirected ? ids : (ids ?? ([...DEEPSEEK_SEED_MODELS] as string[]));
 	}
 	// moonshotai / moonshotai-cn: Moonshot's official endpoints serve an
-	// OpenAI-style /models; seeds are the pi.dev offline floor (both families
-	// share MOONSHOT_API_KEY — the stored key is per family, and a key that
-	// belongs to the other platform 401s into the seed fallback here).
+	// OpenAI-style /models. Both families share MOONSHOT_API_KEY; stored
+	// credentials remain per family, including when the other platform 401s.
 	if (family === "moonshotai" || family === "moonshotai-cn") {
 		const envVar = family === "moonshotai" ? "MOONSHOT_BASE_URL" : "MOONSHOT_CN_BASE_URL";
 		const fallback = family === "moonshotai" ? MOONSHOT_DEFAULT_BASE_URL : MOONSHOT_CN_DEFAULT_BASE_URL;
-		const redirected = process.env[envVar] !== undefined; // #gateway-truth
 		const base = (process.env[envVar] ?? fallback).replace(/\/+$/, "");
 		// per-(family, baseUrl) key, like the anthropic/openai path (review P3-5)
 		const cacheKey = `${family}|${base}`;
 		const hit = cache.get(cacheKey);
 		if (hit !== undefined && now() - hit.at < CACHE_TTL_MS) return hit.ids;
 		const key = family === "moonshotai" ? moonshotApiKey() : moonshotCnApiKey();
-		const ids = await fetchJson(
+		return fetchJson(
 			`${base}/models`,
 			{
 				accept: "application/json",
@@ -168,20 +163,16 @@ export async function discoverModels(family: ProviderName): Promise<string[] | n
 			},
 			cacheKey,
 		).catch(() => null);
-		return redirected ? ids : (ids ?? ([...MOONSHOT_SEED_MODELS] as string[]));
 	}
-	// zai: the coding endpoint serves an OpenAI-style /models; the pi.dev
-	// live catalog is the offline seed when it 404s or the family is
-	// configured but unreachable.
+	// zai: the coding endpoint serves an OpenAI-style /models.
 	if (family === "zai") {
 		// same cache + TTL discipline as the other families (a trailing
 		// slash in ZAI_BASE_URL must not become .../v4//models)
-		const cacheKey = "zai";
+		const base = (process.env.ZAI_BASE_URL ?? ZAI_DEFAULT_BASE_URL).replace(/\/+$/, "");
+		const cacheKey = `zai|${base}`;
 		const hit = cache.get(cacheKey);
 		if (hit !== undefined && now() - hit.at < CACHE_TTL_MS) return hit.ids;
-		const redirected = process.env.ZAI_BASE_URL !== undefined; // #gateway-truth
-		const base = (process.env.ZAI_BASE_URL ?? ZAI_DEFAULT_BASE_URL).replace(/\/+$/, "");
-		const ids = await fetchJson(
+		return fetchJson(
 			`${base}/models`,
 			{
 				accept: "application/json",
@@ -189,11 +180,6 @@ export async function discoverModels(family: ProviderName): Promise<string[] | n
 			},
 			cacheKey,
 		).catch(() => null);
-		// #gateway-truth: the static GLM seeds describe Z.ai's own endpoint. On a
-		// redirected ZAI_BASE_URL gateway they would invent ids that gateway
-		// never listed — return null so the picker's redirect-aware branch
-		// shows the honest "unreachable" note instead (review P1).
-		return redirected ? ids : (ids ?? ([...ZAI_SEED_MODELS] as string[]));
 	}
 
 	const baseUrl = family === "anthropic" ? anthropicBaseUrl() : openaiBaseUrl();
