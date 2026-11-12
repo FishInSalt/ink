@@ -152,11 +152,14 @@ describe("session-wide model persistence", () => {
 		expect(store.getModel()).toEqual(a);
 		expect(store.hasModelSelection).toBe(false);
 		expect(store.isPersisted).toBe(false);
+		expect(() => store.assertWritable()).toThrow(/initialization previously failed/);
 		expect(() => store.setModel(c)).toThrow(/initialization previously failed/);
 		expect(() => store.appendSessionName("test")).toThrow(/initialization previously failed/);
+		expect(() => store.branchTo(null)).toThrow(/initialization previously failed/);
+		expect(() => store.repairTornFinalLine()).toThrow(/initialization previously failed/);
 		expect(store.getEntries()).toEqual([]);
 	});
-	it("does not commit model or entries on subsequent append failure", () => {
+	it("does not commit model or entries on append failure and requires reopen before another choice", () => {
 		const { store } = fresh();
 		store.setModel(a);
 		vi.mocked(fs.appendFileSync).mockImplementationOnce(() => {
@@ -165,7 +168,9 @@ describe("session-wide model persistence", () => {
 		expect(() => store.setModel(b)).toThrow("append failed");
 		expect(store.getModel()).toEqual(a);
 		expect(reopen(store).getModel()).toEqual(a);
-		store.setModel(c);
+		expect(() => store.setModel(a)).toThrow(/reopen with \/resume/); // even an apparent no-op uses a stale cache
+		expect(() => store.setModel(c)).toThrow(/reopen with \/resume/);
+		reopen(store).setModel(c);
 		expect(reopen(store).getModel()).toEqual(c);
 	});
 	it.each([
