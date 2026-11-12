@@ -17,7 +17,7 @@
 
 ---
 
-## Current release preparation: Ink 0.6.2
+## Latest published release: Ink 0.6.2
 
 - **Scope:** package the reviewed two original fixes and two error-handling
   follow-ups from main `2535855`; malformed-tail identity refusal is included
@@ -30,16 +30,25 @@
   follow-up (original preparation: 6,278). Offline smoke and source/installed
   comparisons passed for 457 application files. Final independent source/notes/
   artifact review APPROVE includes a fresh build and second offline installation.
-  `0.6.2` has not been published. Candidate `d48c4e8` passed Pages and Linux
-  Node 24, but Node 22.19.0 failed one existing login-recall fixed-wait assertion.
-  The independently approved test-only follow-up uses saved-status readiness
-  and real lock contention without changing production bytes or time budgets;
-  its new exact-SHA Linux CI remains pending. The failed run was not rerun.
-- **Boundaries:** preserve history and use a normal --no-ff integration. Exact
-  candidate push, publication-triggering tag push and GitHub Release creation
-  require separate confirmation. No global upgrade is included.
+  Candidate `d48c4e8` passed Pages and Linux Node 24, but Node 22.19.0 exposed
+  an existing login-recall fixed-wait assertion. The independently reviewed
+  test-only correction retained production bytes and budgets. Final source
+  `1a808ce` passed CI `43218280738`: each Linux Node 22.19.0/24.22.2 job passed
+  191 files / 6,277 tests with 2 platform skips; the failed run was not rerun.
+  Final test/internal-doc changes correctly did not trigger another Pages run.
+- **Publication:** `v0.6.2` and `ink-agent@0.6.2` are published from `1a808ce`.
+  Release run `43219715046` attempt 1 passed real publish and visibility checks.
+  Registry signatures, both attestations, seven negative controls, all 457
+  application file bodies/modes and a fresh isolated offline installation with
+  12 pinned production dependencies passed verification and independent review.
+  Formal GitHub Release v0.6.2 is Latest; its 1,739-byte body matches the approved
+  notes. See the [publication record](docs/design/release-0.6.2-preparation.md#publication).
+- **Boundaries:** no publication remains pending; do not move/reuse the tag or
+  rerun publication. No global upgrade occurred. This documentation-only record
+  follows the required independent review/--no-ff process; its remote push still
+  needs separate confirmation.
 
-## Latest published release: Ink 0.6.1
+## Previous published release: Ink 0.6.1
 
 - **Scope:** maintenance patch from reviewed main `c0a0c0a`; no additional
   feature, dependency, workflow or session-format changes. Preparation follows
