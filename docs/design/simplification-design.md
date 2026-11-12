@@ -1,6 +1,6 @@
 # Remove redundant implementation paths
 
-Status: APPROVED (revision 2); implementation in progress.
+Status: COMPLETE; revision 2 design and independent implementation reviews closed.
 Design review: independent adversarial reviewer d180068c, initial NEEDS-FIXES
 (4 blocking concerns), revision 2 APPROVE; all four concerns closed before code.
 Base: main@e02e464 (package 0.6.0)
@@ -85,14 +85,17 @@ do not introduce a resource framework, provider registry, or configuration servi
 
 - Replace string-derived stale-prefix inventory with private run roots. Vitest
   global setup creates a unique 0700 root under the original OS temp directory
-  and redirects TMPDIR/TMP/TEMP before workers are created. Existing per-test
+  and binds TMPDIR/TMP/TEMP in a private project.config.env copy before workers
+  are created, including watch reruns. The coordinator env is never redirected;
+  no once-only onCancel listener governs containment. Existing per-test
   cleanup, settings-setup sandbox cleanup and FIFO-owned cleanup remain the
   only recursive deletion mechanisms. No global recursive run-root deletion.
-- Global teardown restores exact original environment (delete originally absent
-  keys) and attempts only rmdir on its own root: nonempty roots are retained and
+- Global teardown restores the exact original worker-config env object and
+  property presence, and attempts only rmdir on its own root: nonempty roots are retained and
   their path reported. Thus retained visual artifacts, unknown FIFO containment
   and killed-worker leftovers cannot be erased by ancestor cleanup. Cancellation
-  and global-setup errors restore environment and never delete nonempty roots.
+  leaves coordinator env untouched and worker binding valid for reruns; setup
+  errors restore config and never delete nonempty roots.
   Do not enumerate the OS tmpdir, infer ownership from names, or implement an
   automatic stale-data sweep. Abandoned/nonempty runs are intentionally retained
   for manual inspection; they add one OS-temp entry per run rather than placing
@@ -123,8 +126,9 @@ Do not remove exported Fold APIs, change child result-hook timing, rewrite trust
 policy, aggregate pricing slices without measurement, or redesign package-smoke's
 npm cache format. These have compatibility or evidence gaps. Keep the agent loop,
 session format, compaction algorithm, MCP protocol layers, OAuth and pricing
-semantics intact. No package/global installs, network publication, or user-state
-migration is part of this work.
+semantics intact. No dependency/global package changes, network publication, or
+user-state migration is part of this work. Artifact smoke installs only into
+its isolated runtime prefix from integrity-checked offline cache data.
 
 ## Verification and acceptance
 
@@ -141,3 +145,35 @@ setting values/source consistency, fixture ownership and process liveness. Fix
 blocking findings and repeat relevant tests before completion. Integrate reviewed
 work through --no-ff merges; main must remain clean. Record exact results here
 and summarize the batch in CHANGELOG.md and PROJECT_PLAN.md.
+
+## Implementation acceptance
+
+- Packages A/B/D/E were implemented on dedicated worktrees and merged with
+  --no-ff into refactor/simplify-overdesign; C and Pages were implemented there.
+  Production src changes total +332/-519 (net -187 lines); the 60-line prefix
+  generator is retired. Regression tests intentionally add coverage rather than
+  preserve removed private machinery.
+- Independent reviews: providers/settings/Pages APPROVE (4b973683);
+  presentation/children APPROVE after required-string label compatibility fix
+  (ee2b8a2c); test infrastructure APPROVE after watch rerun containment fix
+  (6ae3f1fe). No implementation-review blocking findings remain.
+- Watch fix binds a private project.config.env for the lifetime of the Vitest
+  project, never redirects coordinator env, and restores original property
+  presence/object at teardown. Real API regression covers both cancellation
+  orders, absent/empty temp vars, and three rounds each. Empty-root-only cleanup
+  does not depend on Vitest's worker shutdown ordering.
+- Final integration verification: npm run typecheck PASS; npm run lint PASS
+  (340 files, docs parity and legacy-name checks PASS); npm run build PASS;
+  npm test PASS (181 files, 5,284 tests). Detailed local output is in
+  .vitest-cache/final-full-suite.log, not committed.
+- Offline package:smoke -- --cache-source /Users/z/.npm PASS: 451 allowed files,
+  modes, isolated install, help/version and local npm-exec inference. Source npm
+  cache was read-only; all installation/cache outputs stayed in worktree runtime.
+- Validation note: an initial child npm invocation made an unintended npm
+  update-notifier metadata GET. Subsequent and final npm validation disabled the
+  notifier and used offline configuration. No publication, global package
+  change, credential migration or user-state modification was performed.
+- English/Chinese public docs, CHANGELOG.md and PROJECT_PLAN.md are updated.
+  Exported Fold APIs, verdict diagnostics and child result-hook timing remain
+  intentionally unchanged; startup trust precedence and pricing aggregation
+  are not part of this batch.

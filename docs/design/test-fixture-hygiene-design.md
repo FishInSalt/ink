@@ -16,7 +16,8 @@ historical §A2 sweep and the 24-hour artifact retention policy below:
   containment on every watch rerun, including reruns after cancellation.
 - Global setup runs once; Vitest clears `onCancel` listeners between runs, so
   containment must not depend on a setup-time cancellation listener. Worker
-  configuration keeps the root until final teardown after worker shutdown.
+  configuration keeps the root until final global teardown; cleanup safety
+  does not assume that all workers have already closed at that point.
   Teardown restores the exact original config/env object and its absent or
   empty keys, then attempts **only `rmdir` on its own root**. Nonempty roots
   are retained and their paths reported. Setup errors use the same restoration
