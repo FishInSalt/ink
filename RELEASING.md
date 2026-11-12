@@ -3,11 +3,13 @@
 Current contract: this file plus [`docs/design/ink-rename-design.md`](docs/design/ink-rename-design.md)
 r3 (its repository-name row was superseded by the executed rename — see
 [`docs/design/ink-first-publication-design.md`](docs/design/ink-first-publication-design.md) §14).
-The selected package/version is **`ink-agent@0.6.0`**, with the sole `ink`
-executable. Version `0.6.0` is published; npm `latest` selects it. The dated
-`0.6.0` CHANGELOG section contains the release notes; publication and verification
-evidence is recorded in
-[`docs/design/release-0.6.0-preparation.md`](docs/design/release-0.6.0-preparation.md#publication).
+The selected candidate is **`ink-agent@0.6.1`**, with the sole `ink` executable.
+Version `0.6.1` is being prepared and is not yet published; npm `latest` still
+selects `0.6.0`. The dated `0.6.1` CHANGELOG section contains the candidate notes;
+preparation, reviews and validation are recorded in
+[`docs/design/release-0.6.1-preparation.md`](docs/design/release-0.6.1-preparation.md).
+The verified `0.6.0` publication history remains below and in its
+[publication record](docs/design/release-0.6.0-preparation.md#publication).
 The repository is **`FishInSalt/ink`** (renamed from `FishInSalt/imp`; old
 URLs redirect). Package metadata,
 lockfile (including its root package), app `VERSION`, and release tag must
@@ -274,8 +276,8 @@ and absence of old launcher, runtime roots, dotenv, credentials, source,
 tests, design docs, or unexpected artifacts. Top-level English and zh-CN
 user documentation is intentionally shipped. It installs locally in a private
 temporary prefix with temporary HOME/cache, no credentials, no install
-scripts, and no network. It executes help and exact `Ink 0.6.0` version
-(for this release), then checks npm-exec's single-bin inference against the
+scripts, and no network. It executes help and exact `Ink 0.6.1` version
+(for this candidate), then checks npm-exec's single-bin inference against the
 **local tarball from a neutral cwd**. It never invokes `npx ink` or modifies
 shared dependencies. The optional cache source is read-only; missing cached
 dependencies fail instead of fetching. Scratch paths are printed for

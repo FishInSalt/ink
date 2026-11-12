@@ -17,7 +17,25 @@
 
 ---
 
-## Latest maintenance: startup model after session trust
+## Latest release preparation: Ink 0.6.1
+
+- **Scope:** maintenance patch from reviewed main `c0a0c0a`; no additional
+  feature, dependency, workflow or session-format changes. Preparation follows
+  the [release design and execution record](docs/design/release-0.6.1-preparation.md).
+- **State:** independent design revision 2 approved before metadata changes.
+  Local source/test typechecks, lint (347 files), build, identity/npm-version,
+  docs-site (24 pages), offline artifact smoke (454 files) and full suites on
+  macOS Node 22.19.0/24.22.1/25.5.0 (187 files, 5,763 passed each) passed.
+  Installed full-CLI PTY acceptance passed 3 scenarios/161 assertions. Final
+  independent implementation/artifact review (77a8ae59) and PTY evidence review
+  (62be434b) both APPROVE with no required fixes; npm publication, GitHub Release
+  and global upgrade have not been performed.
+- **Boundaries:** each external action requires separate confirmation. The
+  installed application cannot be replaced while a relevant Ink session is
+  running; global upgrade requires an independently reviewed, quiescent
+  terminal handoff and the verified artifact with tested offline dependencies.
+
+## Previous maintenance: startup model after session trust
 
 - **Scope:** [approved design and acceptance](docs/design/startup-model-trust-order-design.md),
   based on main `7ce141f`. Parser captures only CLI/env/builtin; current trust

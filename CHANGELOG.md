@@ -8,29 +8,7 @@ their original release identity.
 
 ## [Unreleased]
 
-### Changed
-
-- **Project trust consistency.** Share project resource paths between trust
-  detection and loaders. Pass one captured `projectTrusted` decision from both
-  CLI modes to Runner and MCP; MCP no longer infers general trust from a
-  settings-only permission. Keep legacy per-resource options/defaults and
-  explicit denials, global/explicit resources, session-only approvals without
-  persistence, source ordering and each loader's existing file-kind checks.
-- **Implementation simplification.** Remove the unreachable private legacy tool
-  fold path, redundant activity-label/layout work and the Runner's duplicate
-  child-tool factory. Separate pure model references from provider construction,
-  use one catalog store, and read settings values/sources from one snapshot per
-  refresh. Keep exported Fold APIs, activity label string compatibility and
-  existing child presentation-hook timing.
-- **Conservative old lease handling.** Refuse non-directory child lease artifacts
-  without reading, deleting or automatically migrating them. Inspect old
-  single-file leases manually; current candidate-directory mutual exclusion
-  and recovery rules are unchanged.
-- **Owned test runtime.** Confine fixtures to private per-invocation temporary
-  roots, including watch cancellation/reruns, and replace nested Vitest lease
-  roles with plain Node+tsx workers and bounded parent cleanup. Retire OS-temp
-  prefix scanning and automatic 24-hour deletion; nonempty roots and diagnostics
-  are retained for manual inspection. Design-only edits no longer deploy Pages.
+## [0.6.1] - 2026-11-12
 
 ### Fixed
 
@@ -47,7 +25,6 @@ their original release identity.
   failure, consistently try the cached public catalog before shared static
   choices. Preserve all four bundled Moonshot choices on both platforms,
   authoritative subscription empty lists and custom-endpoint boundaries.
-
 - **CI search prerequisites.** Use isolated, signed official Ubuntu sources
   with explicit amd64 filtering and bounded acquisition instead of the hosted
   image's mirror list. Installation failures and required-tool checks remain
@@ -65,6 +42,32 @@ their original release identity.
   source-commit and tarball checks for up to ten minutes, report setup/summary
   failures accurately, and never automatically publish again. Artifact integrity
   and provenance still require separate verification.
+
+### Changed
+
+- **Project trust consistency.** Share project resource paths between trust
+  detection and loaders. Pass one captured `projectTrusted` decision from both
+  CLI modes to Runner and MCP; MCP no longer infers general trust from a
+  settings-only permission. Keep legacy per-resource options/defaults and
+  explicit denials, global/explicit resources, session-only approvals without
+  persistence, source ordering and each loader's existing file-kind checks.
+- **Implementation simplification.** Remove the unreachable private legacy tool
+  fold path, redundant activity-label/layout work and the Runner's duplicate
+  child-tool factory. Separate pure model references from provider construction,
+  use one catalog store, and read settings values/sources from one snapshot per
+  refresh. Keep exported Fold APIs, activity label string compatibility and
+  existing child presentation-hook timing. The undocumented internal
+  `modelMaxTokensFor` export moves from `provider/catalog` to
+  `provider/model-limits`; direct imports of the old internal location must change.
+- **Conservative old lease handling.** Refuse non-directory child lease artifacts
+  without reading, deleting or automatically migrating them. Inspect old
+  single-file leases manually; current candidate-directory mutual exclusion
+  and recovery rules are unchanged.
+- **Owned test runtime.** Confine fixtures to private per-invocation temporary
+  roots, including watch cancellation/reruns, and replace nested Vitest lease
+  roles with plain Node+tsx workers and bounded parent cleanup. Retire OS-temp
+  prefix scanning and automatic 24-hour deletion; nonempty roots and diagnostics
+  are retained for manual inspection. Design-only edits no longer deploy Pages.
 
 ## [0.6.0] - 2026-11-11
 
