@@ -195,6 +195,31 @@ positive tier cases, not become vacuous after narrowing classification.
 - Run focused regressions, typecheck, lint, build, and full offline test suite.
   Independent code review is required after these changes.
 
+## Implementation review amendments
+
+The first implementation review found four integration gaps. The corrections
+below passed independent design review in session
+`086d42b5-8808-4487-8ca0-aa4f9008c929` before implementation. Close them without
+widening pairing scans:
+
+- Preserve `runTurn`'s existing synchronous run-start-hook failure contract.
+  Return rejected promises only for the new continuation preflight failures;
+  pre-aborted runs return resolved aborted outcomes. Do not make the whole
+  method `async`.
+- At every main/child model-request boundary, assert captured-store writability
+  in constant time, independent of automatic-compaction settings. This is NOT
+  another pairing scan. Guard summary inference too. An existing-stream request
+  need not be undone, but no later request may start through an invalid store.
+- Child compaction's normal provider-failure tolerance must not swallow a
+  persistence failure. Record a caught checkpoint append error and rethrow it
+  unchanged past the summarizer backstop; do not replace it with a later reopen
+  refusal or overflow guidance. Existing provider retry/cancellation policies
+  remain unchanged. Tests cover zero/partial/complete checkpoint writes.
+- Force exit must try emergency result persistence, report failures, and still
+  execute cleanup/exit/finish. Apply to REPL double Ctrl+C and print SIGINT.
+  An invalid store remains unwritable; never bypass the refusal. Test real
+  pending-tool plus invalid-store double-Ctrl+C and the print signal path.
+
 ## Non-goals
 
 No per-tool incremental persistence redesign, universal history state machine,

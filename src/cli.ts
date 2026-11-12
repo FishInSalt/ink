@@ -1028,13 +1028,18 @@ async function runPrint(opts: CliOptions, argv: string[]): Promise<void> {
 			process.stdout.write(dim("\n(interrupt — press Ctrl+C again to force quit)\n"));
 			controller.abort();
 		} else {
-			// Keep the session resumable: close any dangling tool_use before dying.
-			runner.persistMissingToolResults("(force quit before this tool ran)");
-			// #bash-abort D3: explicit sweep BEFORE process.exit — beforeExit
-			// does not fire on explicit exit (round-2 review F1); a tracked
-			// detached bash group would otherwise outlive us.
-			killTrackedDetachedChildren();
-			process.exit(130);
+			try {
+				// Attempt closure, but never require a successful write to exit.
+				runner.persistMissingToolResults("(force quit before this tool ran)");
+			} catch (error) {
+				renderer.error(
+					`ink: emergency tool results were not persisted: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			} finally {
+				// beforeExit does not run on explicit exit: sweep first.
+				killTrackedDetachedChildren();
+				process.exit(130);
+			}
 		}
 	};
 	process.on("SIGINT", onSigint);

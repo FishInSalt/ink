@@ -1493,7 +1493,17 @@ class ReplMachine {
 		killTrackedDetachedChildren();
 		// Close dangling tool_use in the session so a force-quit run stays
 		// resumable (single Ctrl+C is handled by the loop; this is the 130 path).
-		this.runner.persistMissingToolResults("(force quit before this tool ran)");
+		try {
+			this.runner.persistMissingToolResults("(force quit before this tool ran)");
+		} catch (error) {
+			try {
+				this.renderer.error(
+					`ink: emergency tool results were not persisted: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			} catch {
+				// Even a failed diagnostic cannot prevent emergency exit.
+			}
+		}
 		try {
 			this.exit(code); // process.exit in production
 		} catch {
