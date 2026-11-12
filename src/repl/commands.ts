@@ -831,10 +831,14 @@ function maybeNoteDefaultModelHint(ctx: CommandContext): void {
  *  resume, replay, and note are byte-identical whichever way the id arrived. */
 function resumeById(ctx: CommandContext, id: string): CommandOutcome {
 	try {
-		const { id8, messages } = ctx.runner.resumeSession(id);
+		const { id8, messages, repairedTools } = ctx.runner.resumeSession(id);
 		ctx.clearView?.(); // the old conversation leaves the screen FIRST (debt clearance)
 		const session = ctx.runner.session;
 		if (session !== null && messages > 0) ctx.replay(session);
+		if (repairedTools)
+			ctx.renderer.note(
+				`▪ recovered ${repairedTools} interrupted tool call(s); outcomes unknown, no tools replayed — inspect state before retrying`,
+			);
 		ctx.renderer.note(
 			// #fresh-install-hint (round-2 review F5): the third resumed surface —
 			// N3 covered startup only.

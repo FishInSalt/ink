@@ -6,6 +6,10 @@ import { createSession } from "../src/core/session/manager.js";
 import * as tail from "../src/core/session/resume-tail.js";
 import { SessionStore } from "../src/core/session/store.js";
 import type { LLMRequest } from "../src/provider/types.js";
+import { Renderer } from "../src/render.js";
+import { dispatchCommand } from "../src/repl/commands.js";
+import { replaySession } from "../src/repl/replay.js";
+import { TranscriptSink } from "../src/repl/transcript.js";
 import { createRunner, type RunnerOptions } from "../src/runner.js";
 import { assistant, makeRenderer, scriptedProvider, user } from "./helpers/fakes.js";
 import { mkTempDir } from "./helpers/mktemp.js";
@@ -68,12 +72,13 @@ const savedResults = (messages: AgentMessage[]) =>
 	messages.flatMap((m) => (m.role === "toolResult" ? m.results : []));
 
 describe("final assistant batch only", () => {
-	it.each([[], [user("last prompt")], [done()], [calls("a"), result("a")]].map((messages) => ({ messages })))(
-		"leaves a completed or non-tool suffix unchanged: $messages",
-		({ messages }) => {
-			expect(tail.missingTailCalls(messages)).toEqual([]);
-		},
-	);
+	it.each(
+		[[], [user("last prompt")], [done()], [done(), result("old")], [calls("a"), result("a")]].map(
+			(messages) => ({ messages }),
+		),
+	)("leaves a completed or non-tool suffix unchanged: $messages", ({ messages }) => {
+		expect(tail.missingTailCalls(messages)).toEqual([]);
+	});
 	it("preserves out-of-order partial outputs and returns missing IDs in declaration order", () => {
 		expect(
 			tail.missingTailCalls([user("seed"), calls("a", "b", "c", "d"), result("d"), result("b")]),
@@ -124,11 +129,12 @@ describe("immediate main-session resume", () => {
 							deferInit: entry === "deferred",
 						},
 			);
-			if (entry === "/resume") live.runner.resumeSession(env.store.header.id);
+			if (entry === "/resume") expect(live.runner.resumeSession(env.store.header.id).repairedTools).toBe(2);
 			if (entry === "deferred") live.runner.warmup();
 			expect(spy).toHaveBeenCalledTimes(1);
 			expect(live.requests).toHaveLength(0);
-			expect(live.output()).toContain("recovered 2 interrupted tool call(s)");
+			if (entry !== "/resume") expect(live.output()).toContain("recovered 2 interrupted tool call(s)");
+			else expect(live.output()).not.toContain("recovered");
 			const outputs = savedResults(live.runner.history);
 			expect(outputs.map((r) => r.toolCallId)).toEqual(["d", "b", "a", "c"]);
 			expect(outputs.slice(0, 2).map((r) => r.content)).toEqual(["saved d", "saved b"]);
@@ -285,4 +291,48 @@ describe("failed candidate is never published", () => {
 		live.runner.resumeSession(env.store.header.id);
 		expect(savedResults(live.runner.history).map((r) => r.toolCallId)).toEqual(["later"]);
 	});
+});
+
+describe("resume notice survives TUI clearing", () => {
+	it.each([false, true])(
+		"reports recovery after replay, and preserves the old view on failure (write failure=%s)",
+		async (fail) => {
+			const env = world();
+			const transcript = new TranscriptSink();
+			const write = (text: string) => transcript.feed(text);
+			const renderer = new Renderer({ write, ansi: false, liveTools: false, toolStyle: "one-line" });
+			const live = await runnerFor(env, { renderer });
+			const previous = live.runner.session;
+			renderer.note("previous conversation remains visible");
+			const clearView = vi.fn(() => transcript.clear());
+			if (fail)
+				vi.mocked(fs.appendFileSync).mockImplementationOnce(() => {
+					throw new Error("resume append failed");
+				});
+			await dispatchCommand(`/resume ${env.store.header.id}`, {
+				runner: live.runner,
+				renderer,
+				clearView,
+				isActive: () => false,
+				requestExit: () => {},
+				abortActive: () => false,
+				submitPrompt: () => {},
+				replay: (session) => replaySession({ write, ansi: false, markdown: false }, session),
+			});
+			const screen = transcript.render(160).join("\n");
+			if (fail) {
+				expect(clearView).not.toHaveBeenCalled();
+				expect(screen).toContain("previous conversation remains visible");
+				expect(screen).toContain("resume append failed");
+				expect(screen).not.toContain("recovered");
+				expect(live.runner.session).toBe(previous);
+			} else {
+				expect(clearView).toHaveBeenCalledTimes(1);
+				expect(screen).not.toContain("previous conversation remains visible");
+				expect(screen.match(/recovered 3 interrupted tool call\(s\)/g)).toHaveLength(1);
+				expect(screen.indexOf("outcome is unknown")).toBeLessThan(screen.indexOf("recovered 3"));
+				expect(screen.indexOf("recovered 3")).toBeLessThan(screen.indexOf("resumed"));
+			}
+		},
+	);
 });

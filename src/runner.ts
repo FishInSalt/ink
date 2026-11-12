@@ -331,7 +331,7 @@ export interface Runner {
 	listSessions(): SessionInfo[];
 	/** `/resume <id>`: swap the live session to a saved one (history reloads;
 	 *  the old session stays on disk untouched). Throws SessionNotFoundError. */
-	resumeSession(id: string): { id8: string; messages: number };
+	resumeSession(id: string): { id8: string; messages: number; repairedTools?: number };
 	/** `/fork` candidates: user messages on the current branch with
 	 *  previews (#10 batch 1). Empty when sessions are disabled. */
 	forkPoints(): { id: string; preview: string }[];
@@ -1138,7 +1138,7 @@ class RunnerImpl implements Runner {
 		};
 	}
 
-	resumeSession(id: string): { id8: string; messages: number } {
+	resumeSession(id: string): { id8: string; messages: number; repairedTools?: number } {
 		// Same matching as --resume: UUID, unique prefix, or file name.
 		const store = resolveSession(this.options.cwd, {
 			resume: id,
@@ -1155,8 +1155,11 @@ class RunnerImpl implements Runner {
 		this.estimateFloor = loaded.compactionBoundary;
 		this.restoreThinkingFromSession(store); // pi restores the branch's level on resume
 		this.systemText = this.assembleSystem();
-		this.noteResumeRepair(loaded.repairedTools);
-		return { id8: store.header.id.slice(0, 8), messages: this.history.length };
+		return {
+			id8: store.header.id.slice(0, 8),
+			messages: this.history.length,
+			...(loaded.repairedTools > 0 ? { repairedTools: loaded.repairedTools } : {}),
+		};
 	}
 
 	private noteResumeRepair(count: number): void {

@@ -21,6 +21,7 @@ export function missingTailCalls(messages: readonly AgentMessage[]): PendingCall
 			throw new SessionError(`Cannot repair final tool batch: duplicate call ${block.id}`);
 		calls.set(block.id, { id: block.id, name: block.name });
 	}
+	if (calls.size === 0) return [];
 	const answered = new Set<string>();
 	for (let i = firstResult; i < messages.length; i++) {
 		for (const result of (messages[i] as ToolResultMessage).results) {
