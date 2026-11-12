@@ -21,6 +21,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ThinkingLevel } from "../provider/thinking.js";
+import { INK_RESOURCE_PATHS } from "./resource-paths.js";
 
 export type QueueMode = "all" | "one-at-a-time";
 
@@ -73,12 +74,12 @@ export interface InkSettings {
 
 /** The global settings file path (INK_SETTINGS_PATH overrides — hermetic tests). */
 export function settingsFilePath(override?: string): string {
-	return override ?? process.env.INK_SETTINGS_PATH ?? join(homedir(), ".ink", "settings.json");
+	return override ?? process.env.INK_SETTINGS_PATH ?? join(homedir(), INK_RESOURCE_PATHS.settings);
 }
 
 /** The project settings file path for a working directory. */
 export function projectSettingsPath(cwd: string): string {
-	return join(cwd, ".ink", "settings.json");
+	return join(cwd, INK_RESOURCE_PATHS.settings);
 }
 
 /** Coerce one parsed JSON object into InkSettings; unknown keys are

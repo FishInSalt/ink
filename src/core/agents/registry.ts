@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { THINKING_LEVELS, type ThinkingLevel } from "../../provider/thinking.js";
+import { INK_RESOURCE_PATHS } from "../resource-paths.js";
 import { escapeXml } from "../skills.js";
 
 /**
@@ -231,8 +232,8 @@ export function loadAgentDefinitions(
 	const byName = new Map<string, AgentDefinition>();
 	const warnings: string[] = [];
 	const dirs = [
-		path.join(homeDir, ".ink", "agents"), // scanned first: loses collisions
-		path.join(cwd, ".ink", "agents"), // scanned last: wins collisions
+		path.join(homeDir, INK_RESOURCE_PATHS.agents), // scanned first: loses collisions
+		path.join(cwd, INK_RESOURCE_PATHS.agents), // scanned last: wins collisions
 	];
 	// M8 trust gate. When cwd IS the home dir the two entries are the same
 	// directory — the global tier is the user's own installation and is never

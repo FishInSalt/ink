@@ -21,6 +21,19 @@ Each panel/table refresh reads the allowed files once, so displayed values and
 scope labels use the same snapshot. Changes are reread on the next refresh;
 settings already captured by a running session retain their existing behavior.
 
+Hosts constructing a Runner directly can pass `RunnerOptions.projectTrusted`
+for one captured session decision covering project settings, named agents and
+SYSTEM.md/APPEND_SYSTEM.md. This is a Runner option, not a settings.json key.
+`false` denies all three scopes; `true` allows them except where a legacy
+per-scope option is explicitly `false`. Legacy `projectSettingsAllowed`,
+`agentsProjectAllowed` and `systemPromptProjectAllowed` remain accepted. If
+`projectTrusted` is omitted, their previous defaults remain respectively
+`false`, `true`, `false`; granting one old scope does not grant the others.
+The CLI always passes the resolved session decision, never relies on these
+legacy defaults, and passes that decision directly to MCP. Independent
+extension and agent loaders retain their older default-allow contracts, so
+hosts calling them directly must apply their project gate explicitly.
+
 ## Keys
 
 | Key | Type | Default | Description |

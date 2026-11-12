@@ -55,6 +55,13 @@ Executable or model-influencing project resources — `.ink/extensions/`,
 directory (`ink --trust`, or the ask-once prompt). A cloned repository must
 not grow code that talks to the model. `/trust` shows the recorded decision.
 
+The TUI prompt also offers approval for this session only: resources load using
+that in-memory decision, including project MCP servers, without saving a trust
+record. Cancelling the prompt or opening an undecided project noninteractively
+skips its gated resources without recording a denial. Global resources and
+explicit `-e`/`--skill` paths remain available after a project denial; ordinary
+AGENTS.md/CLAUDE.md context files are not part of this gate.
+
 ## Platform support
 
 macOS (development platform) and Linux (full CI gate). Windows is not

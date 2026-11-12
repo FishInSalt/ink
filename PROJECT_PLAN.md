@@ -17,7 +17,25 @@
 
 ---
 
-## Latest maintenance: implementation simplification
+## Latest maintenance: project trust consistency
+
+- **Scope:** [approved design and acceptance](docs/design/project-trust-consistency-design.md),
+  based on main `ace8fa7`. Share path facts for project resources, canonical
+  Runner session trust and direct MCP permission/cwd plumbing. Keep legacy
+  options/defaults, explicit scope denials, global/explicit resources, discovery
+  order, file-kind and home-alias behavior. Repair the agents cwd==home test.
+- **Review:** independent adversarial design APPROVE before implementation;
+  independent path/loader and CLI/Runner implementation reviews both APPROVE,
+  with no required fixes. No generic resource manager, new trust policy,
+  persistent trust migration or changes to startup model selection.
+- **Validation:** `npm run typecheck`, `npm run lint` (345 files),
+  `npm run build`, `npm test` (185 files, 5,648 passed; 364 new cases), and
+  offline artifact smoke (454 allowed files, isolated install, help/version,
+  local npm-exec inference). Tests exercise actual private CLI declarations
+  without importing top-level main; terminal input is simulated, not a claim of
+  a new real-terminal end-to-end test. Both languages' public docs are updated.
+
+## Previous maintenance: implementation simplification
 
 - **Scope:** [approved design and acceptance](docs/design/simplification-design.md),
   based on main `e02e464`. Presentation, model policy/modules, settings snapshots,
