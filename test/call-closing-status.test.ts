@@ -91,6 +91,17 @@ describe("call closing slot (#call-closing-status, design D2/D8)", () => {
 		expect(plain(fold.render(44))).toEqual(["● bash  cd /tmp", "    ls -la", "    echo done 3s"]);
 	});
 
+	it.each([false, true])("keeps grapheme source offsets across unequal row budgets, raw %s", (raw) => {
+		const command = "e\u0301漢👍🏽🇨🇳";
+		const fold = input("bash", { command }, bashPresentation, 2300);
+		fold.setRawArguments(raw);
+		expect(plain(fold.render(9))).toEqual(["● bash  e\u0301", "    漢👍🏽", "    🇨🇳"]);
+		// The completion slot reserves a smaller budget, but source coverage
+		// must still include every UTF-16 unit of each glyph.
+		expect(plain(fold.render(25))).toEqual(["● bash  e\u0301漢👍🏽🇨🇳 ✓ 2.3s"]);
+		for (const width of [1, 5, 6, 8, 9, 10, 19, 20, 25]) expect(rowsFit(fold, width)).toBe(true);
+	});
+
 	it("closes the last summary row for a wrapped task prompt", () => {
 		const rows = plain(
 			input(

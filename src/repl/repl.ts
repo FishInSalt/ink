@@ -2,7 +2,7 @@ import type { Readable } from "node:stream";
 import { estimateContextTokens } from "../core/compaction.js";
 import { type HealthSignal, healthSignalText } from "../core/health.js";
 import type { AgentEvent, RunAgentLoopResult } from "../core/loop.js";
-import { type AgentMessage, contentText } from "../core/messages.js";
+import type { AgentMessage } from "../core/messages.js";
 import { killTrackedDetachedChildren } from "../core/process-tree.js";
 import type { SessionStore } from "../core/session/store.js";
 import { type QueueMode, saveSettings } from "../core/settings.js";
@@ -12,12 +12,12 @@ import { priceUsageTotals } from "../core/usage-totals.js";
 import type { ExtensionRegistry } from "../extensions/registry.js";
 import { NO_CONFIRM_LINE } from "../extensions/registry.js";
 import type { ConfirmOptions, RegisteredExtensionCommand } from "../extensions/types.js";
-import { dim, formatTokens, shorten, summarizeResult, usageMoneySegment, VERSION } from "../format.js";
+import { formatTokens, shorten, usageMoneySegment, VERSION } from "../format.js";
 import type { McpManager } from "../mcp/manager.js";
+import { formatModelSelection } from "../provider/model-ref.js";
 import { costFor } from "../provider/models.js";
-import { formatModelSelection } from "../provider/resolve.js";
 import { supportedThinkingLevels, thinkingMetaFor } from "../provider/thinking.js";
-import { imageSuffix, type Renderer } from "../render.js";
+import type { Renderer } from "../render.js";
 import { type AgentEventInfo, noModelText, type Runner } from "../runner.js";
 import { type AutocompleteSlashCommand, resolveShell, type Terminal } from "../tui.js";
 import { copyToClipboard } from "./clipboard-write.js";
@@ -30,7 +30,6 @@ import {
 	loginUsesDialog,
 	parseCommand,
 } from "./commands.js";
-import { buildFoldFromDiff } from "./components/fold.js";
 import { commandPreviewText } from "./components/tool-block.js";
 import type { ReplOutput } from "./input.js";
 import { ReplInput } from "./input.js";
@@ -100,10 +99,6 @@ export interface ReplOptions {
 }
 
 type ReplState = "idle" | "running" | "compacting" | "exiting" | "exited";
-
-/** Defensive cap on a non-edit fold body (tools truncate their own output
- *  already — this only bounds pathological results). */
-const FOLD_LINE_CAP = 2000; // ≥ every tool's own cap (bash 500, read 2000)
 
 /** #startup-model-resolution (D6): the unusable-model copy now lives in
  *  the runner module — every surface (banner, footer, title, resumed line,
@@ -741,7 +736,7 @@ class ReplMachine {
 					if (this.activeRun !== run) return;
 					// #loop-health (design §4.3): health events become one dim note
 					// per (source|main, code) per run — they never reach
-					// trackActivity, renderer.event, or showResultFold.
+					// trackActivity or renderer.event.
 					if (event.type === "health") {
 						this.healthNote(event.signal, info);
 						return;
@@ -771,10 +766,7 @@ class ReplMachine {
 					// Top-level events feed the Renderer; subagent-sourced ones
 					// (info set) go to the activity region only — M5's
 					// zero-rendering-visibility rule, enforced at this tap.
-					if (info === undefined) {
-						this.renderer.event(event);
-						this.showResultFold(event); // TUI: every top-level result folds (M11); child edits could later
-					}
+					if (info === undefined) this.renderer.event(event);
 					// #footer-per-turn: pi refreshes the footer on every assistant
 					// message_end (interactive-mode.ts:3279 — footer.invalidate +
 					// requestRender); usage lands in history per TURN, so the ctx%
@@ -802,54 +794,6 @@ class ReplMachine {
 				this.toolSink?.finalize();
 			}
 		}
-	}
-
-	/** Fold a finished top-level tool result (TUI only — the legacy shell has
-	 *  no addFold and keeps its `⎿` line). Successful results of EVERY tool
-	 *  fold (M11: `⎿ stdout: (+22 lines)` told the reader nothing and hid the
-	 *  content with no way in — dogfood 2026-09-09); edits keep their
-	 *  decorated diff fold, everything else previews via summarizeResult and
-	 *  carries the full content. Errors fold with a red arrow (debt
-	 *  clearance); the `● ✗` line above keeps the failure salient.
-	 *  Child-sourced results never reach this tap. */
-	private showResultFold(event: AgentEvent): void {
-		if (event.type !== "tool_end" || this.renderer.hasToolSink) return;
-		if (this.input.addFold === undefined) return;
-		const result = event.result;
-		if (!result.isError && result.toolName === "edit") {
-			// prompt-audit P1: the model gets a one-liner; the display string
-			// carries the "<summary>:<diff>" fold contract.
-			const content = result.display ?? contentText(result.content);
-			const split = content.indexOf(":\n");
-			if (split !== -1) {
-				// the built-in contract: "<summary>:\n<diff>" gets the decorated
-				// diff fold. Anything else (an extension tool also named "edit")
-				// falls through to the generic fold — the ⎿ is suppressed under
-				// foldedResults, so returning would lose the preview entirely
-				// (review: edit-contract edge).
-				const { title, lines } = buildFoldFromDiff(content.slice(0, split), content.slice(split + 2));
-				this.input.addFold(title, lines);
-				return;
-			}
-		}
-		const shown = result.display ?? contentText(result.content);
-		const rawLines = shown.split("\n");
-		// A trailing newline is a terminator, not a (blank) line — count it out
-		// (review P2: 400 physical lines + "\n" lied about one more).
-		if (rawLines[rawLines.length - 1] === "") rawLines.pop();
-		// The tools truncate their own output (bash caps 500 lines, read 2000),
-		// so the fold body is already bounded; the defensive cap only stops a
-		// pathological result from swelling the fold container.
-		const capped = rawLines.slice(0, FOLD_LINE_CAP);
-		if (rawLines.length > FOLD_LINE_CAP) {
-			capped.push(dim(`… (${rawLines.length - FOLD_LINE_CAP} more lines — full output in the session)`));
-		}
-		this.input.addFold(
-			summarizeResult(result.toolName, shown) + imageSuffix(result, this.renderer.ansiEnabled),
-			capped,
-			false,
-			result.isError === true,
-		);
 	}
 
 	private steeringMessages(): AgentMessage[] {
@@ -1293,19 +1237,21 @@ class ReplMachine {
 			return;
 		}
 		if (event.type === "tool_start") {
+			// Prepare before the activity push and Renderer event: the transcript
+			// must share this detached snapshot and captured hooks, not re-read args.
 			const record = this.toolSink?.prepare(event.toolCallId, event.name, event.args);
-			const block = record
-				? preparedInputBlock(record)
-				: inputBlock(event.toolCallId, event.name, event.args);
-			const label = block.semantic
-				? [block.semantic.summary, ...(block.semantic.preview ?? [])].join("\n")
-				: block.lines.join("\n");
 			// #sliding-window: a concurrency-safe call's tool_start is pre-issued for
 			// the whole run — the row starts QUEUED (no timer) until its tool_running
 			// admits it. Serial tools keep today's shape exactly (no queued flag,
 			// and no tool_running will ever arrive for them).
 			const queued = this.runner.getTool(event.name)?.concurrencySafe === true ? (true as const) : undefined;
 			if (event.name === "task") {
+				const block = record
+					? preparedInputBlock(record)
+					: inputBlock(event.toolCallId, event.name, event.args);
+				const label = block.semantic
+					? [block.semantic.summary, ...(block.semantic.preview ?? [])].join("\n")
+					: block.lines.join("\n");
 				const args = record?.rawArgs as Record<string, unknown> | null | undefined;
 				const agent =
 					args && typeof args === "object" && !Array.isArray(args) && typeof args.agent === "string"
@@ -1328,7 +1274,7 @@ class ReplMachine {
 				this.activityTools.set(event.toolCallId, {
 					id: event.toolCallId,
 					name: event.name,
-					label,
+					label: "",
 					startedAtMs: Date.now(),
 					...(queued !== undefined ? { queued } : {}),
 				});

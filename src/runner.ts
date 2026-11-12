@@ -31,7 +31,7 @@ import {
 	type UsageTotalsTracker,
 	usageTotalsTracker,
 } from "./core/usage-totals.js";
-import { modelMaxTokensFor } from "./provider/catalog.js";
+import { modelMaxTokensFor } from "./provider/model-limits.js";
 import { costFor } from "./provider/models.js";
 
 /** navigateTree's success shape (batch B: named so forkSessionAt can extend
@@ -76,15 +76,14 @@ import { compactionSettingsFor } from "./provider/compaction-settings.js";
 import { withLogging } from "./provider/logging.js";
 import { LOGIN_TARGETS } from "./provider/login-targets.js";
 import { modelAvailability } from "./provider/model-availability.js";
-import { contextWindowFor } from "./provider/models.js";
 import {
-	createProviderFor,
 	formatModelSelection,
 	type ProviderName,
 	parseModelSelection,
 	qualifiedReference,
-	resolveModel,
-} from "./provider/resolve.js";
+} from "./provider/model-ref.js";
+import { contextWindowFor } from "./provider/models.js";
+import { createProviderFor, resolveModel } from "./provider/resolve.js";
 import { type ModelSource, resolveStartupModelFallback } from "./provider/startup-model.js";
 import {
 	clampThinkingLevel,
@@ -616,25 +615,6 @@ class RunnerImpl implements Runner {
 				agents: this.agents.agents,
 				agentsProjectGated: this.agents.projectGated,
 				cwd: options.cwd,
-				// Worktree children (M6b): builtins rebuilt at the worktree
-				// path. Extension tools are excluded by construction here —
-				// their api.cwd cannot move (design D5), and a pool split
-				// across two trees would fail silently.
-				getToolsForCwd: (cwd) => [
-					createBashTool({ cwd }),
-					createReadTool({
-						cwd,
-						modelSupportsVision: () => modelSupportsVision(this.providerName, this.model),
-						imageProcessing: {
-							autoResize: this.effectiveSettings().images?.autoResize ?? true,
-						},
-					}),
-					createEditTool({ cwd }),
-					createWriteTool({ cwd }),
-					createGrepTool({ cwd }),
-					createFindTool({ cwd }),
-					createLsTool({ cwd }),
-				],
 				// SA-02 D5: the child-bound pool. At the parent cwd: the parent's
 				// live list with ONLY the runner-owned read instance swapped (a
 				// fresh instance whose image gate follows the CHILD's model —

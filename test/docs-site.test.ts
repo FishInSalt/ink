@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 // @ts-expect-error The docs site builder is JavaScript without declarations.
 import { buildSite, headingSlugs } from "../scripts/build-docs-site.mjs";
 
@@ -27,6 +28,24 @@ function page(relPath: string): Promise<string> {
 }
 
 describe("docs site build", () => {
+	it("deploys for published inputs but excludes the unused design archive", async () => {
+		const workflow = parse(await readFile(join(repoRoot, ".github/workflows/pages.yml"), "utf8"));
+		const paths: string[] = workflow.on.push.paths;
+		expect(workflow.on.push.branches).toEqual(["main"]);
+		expect(paths).toEqual([
+			"README.md",
+			"README.zh-CN.md",
+			"docs/**",
+			"!docs/design/**",
+			"scripts/build-docs-site.mjs",
+			"scripts/docs-site-config.json",
+			"package.json",
+			"package-lock.json",
+			".github/workflows/pages.yml",
+		]);
+		expect(workflow.on).toHaveProperty("workflow_dispatch");
+	});
+
 	it("en home: the language switch points at the zh home (sidebar and article)", async () => {
 		const html = await page("index.html");
 		expect(html).toContain(

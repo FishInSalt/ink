@@ -11,7 +11,11 @@ import { buildSkillCommands, expandSkillBlock, loadSkills } from "../src/core/sk
 import { buildTaskRecord } from "../src/core/task-record.js";
 import { detectBinary } from "../src/core/tools/bin-detect.js";
 import { taskPresentation } from "../src/core/tools/presentation.js";
-import type { Tool } from "../src/core/tools/types.js";
+import type {
+	Tool,
+	ToolCallPresentationContext,
+	ToolResultPresentationContext,
+} from "../src/core/tools/types.js";
 import { type LoadedExtensions, loadExtensions } from "../src/extensions/loader.js";
 import type { RegisteredExtensionCommand } from "../src/extensions/types.js";
 import { dim } from "../src/format.js";
@@ -3870,6 +3874,176 @@ describe("runRepl with shell:tui", () => {
 		env.terminal.data("/exit\r");
 		await expect(env.repl).resolves.toBe(0);
 	});
+	it("keeps non-task activity minimal while preparing hooks and args before the transcript event", async () => {
+		const order: string[] = [];
+		const args = { message: "original" };
+		const call = vi.fn(() => {
+			order.push("call hook");
+			return { summary: "prepared summary", preview: ["prepared preview"] };
+		});
+		const result = vi.fn((context: ToolResultPresentationContext) => {
+			order.push("result hook");
+			return { summary: `result ${(context.args as { message: string }).message}` };
+		});
+		const replacement = vi.fn();
+		const tool = gatedTool(gate());
+		tool.presentation = { call, result };
+		const env = await startTuiRepl([reply("finished")], { tools: [tool] });
+		const seen: Parameters<TuiShell["setActivity"]>[0][] = [];
+		const realActivity = TuiShell.prototype.setActivity;
+		const activity = vi.spyOn(TuiShell.prototype, "setActivity").mockImplementation(function (
+			this: TuiShell,
+			snapshot,
+		) {
+			seen.push(snapshot);
+			if (snapshot.tools.some((row) => row.id === "prepared")) {
+				order.push("activity");
+				args.message = "mutated during activity push";
+				tool.presentation = { result: replacement };
+			}
+			realActivity.call(this, snapshot);
+		});
+		const realEvent = env.runner.renderer.event.bind(env.runner.renderer);
+		const event = vi.spyOn(env.runner.renderer, "event").mockImplementation((value) => {
+			if (value.type === "tool_start") order.push("transcript event");
+			realEvent(value);
+		});
+		onTestFinished(() => {
+			activity.mockRestore();
+			event.mockRestore();
+		});
+		const original = env.runner.runTurn.bind(env.runner);
+		vi.spyOn(env.runner, "runTurn").mockImplementationOnce(async (options) => {
+			const emit = options.onEvent!;
+			emit({ type: "tool_start", toolCallId: "prepared", name: tool.name, args });
+			const finished = { toolCallId: "prepared", toolName: tool.name, content: "raw", isError: false };
+			emit({ type: "tool_settled", result: finished });
+			emit({ type: "tool_end", result: finished });
+			return original(options);
+		});
+		env.terminal.data("go\r");
+		try {
+			await waitUntil(() => env.transcript.completedLines().join().includes("finished"));
+			expect(order).toEqual(["call hook", "activity", "transcript event", "result hook"]);
+			expect(call).toHaveBeenCalledTimes(1);
+			expect(result).toHaveBeenCalledTimes(1);
+			expect(replacement).not.toHaveBeenCalled();
+			const row = seen.flatMap((snapshot) => snapshot.tools).find((entry) => entry.id === "prepared");
+			expect(row).toEqual({ id: "prepared", name: tool.name, label: "", startedAtMs: expect.any(Number) });
+			const compatibleLabel: string = row!.label;
+			expect(compatibleLabel.trim()).toBe("");
+			expect(env.transcript.toolFolds.map((fold) => fold.block.kind)).toEqual(["input", "output"]);
+			const input = env.transcript.toolFolds[0]!.block;
+			expect(input.semantic?.summary).toBe("prepared summary");
+			expect(input.semantic?.preview).toEqual(["prepared preview"]);
+			expect(input.sections?.[0]?.lines.join("\n")).toContain('"message": "original"');
+			expect(env.transcript.toolFolds[1]!.block.semantic?.summary).toBe("result original");
+			expect(seen.at(-1)).toEqual({ phase: "idle", tools: [], agents: [] });
+		} finally {
+			env.terminal.data("/exit\r");
+			await expect(env.repl).resolves.toBe(0);
+		}
+	});
+
+	it("keeps child labels and source snapshots, invoking captured result hooks only at child tool_end", async () => {
+		const call = vi.fn((context: ToolCallPresentationContext) => ({
+			summary: `child ${(context.args as { message: string }).message}`,
+			preview: ["preview"],
+		}));
+		const result = vi.fn((_context: ToolResultPresentationContext) => ({ summary: "discarded result" }));
+		const replacement = vi.fn();
+		const tool = gatedTool(gate());
+		tool.presentation = { call, result };
+		const env = await startTuiRepl([reply("finished")], { tools: [tool] });
+		const seen: Parameters<TuiShell["setActivity"]>[0][] = [];
+		const realActivity = TuiShell.prototype.setActivity;
+		const activity = vi.spyOn(TuiShell.prototype, "setActivity").mockImplementation(function (
+			this: TuiShell,
+			snapshot,
+		) {
+			seen.push(snapshot);
+			realActivity.call(this, snapshot);
+		});
+		onTestFinished(() => activity.mockRestore());
+		const counts: number[] = [];
+		let childRows: Parameters<TuiShell["setActivity"]>[0]["agents"] = [];
+		const original = env.runner.runTurn.bind(env.runner);
+		vi.spyOn(env.runner, "runTurn").mockImplementationOnce(async (options) => {
+			const emit = options.onEvent!;
+			const children = ["a", "b"].map((id) => ({
+				info: { sourceId: `source-${id}`, taskToolCallId: `parent-${id}`, agent: "same", cwd: `/cwd/${id}` },
+				args: { message: id },
+			}));
+			for (const { info, args } of children) {
+				emit({
+					type: "tool_start",
+					toolCallId: info.taskToolCallId,
+					name: "task",
+					args: { agent: "same", prompt: `prompt ${args.message}` },
+				});
+				emit({ type: "tool_start", toolCallId: "same-id", name: tool.name, args }, info);
+				args.message = "mutated after start";
+			}
+			childRows = seen.at(-1)?.agents ?? [];
+			tool.presentation = { result: replacement };
+			for (const { info } of children.reverse()) {
+				const finished = {
+					toolCallId: "same-id",
+					toolName: tool.name,
+					content: info.sourceId,
+					isError: false,
+				};
+				emit({ type: "tool_settled", result: finished }, info);
+				counts.push(result.mock.calls.length);
+				emit({ type: "tool_end", result: finished }, info);
+				counts.push(result.mock.calls.length);
+				emit({
+					type: "tool_end",
+					result: {
+						toolCallId: info.taskToolCallId,
+						toolName: "task",
+						content: "parent done",
+						isError: false,
+					},
+				});
+				// A closed parent must not allow an orphan hook invocation from late child events.
+				emit({ type: "tool_end", result: finished }, info);
+				counts.push(result.mock.calls.length);
+			}
+			return original(options);
+		});
+		env.terminal.data("go\r");
+		try {
+			await waitUntil(() => env.transcript.completedLines().join().includes("finished"));
+			expect(counts).toEqual([0, 1, 1, 1, 2, 2]);
+			expect(call).toHaveBeenCalledTimes(2);
+			expect(replacement).not.toHaveBeenCalled();
+			expect(result.mock.calls.map(([context]) => context.args)).toEqual([
+				{ message: "b" },
+				{ message: "a" },
+			]);
+			expect(result.mock.calls.map(([context]) => [context.result.text, context.replay])).toEqual([
+				["source-b", false],
+				["source-a", false],
+			]);
+			for (const id of ["a", "b"])
+				expect(childRows.find((row) => row.sourceId === `source-${id}`)).toMatchObject({
+					agent: "same",
+					task: `prompt ${id}`,
+					taskToolId: `parent-${id}`,
+					cwd: `/cwd/${id}`,
+					lastTool: `${tool.name} child ${id}\npreview`,
+					toolCount: 1,
+					startedAtMs: expect.any(Number),
+				});
+			expect(env.transcript.toolFolds.every((fold) => fold.block.name === "task")).toBe(true);
+			expect(seen.at(-1)).toEqual({ phase: "idle", tools: [], agents: [] });
+		} finally {
+			env.terminal.data("/exit\r");
+			await expect(env.repl).resolves.toBe(0);
+		}
+	});
+
 	it("shares hook invocation between activity and transcript, never ticks or resize", async () => {
 		const g = gate();
 		const tool = gatedTool(g);

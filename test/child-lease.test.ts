@@ -2,20 +2,32 @@
  * SA-07 single-writer lease tests — intent + verify protocol
  * (design docs/design/sa-07-child-resume-design.md §7, revised after owner round 3).
  */
+import { spawnSync } from "node:child_process";
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	rmSync,
 	statSync,
+	symlinkSync,
+	unlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { acquireChildLease } from "../src/core/child-lease.js";
 import { mkTempDirAsync } from "./helpers/mktemp.js";
+
+// Preserve real filesystem behavior while checking that refused artifacts
+// are never read or unlinked, not merely left byte-identical after a read.
+vi.mock("node:fs", async (importOriginal) => {
+	const fs = await importOriginal<typeof import("node:fs")>();
+	return { ...fs, readFileSync: vi.fn(fs.readFileSync), unlinkSync: vi.fn(fs.unlinkSync) };
+});
 
 const leaseOptions = {
 	pid: 4242,
@@ -344,47 +356,104 @@ describe("child lease (intent + verify)", () => {
 	});
 });
 
-describe("child lease — legacy single-FILE migration", () => {
-	function writeLegacy(child: string, record: unknown): string {
-		const file = leaseDirFor(child);
-		writeFileSync(file, `${JSON.stringify(record)}\n`);
-		return file;
+describe("child lease — non-directory artifacts require manual inspection", () => {
+	function expectRefusal(child: string, isAlive: (pid: number) => boolean): void {
+		const artifact = leaseDirFor(child);
+		const before = lstatSync(artifact);
+		const entries = readdirSync(path.dirname(child));
+		const onBeforeCandidatePublish = vi.fn();
+		vi.clearAllMocks();
+		const result = acquireChildLease(child, "new", {
+			...leaseOptions,
+			isAlive,
+			onBeforeCandidatePublish,
+		});
+		expect(result).toMatchObject({ ok: false, code: "busy" });
+		if (!result.ok) {
+			expect(result.message).toContain(artifact);
+			expect(result.message).toContain("inspect the artifact manually");
+		}
+		expect(readFileSync).not.toHaveBeenCalled();
+		expect(unlinkSync).not.toHaveBeenCalled();
+		expect(onBeforeCandidatePublish).not.toHaveBeenCalled();
+		expect(lstatSync(artifact).ino).toBe(before.ino);
+		expect(lstatSync(artifact).mtimeMs).toBe(before.mtimeMs);
+		expect(lstatSync(artifact).isDirectory()).toBe(false);
+		expect(readdirSync(path.dirname(child))).toEqual(entries); // no candidate or staging artifacts
 	}
 
-	it("a live legacy artifact refuses with NO directory created", async () => {
-		const { child } = await setup("ink-lease-legacy1-");
-		writeLegacy(child, payload({ pid: 8888 }));
-		const result = acquireChildLease(child, "new", { ...leaseOptions, isAlive: (pid) => pid === 8888 });
-		expect(result.ok).toBe(false);
-		if (!result.ok) expect(result.code).toBe("busy");
-		expect(statSync(leaseDirFor(child)).isFile()).toBe(true); // still the legacy file
+	describe.each([0, 120_000, 365 * 24 * 60 * 60 * 1000])("file age %i ms", (ageMs) => {
+		it.each([
+			["live", payload({ pid: 8888 }), true],
+			["dead", payload(), false],
+			["own leftover", payload({ pid: leaseOptions.pid, nonce: leaseOptions.nonce }), true],
+			["foreign host", payload({ host: "other-host" }), false],
+			["foreign machine", payload({ machineId: "other-machine" }), false],
+			["malformed", "{broken", false],
+			["empty", "", false],
+		] as const)(
+			"refuses %s without reading, unlinking or changing its bytes",
+			async (_label, record, alive) => {
+				const { child } = await setup("ink-lease-legacy1-");
+				const artifact = leaseDirFor(child);
+				const bytes = typeof record === "string" ? record : `${JSON.stringify(record)}\n`;
+				writeFileSync(artifact, bytes);
+				ageFile(artifact, ageMs);
+				expectRefusal(child, () => alive);
+				expect(readFileSync(artifact)).toEqual(Buffer.from(bytes));
+				// Refusal clears the in-process registry: a second call must still
+				// classify the artifact and return the same manual-inspection guidance.
+				expectRefusal(child, () => alive);
+			},
+		);
 	});
 
-	it("a dead+aged legacy artifact is migrated away and the acquire proceeds", async () => {
-		const { child } = await setup("ink-lease-legacy2-");
-		const legacy = writeLegacy(child, payload({ pid: 999999 }));
-		ageFile(legacy, 120_000);
-		const result = acquireChildLease(child, "new", { ...leaseOptions, isAlive: () => false });
-		expect(result.ok).toBe(true);
-		expect(statSync(leaseDirFor(child)).isDirectory()).toBe(true); // migrated to candidate dir
-		if (result.ok) result.lease.release();
-	});
+	it.skipIf(process.platform === "win32").each(["file", "directory", "dangling"])(
+		"refuses a symlink to a %s without following it or creating candidates",
+		async (kind) => {
+			const { base, child } = await setup("ink-lease-legacy1-");
+			const target = path.join(base, "target");
+			if (kind === "file") writeFileSync(target, "old lease bytes\n");
+			if (kind === "directory") mkdirSync(target);
+			symlinkSync(target, leaseDirFor(child));
+			expectRefusal(child, () => false);
+			expect(readlinkSync(leaseDirFor(child))).toBe(target);
+			if (kind === "file") expect(readFileSync(target, "utf8")).toBe("old lease bytes\n");
+			if (kind === "directory") expect(readdirSync(target)).toEqual([]);
+			if (kind === "dangling") expect(existsSync(target)).toBe(false);
+		},
+	);
 
-	it("a fresh unreadable legacy artifact refuses; an aged one is retired", async () => {
-		const first = await setup("ink-lease-legacy3-");
-		writeFileSync(leaseDirFor(first.child), "{broken");
-		const fresh = acquireChildLease(first.child, "new", { ...leaseOptions, isAlive: () => false });
-		expect(fresh.ok).toBe(false);
-		if (!fresh.ok) expect(fresh.code).toBe("busy");
-
-		const second = await setup("ink-lease-legacy4-");
-		const debris = leaseDirFor(second.child);
-		writeFileSync(debris, "{broken");
-		ageFile(debris, 120_000);
-		const aged = acquireChildLease(second.child, "new", { ...leaseOptions, isAlive: () => false });
-		expect(aged.ok).toBe(true);
-		if (aged.ok) aged.lease.release();
-	});
+	it.skipIf(process.platform === "win32")(
+		"refuses a real FIFO without blocking or creating candidates",
+		async () => {
+			const { base, child } = await setup("ink-lease-legacy1-");
+			const artifact = leaseDirFor(child);
+			const fifo = spawnSync("mkfifo", [artifact], { timeout: 1000, encoding: "utf8" });
+			expect(fifo.error).toBeUndefined();
+			expect(fifo.status, fifo.stderr).toBe(0);
+			// No Vitest mocks in this process. A regression that reads the FIFO
+			// is bounded by the parent timeout instead of hanging the test worker.
+			const source = new URL("../src/core/child-lease.ts", import.meta.url).href;
+			const worker = spawnSync(
+				process.execPath,
+				[
+					"--import",
+					"tsx",
+					"--input-type=module",
+					"--eval",
+					`import { acquireChildLease } from ${JSON.stringify(source)};
+				 console.log(JSON.stringify(acquireChildLease(${JSON.stringify(child)}, "fifo", ${JSON.stringify(leaseOptions)})));`,
+				],
+				{ timeout: 5000, encoding: "utf8" },
+			);
+			expect(worker.error).toBeUndefined();
+			expect(worker.status, worker.stderr).toBe(0);
+			expect(JSON.parse(worker.stdout)).toMatchObject({ ok: false, code: "busy" });
+			expect(lstatSync(artifact).isFIFO()).toBe(true);
+			expect(readdirSync(base)).toEqual([path.basename(artifact)]);
+		},
+	);
 });
 
 describe("child lease — machine id (publish-once, §7.4)", () => {

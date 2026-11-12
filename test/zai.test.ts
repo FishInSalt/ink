@@ -118,7 +118,7 @@ describe("zai provider (pi's GLM connection path)", () => {
 		}
 	});
 
-	it("discovery: unreachable /models falls back to the pi.dev seeds on the DEFAULT endpoint; a redirected base URL returns null (#gateway-truth)", async () => {
+	it("discovery: unreachable default and redirected endpoints both return null", async () => {
 		const prevKey = process.env.ZAI_API_KEY;
 		const prevUrl = process.env.ZAI_BASE_URL;
 		resetDiscoveryCacheForTest();
@@ -126,9 +126,9 @@ describe("zai provider (pi's GLM connection path)", () => {
 		vi.stubGlobal("fetch", fetchMock);
 		try {
 			process.env.ZAI_API_KEY = "sk-test";
-			delete process.env.ZAI_BASE_URL; // default endpoint — seeds stay the floor
+			delete process.env.ZAI_BASE_URL; // keep the actual default endpoint path
 			const ids = await discoverModels("zai");
-			expect(ids).toEqual([...ZAI_SEED_MODELS]);
+			expect(ids).toBeNull(); // only the picker may apply catalog/static fallback
 			expect(fetchMock).toHaveBeenNthCalledWith(
 				1,
 				`${ZAI_DEFAULT_BASE_URL}/models`,

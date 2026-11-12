@@ -2,8 +2,8 @@
  *
  * Every fixture temp dir goes through here so cleanup is structural:
  * onTestFinished(rmSync) fires however the test ends. A kill of the
- * worker process itself still skips it; §A2's 24h sweep backstops
- * that case.
+ * worker process itself still skips it; its private run root is then
+ * retained for manual inspection, never recursively removed by teardown.
  *
  * Prefix discipline: must start with "ink-" (asserted). This is the
  * enforcement point for the zero-imp rule — a stray "imp-" prefix fails

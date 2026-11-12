@@ -8,7 +8,30 @@ their original release identity.
 
 ## [Unreleased]
 
+### Changed
+
+- **Implementation simplification.** Remove the unreachable private legacy tool
+  fold path, redundant activity-label/layout work and the Runner's duplicate
+  child-tool factory. Separate pure model references from provider construction,
+  use one catalog store, and read settings values/sources from one snapshot per
+  refresh. Keep exported Fold APIs, activity label string compatibility and
+  existing child presentation-hook timing.
+- **Conservative old lease handling.** Refuse non-directory child lease artifacts
+  without reading, deleting or automatically migrating them. Inspect old
+  single-file leases manually; current candidate-directory mutual exclusion
+  and recovery rules are unchanged.
+- **Owned test runtime.** Confine fixtures to private per-invocation temporary
+  roots, including watch cancellation/reruns, and replace nested Vitest lease
+  roles with plain Node+tsx workers and bounded parent cleanup. Retire OS-temp
+  prefix scanning and automatic 24-hour deletion; nonempty roots and diagnostics
+  are retained for manual inspection. Design-only edits no longer deploy Pages.
+
 ### Fixed
+
+- **Model-list fallback ownership.** On default API-key endpoint discovery
+  failure, consistently try the cached public catalog before shared static
+  choices. Preserve all four bundled Moonshot choices on both platforms,
+  authoritative subscription empty lists and custom-endpoint boundaries.
 
 - **CI search prerequisites.** Use isolated, signed official Ubuntu sources
   with explicit amd64 filtering and bounded acquisition instead of the hosted

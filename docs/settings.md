@@ -17,6 +17,9 @@ startup. `INK_SETTINGS_PATH` overrides the global path (tests).
 In the REPL, `/settings <key> <value>` reads or writes; `/settings` opens the
 panel. The env layer always wins: `INK_MODEL` beats `defaultModel`, and the
 gating variables (`INK_AUTOCOMPACT=0` etc.) beat their settings keys.
+Each panel/table refresh reads the allowed files once, so displayed values and
+scope labels use the same snapshot. Changes are reread on the next refresh;
+settings already captured by a running session retain their existing behavior.
 
 ## Keys
 

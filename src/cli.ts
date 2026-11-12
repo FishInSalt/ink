@@ -28,7 +28,7 @@ import { McpManager } from "./mcp/manager.js";
 import { loadCatalogCache, refreshCatalog } from "./provider/catalog.js";
 import { LOGIN_TARGETS } from "./provider/login-targets.js";
 import { configuredFamilies, modelAvailability } from "./provider/model-availability.js";
-import { parseModelRef } from "./provider/resolve.js";
+import { parseModelRef } from "./provider/model-ref.js";
 import { decideStartupModel, type ModelSource, type StartupModelDecision } from "./provider/startup-model.js";
 import { THINKING_LEVELS } from "./provider/thinking.js";
 import { Renderer } from "./render.js";

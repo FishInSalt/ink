@@ -4,6 +4,49 @@ Status: IMPLEMENTED and MERGED (385d2fb, 2026-10-09); followup review A1-B5/C1-C
 Branch: `feat/test-fixture-hygiene`
 Date: 2026-10-09
 
+## Current implementation note (2026-11-11)
+
+The approved `simplification-design.md` revision 2, package E supersedes the
+historical §A2 sweep and the 24-hour artifact retention policy below:
+
+- Vitest global setup creates one unique **0700** run root under the original
+  `os.tmpdir()` and binds `TMPDIR`, `TMP`, and `TEMP` to a private copy of
+  `project.config.env` before workers start. The coordinator's environment is
+  never redirected. Workers and plain Node + `--import` tsx lease roles inherit
+  containment on every watch rerun, including reruns after cancellation.
+- Global setup runs once; Vitest clears `onCancel` listeners between runs, so
+  containment must not depend on a setup-time cancellation listener. Worker
+  configuration keeps the root until final global teardown; cleanup safety
+  does not assume that all workers have already closed at that point.
+  Teardown restores the exact original config/env object and its absent or
+  empty keys, then attempts **only `rmdir` on its own root**. Nonempty roots
+  are retained and their paths reported. Setup errors use the same restoration
+  and nonrecursive lifecycle. Abruptly killed runs may retain their entire root.
+- Per-test cleanup, the settings sandbox's existing cleanup and the FIFO
+  fixture's ownership-aware cleanup still own their respective contents.
+  Global teardown cannot recursively remove retained FIFO paths, diagnostic
+  evidence or visual artifacts. No marker or PID authorizes content deletion.
+- There is **no OS-temp enumeration, prefix inference, automatic stale sweep,
+  or TTL**. The prefix inventory and its generator are retired. Abandoned or
+  nonempty roots require manual inspection; visual artifacts remain available
+  until deliberately removed. Each invocation adds one OS-temp entry rather
+  than exposing every fixture as a top-level entry.
+- Lease roles are ordinary Node + tsx source programs, not nested Vitest tests.
+  Their parent owns deadlines, bounded SIGTERM/SIGKILL escalation and awaited
+  close in `finally`, including assertion and readiness failures. Every role
+  barrier timeout fails the role; offline preload and sandbox settings remain.
+- Regressions exercise the actual root helper (empty/nonempty, FIFO/diagnostic
+  preservation, exact environment restoration and failure), a real Vitest
+  worker + Node/tsx bootstrap, all lease interleavings, and failed/no-ready
+  roles. A noninteractive real Vitest watch API probe covers cancel-first then
+  rerun, and success then cancelled rerun, with absent/empty original temp env
+  and a further successful round. Its bounded parent cleanup owns the entire
+  runner process group. Existing offline and FIFO safety tests remain in place.
+
+The remainder is the historical implementation record, not the current cleanup
+contract. In particular §7's old leak gate and §8's next-day sweep expectation
+no longer apply; retained run roots are intentional and are never auto-swept.
+
 ## 0. Context and motivation
 
 Two independent investigations this week converged on the same root cause:

@@ -22,14 +22,8 @@ import type { LLMProvider } from "./types.js";
 export const MOONSHOT_DEFAULT_BASE_URL = "https://api.moonshot.ai/v1";
 export const MOONSHOT_CN_DEFAULT_BASE_URL = "https://api.moonshot.cn/v1";
 
-/** pi.dev live catalog (2026-09-26, catalog order) — the offline floor /
- *  discovery seeds. */
-export const MOONSHOT_SEED_MODELS = [
-	"kimi-k2.6",
-	"kimi-k2.7-code",
-	"kimi-k2.7-code-highspeed",
-	"kimi-k3",
-] as const;
+// Compatibility export; offline picker policy owns the shared seed set.
+export { MOONSHOT_SEED_MODELS } from "./model-seeds.js";
 
 export function createMoonshotProvider(): LLMProvider {
 	// MOONSHOT_BASE_URL overrides (#gateway-truth; DEEPSEEK_BASE_URL precedent)

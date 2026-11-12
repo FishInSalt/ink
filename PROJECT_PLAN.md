@@ -17,6 +17,25 @@
 
 ---
 
+## Latest maintenance: implementation simplification
+
+- **Scope:** [approved design and acceptance](docs/design/simplification-design.md),
+  based on main `e02e464`. Presentation, model policy/modules, settings snapshots,
+  conservative legacy child leases, owned test roots/plain lease workers and
+  Pages triggers were implemented in dedicated worktrees and integrated with
+  `--no-ff`. Production `src/` is 187 lines smaller; the obsolete 60-line fixture
+  prefix generator is removed. New regression coverage increases test code.
+- **Review:** adversarial design review required revision 2 before implementation.
+  Three independent implementation reviews closed after fixing activity-label
+  read compatibility and cancellation/watch-rerun containment. Preserve exported
+  Fold and verdict contracts, child hook timing, trust policy, FIFO/process
+  containment, accounting and current candidate-directory lease safeguards.
+- **Validation:** `npm run typecheck`, `npm run lint` (340 files),
+  `npm run build`, and `npm test` (181 files, 5,284 tests passed).
+  Offline artifact smoke passed for 451 allowed files, isolated install,
+  help/version and local npm-exec inference. Runtime roots with contents are
+  intentionally retained and reported; no OS temporary-directory sweep runs.
+
 ## 0. 先要做的三个决策（建议）
 
 | 决策点 | 建议 | 理由 |

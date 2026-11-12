@@ -12,6 +12,7 @@ on:
       - "README.md"
       - "README.zh-CN.md"
       - "docs/**"
+      - "!docs/design/**"
       - "scripts/build-docs-site.mjs"
       - "scripts/docs-site-config.json"
       - "package.json"

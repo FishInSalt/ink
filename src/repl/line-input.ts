@@ -181,7 +181,8 @@ export interface ActivityToolLine {
 	/** tool_call id — tool_end removes the row (the ⎿ summary lands in the transcript). */
 	id: string;
 	name: string;
-	/** Pre-summarized args label (summarizeArgs at event time). */
+	/** @deprecated Non-task activity no longer projects argument labels.
+	 *  Kept as an empty string for callers reading older snapshot shapes. */
 	label: string;
 	startedAtMs: number;
 	/** #sliding-window: a concurrency-safe call pre-issued at tool_start but

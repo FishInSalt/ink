@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { formatTokens } from "../format.js";
-import { modelMaxTokensFor } from "../provider/catalog.js";
 import { compactionSettingsFor } from "../provider/compaction-settings.js";
+import { modelMaxTokensFor } from "../provider/model-limits.js";
 import type { ThinkingLevel } from "../provider/thinking.js";
 import type { LLMProvider, ModelSpeed } from "../provider/types.js";
 import {
