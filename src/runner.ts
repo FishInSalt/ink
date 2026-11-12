@@ -1028,9 +1028,8 @@ class RunnerImpl implements Runner {
 		// noop only for a NON-user leaf target. A USER message that IS the
 		// current leaf (an unanswered turn — aborted/errored before any
 		// assistant entry landed) still navigates: newLeaf = its parent,
-		// editorText = its text (batch B §4 P1 — /fork's primary case;
-		// unreachable from /tree, whose surfaces short-circuit leaf picks
-		// with "already at that point", matching pi).
+		// editorText = its text. Both /tree and /fork allow this re-edit,
+		// including the first failed continuation after an interrupted batch.
 		const leafTargetIsUser =
 			target.type === "message" && target.message.role === "user" && targetId === store.getLeafId();
 		if (targetId === store.getLeafId() && !leafTargetIsUser) return { noop: true };
