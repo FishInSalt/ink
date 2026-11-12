@@ -60,10 +60,16 @@
   Installed full-CLI PTY acceptance passed 3 scenarios/161 assertions. Final
   independent implementation/artifact review (77a8ae59) and PTY evidence review
   (62be434b) both APPROVE with no required fixes. These are the historical
-  preparation results. Read-only follow-up on 2026-11-12 confirmed npm latest
-  `0.6.1` / source `5457731` and the formal GitHub Latest `v0.6.1`; see
-  [publication status](docs/design/release-0.6.1-preparation.md#publication).
-  No new cryptographic verification or global upgrade is claimed here.
+  preparation results, not new execution during record integration.
+- **Publication:** source `5457731` / `v0.6.1` passed Linux CI (each job:
+  187 files / 5,761 passed / 2 platform skips) and release `43160272629`
+  attempt 1. Retained verification/installation reports cover 454 application
+  files, 12 pinned dependencies, signatures, attestations and seven negative
+  controls. The selective integration checked retained files/identities/digests,
+  not fresh cryptographic verification, installer execution or old review
+  approval timing. See the [historical publication record](docs/design/release-0.6.1-preparation.md#publication)
+  for evidence and limits; the current release remains 0.6.2. No global upgrade
+  is claimed by this documentation batch.
 - **Boundaries:** each external action requires separate confirmation. The
   installed application cannot be replaced while a relevant Ink session is
   running; global upgrade requires an independently reviewed, quiescent
