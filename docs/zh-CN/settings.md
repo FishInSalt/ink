@@ -20,6 +20,16 @@
 每次刷新面板或表格只读取一次允许加载的配置文件，显示值及其来源标签使用
 同一份快照；下次刷新会重新读取。当前会话已捕获的设置仍维持原有生效方式。
 
+直接构造 Runner 的宿主可传入 `RunnerOptions.projectTrusted`，一次捕获项目
+settings、具名 agent 及 SYSTEM.md／APPEND_SYSTEM.md 的会话许可。这是 Runner
+选项，不是 settings.json 配置键。`false` 拒绝三个范围；`true` 允许加载，但
+不能覆盖旧单项选项中明确的 `false`。`projectSettingsAllowed`、
+`agentsProjectAllowed` 和 `systemPromptProjectAllowed` 仍可使用；省略
+`projectTrusted` 时，三者原有默认值分别保持 `false`、`true`、`false`，不会
+因授权一个旧范围而授权其他范围。CLI 始终传入本次解析的会话决定，不依赖这些
+旧默认值，并将该决定直接传给 MCP。独立的扩展及 agent 加载器保留原有的默认
+允许契约；直接调用它们的宿主仍须明确应用自己的项目门控。
+
 ## 键
 
 | 键 | 类型 | 默认值 | 说明 |

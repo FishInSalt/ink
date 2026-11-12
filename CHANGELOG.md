@@ -10,6 +10,12 @@ their original release identity.
 
 ### Changed
 
+- **Project trust consistency.** Share project resource paths between trust
+  detection and loaders. Pass one captured `projectTrusted` decision from both
+  CLI modes to Runner and MCP; MCP no longer infers general trust from a
+  settings-only permission. Keep legacy per-resource options/defaults and
+  explicit denials, global/explicit resources, session-only approvals without
+  persistence, source ordering and each loader's existing file-kind checks.
 - **Implementation simplification.** Remove the unreachable private legacy tool
   fold path, redundant activity-label/layout work and the Runner's duplicate
   child-tool factory. Separate pure model references from provider construction,

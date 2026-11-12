@@ -1,6 +1,6 @@
 # Project resource paths and session-trust plumbing
 
-Status: APPROVED; implementation in progress.
+Status: COMPLETE; design and independent implementation reviews closed.
 Independent adversarial design review 342be05f: APPROVE, no required fixes,
 closed before implementation.
 Base: main@ace8fa7
@@ -119,3 +119,33 @@ cache for verification. Independent implementation review is required because
 this touches security-related plumbing. Document canonical option/legacy
 compatibility and session-only authorization in published docs in both languages;
 update CHANGELOG and PROJECT_PLAN with exact results after review closes.
+
+## Acceptance
+
+- Implemented in dedicated project-trust paths/wiring worktrees and integrated
+  with --no-ff. Only path facts are shared; no generic scanner or policy
+  registry was introduced. Existing resource-kind checks, source precedence,
+  alias handling and old independent-loader defaults remain unchanged.
+- Independent design review 342be05f APPROVE before implementation. Independent
+  implementation reviews 644a04ec (paths/loaders) and 5b3b63c3 (CLI/Runner)
+  both APPROVE; no required fixes remain.
+- Added 364 cases: 2 literal path checks, 66 real filesystem path/kind/boundary
+  cases, 270 canonical/legacy permission combinations and 26 actual private-CLI
+  declaration integration tests. Tests include session-only no-store creation
+  and unchanged existing trust bytes, both CLI startup paths and independent
+  MCP session permission/runner cwd. CLI tests replace terminal and selected
+  setup boundaries; they are not full real-terminal end-to-end tests.
+- Verification: npm run typecheck PASS; npm run lint PASS (345 files, docs
+  parity/routes/anchors and legacy-name checks PASS); npm run build PASS;
+  npm test PASS (185 files, 5,648 tests). Local log:
+  .vitest-cache/trust-integration-tests.log (not committed).
+- Offline package smoke PASS: 454 allowed files, modes, isolated install,
+  help/version and local npm-exec inference. Existing source npm cache was
+  read-only and all artifact/cache writes remained under worktree runtime.
+- A child's workspace-local temp override produced two environment-dependent
+  baseline failures (Git ancestry / cwd-substring assumptions), reproduced
+  without changes. Integrated full tests use the standard private run roots
+  and pass without altering those assertions or weakening isolation.
+- Public index/settings pages are updated in English/Chinese; CHANGELOG and
+  PROJECT_PLAN record this batch. No credential/trust-store migration, external
+  API request, global package change or publication was performed.
