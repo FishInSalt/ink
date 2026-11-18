@@ -8,6 +8,16 @@ their original release identity.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-18
+
+### Fixed
+
+- **Codex conversation history across models.** Replay assistant text without
+  a compatible message ID as plain assistant content, fixing the `input_text`
+  HTTP 400 when switching a ChatGPT subscription session to another model or
+  continuing legacy history. Preserve exact-model native replay, tool-call
+  order and existing session files. No migration or re-login is needed.
+
 ## [0.6.2] - 2026-11-12
 
 ### Fixed
