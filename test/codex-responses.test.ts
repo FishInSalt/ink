@@ -373,7 +373,7 @@ describe("codex-responses provider", () => {
 		const body = captured.at(-1)?.body as Record<string, unknown>;
 		expect(body.input).toEqual([
 			{ role: "user", content: [{ type: "input_text", text: "list" }] },
-			{ role: "assistant", content: [{ type: "input_text", text: "checking" }] },
+			{ role: "assistant", content: "checking" },
 			{ type: "function_call", call_id: "call_1", name: "bash", arguments: '{"command":"ls"}' },
 			{ type: "function_call_output", call_id: "call_1", output: "a b" },
 		]);
