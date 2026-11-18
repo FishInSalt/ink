@@ -10,11 +10,10 @@ import type {
 import { CodexResponseError, record } from "./responses-errors.js";
 
 type TextPart = { type: "output_text"; text: string; annotations: [] } | { type: "refusal"; refusal: string };
-type TextInputPart = { type: "input_text"; text: string };
 type AssistantInputItem =
 	| {
 			role: "assistant";
-			content: TextInputPart[];
+			content: string;
 			phase?: "commentary" | "final_answer" | null;
 			type?: undefined;
 			id?: undefined;
@@ -210,20 +209,19 @@ function assistantItems(message: AssistantMessage, model: string, seen: Set<stri
 				const phase = textMeta?.phase === undefined ? {} : { phase: textMeta.phase };
 				group =
 					itemId === undefined
-						? { role: "assistant", content: [], ...phase }
+						? { role: "assistant", content: "", ...phase }
 						: { type: "message", role: "assistant", id: itemId, status: "completed", content: [], ...phase };
 				items.push(group);
 			}
-			// Native output messages require status and output_text.annotations.
-			// Canonical/ID-less history uses EasyInputMessage's input_text parts,
-			// not an incomplete ResponseOutputMessage with fabricated native IDs.
+			// Codex rejects input_text parts in assistant messages. Use the simple
+			// string form for history without a replayable message ID.
 			if (group!.type === "message") {
 				group!.content.push(
 					textMeta?.kind === "refusal"
 						? { type: "refusal", refusal: block.text }
 						: { type: "output_text", text: block.text, annotations: [] },
 				);
-			} else group!.content.push({ type: "input_text", text: block.text });
+			} else group!.content += block.text;
 			continue;
 		}
 		group = undefined;

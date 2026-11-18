@@ -552,9 +552,9 @@ describe("Service tier metadata is observation-only", () => {
 });
 
 describe("Responses replay boundary", () => {
-	// Focused projections of OpenAI's Responses input schemas: native output
-	// messages require id/status/annotations; EasyInputMessage permits only
-	// input content parts. These checks remain offline and dependency-free.
+	// Native replay uses output content parts. For plain assistant history use
+	// the documented string form, not the input_text array accepted for users:
+	// https://developers.openai.com/api/docs/guides/conversation-state#manually-manage-conversation-state
 	const outputMessageSchema = Type.Object(
 		{
 			type: Type.Literal("message"),
@@ -585,12 +585,7 @@ describe("Responses replay boundary", () => {
 			phase: Type.Optional(
 				Type.Union([Type.Literal("commentary"), Type.Literal("final_answer"), Type.Null()]),
 			),
-			content: Type.Array(
-				Type.Object(
-					{ type: Type.Literal("input_text"), text: Type.String() },
-					{ additionalProperties: false },
-				),
-			),
+			content: Type.String(),
 		},
 		{ additionalProperties: false },
 	);
@@ -616,6 +611,73 @@ describe("Responses replay boundary", () => {
 			await collect(provider.stream(request({ model, messages: [message] })));
 			expect(checked).toBe(mode === "native" ? 2 : 3);
 		}
+	});
+	it("continues the same conversation across a Codex model switch", async () => {
+		const [before, after] = ["gpt-6.1-sol", "gpt-6.2-sol"];
+		const reply = (id: string, text: string) => ({
+			type: "message",
+			role: "assistant",
+			id,
+			status: "completed",
+			phase: "final_answer",
+			content: [{ type: "output_text", text, annotations: [] }],
+		});
+		const newReply = reply("msg_new", "new model reply");
+		const outputs = [
+			[
+				{ type: "reasoning", id: "rs_old", summary: [], encrypted_content: "FAKE_OLD_CIPHERTEXT" },
+				reply("msg_old", "old model reply"),
+			],
+			[newReply],
+			[],
+		];
+		const captured: Array<{ model: string; input: Fields[] }> = [];
+		const provider = createCodexResponsesProvider({
+			auth: async () => ({ accessToken: "fake-switch" }),
+			fetch: async (_url, init) => {
+				const { model, input } = JSON.parse(String(init?.body)) as (typeof captured)[number];
+				captured.push({ model, input });
+				if (
+					input.some(
+						(item) =>
+							item.role === "assistant" &&
+							Array.isArray(item.content) &&
+							item.content.some((part) => part.type === "input_text"),
+					)
+				) {
+					return Response.json(
+						{
+							error: {
+								message: "Invalid value: 'input_text'. Supported values are: 'output_text' and 'refusal'.",
+							},
+						},
+						{ status: 400 },
+					);
+				}
+				return response([completed({ output: outputs[captured.length - 1] })]);
+			},
+		});
+		const messages: AgentMessage[] = [];
+		for (const [index, model] of [before, after, after].entries()) {
+			messages.push(user(`question ${index + 1}`));
+			const events = await collect(
+				provider.stream(request({ model, messages, sessionId: "fixture-switch" })),
+			);
+			const last = events.at(-1);
+			if (last?.type !== "message_end") throw new Error("missing final fixture message");
+			messages.push(last.message);
+		}
+		const question = (text: string) => ({ role: "user", content: [{ type: "input_text", text }] });
+		const switchedHistory = [
+			question("question 1"),
+			{ role: "assistant", content: "old model reply" },
+			question("question 2"),
+		];
+		expect(captured).toEqual([
+			{ model: before, input: [question("question 1")] },
+			{ model: after, input: switchedHistory },
+			{ model: after, input: [...switchedHistory, newReply, question("question 3")] },
+		]);
 	});
 	it("replays exact native parts/phase/ciphertext in block order, without duplicate tool arguments", () => {
 		const message = replayMessage();
@@ -667,10 +729,10 @@ describe("Responses replay boundary", () => {
 			if (mode === "other-provider") (message.provenance as unknown as Fields).provider = "openai";
 			const input = toResponsesInput([message], mode === "different-model" ? "gpt-6" : MODEL);
 			expect(input).toEqual([
-				{ role: "assistant", content: [{ type: "input_text", text: "before" }] },
-				{ role: "assistant", content: [{ type: "input_text", text: "refused" }] },
+				{ role: "assistant", content: "before" },
+				{ role: "assistant", content: "refused" },
 				{ type: "function_call", call_id: "call_1", name: "read", arguments: '{"path":"canonical"}' },
-				{ role: "assistant", content: [{ type: "input_text", text: "after" }] },
+				{ role: "assistant", content: "after" },
 			]);
 		},
 	);
@@ -682,28 +744,29 @@ describe("Responses replay boundary", () => {
 			toResponsesInput([message], MODEL).map((item) => ("type" in item ? item.type : "message")),
 		).toEqual(["message", "message", "function_call", "message"]);
 	});
-	it("reassembles contiguous parts without IDs when compatible fixtures omit item IDs", async () => {
+	it("only joins parts within each ID-less message and retains its phase", async () => {
 		const { message } = await turn([
 			completed({
 				output: [
 					{
 						type: "message",
+						phase: "commentary",
 						content: [
 							{ type: "output_text", text: "a" },
 							{ type: "output_text", text: "b" },
 						],
 					},
+					{
+						type: "message",
+						phase: "commentary",
+						content: [{ type: "output_text", text: "c" }],
+					},
 				],
 			}),
 		]);
 		expect(toResponsesInput([message], MODEL)).toEqual([
-			{
-				role: "assistant",
-				content: [
-					{ type: "input_text", text: "a" },
-					{ type: "input_text", text: "b" },
-				],
-			},
+			{ role: "assistant", content: "ab", phase: "commentary" },
+			{ role: "assistant", content: "c", phase: "commentary" },
 		]);
 	});
 	it("ignores unknown metadata versions and never trusts extra native call fields", () => {
