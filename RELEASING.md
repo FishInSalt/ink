@@ -20,6 +20,10 @@ agree. Never publish as `imp-agent` or plain `ink`, and never reuse `v0.1.0`.
 No publication, tag push, workflow dispatch, account configuration, or global
 installation is authorized by these instructions alone.
 
+The unpublished **`0.6.3` patch candidate** packages the Codex history fix.
+See the [preparation record](docs/design/release-0.6.3-preparation.md). `0.6.2`
+remains the latest published observation until the new release is verified.
+
 ## Historical capability: the legacy gate is retired
 
 Changing the current workflow does **not** change workflows at historical
@@ -317,9 +321,10 @@ and absence of old launcher, runtime roots, dotenv, credentials, source,
 tests, design docs, or unexpected artifacts. Top-level English and zh-CN
 user documentation is intentionally shipped. It installs locally in a private
 temporary prefix with temporary HOME/cache, no credentials, no install
-scripts, and no network. It executes help and exact `Ink 0.6.2` version
-(for this release), then checks npm-exec's single-bin inference against the
-**local tarball from a neutral cwd**. It never invokes `npx ink` or modifies
+scripts, and no network. It executes help and checks the exact CLI version
+(e.g. `Ink 0.6.3` for the current candidate), then checks npm-exec's single-bin
+inference against the **local tarball from a neutral cwd**. It never invokes
+`npx ink` or modifies
 shared dependencies. The optional cache source is read-only; missing cached
 dependencies fail instead of fetching. Scratch paths are printed for
 inspection; their cleanup is a separate operator decision.

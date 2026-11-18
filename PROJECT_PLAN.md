@@ -17,6 +17,14 @@
 
 ---
 
+## Pending patch candidate: Ink 0.6.3
+
+- **Scope:** reviewed Codex cross-model history serialization fix and release
+  metadata; no dependency, workflow, authentication or session format changes.
+- **Boundary:** see the [preparation record](docs/design/release-0.6.3-preparation.md)
+  for local validation and the separate external approval points. Preparation
+  does not publish the package or replace a global installation.
+
 ## Latest published release: Ink 0.6.2
 
 - **Scope:** package the reviewed two original fixes and two error-handling
